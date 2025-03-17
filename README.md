@@ -1,8 +1,8 @@
 # Lenny
 
-![lenny](https://github.com/user-attachments/assets/b7d70bf8-d795-419c-97b1-5cf4f9bad3f9)
-
 Lenny is a free, open source Lending System for Libraries.
+
+<img width="175" src="https://github.com/user-attachments/assets/b7d70bf8-d795-419c-97b1-5cf4f9bad3f9">
 
 ## Technologies
 
