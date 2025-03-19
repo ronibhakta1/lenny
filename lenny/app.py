@@ -1,21 +1,19 @@
 #!/usr/bin/env python
-import requests
-from flask import Flask, jsonify, abort, request, render_template, redirect, make_response
-from flask_cors import CORS
-from configs import (
-    approot,
-    cors,
-    media_root,
-    options,
-    version,
-)
+from fastapi import FastAPI
+# from lenny.configs.db import init_db
+from lenny.routes.api import router
 
-app = Flask(__name__)
-cors = CORS(app) if cors else None
 
-@app.route('/')
-def home():
-    return render_template('home.html')
+app = FastAPI(title="Lenny API")
+# init_db()
+app.include_router(router)
 
-if __name__ == '__main__':
-    app.run(**options)
+
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to Lenny API Root"}
+
+@app.get("/v1/api")
+async def api():
+    return {"message": "Hello from Lenny API!", "status": "online"}
