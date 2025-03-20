@@ -46,7 +46,7 @@ setup(
         "Programming Language :: Python :: 3.12",
         "Topic :: Internet :: WWW/HTTP",
     ],
-    author='mek',
+    author='ArchiveLabs',
     author_email='michael.karpeles@gmail.com',
     packages=['lenny'],
     platforms='any',
