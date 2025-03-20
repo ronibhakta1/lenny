@@ -63,7 +63,7 @@ version = int(get_env_or_config('api', 'version', 1))
 # Database configuration - prioritize environment variables 
 db_config = {
     'user': os.environ.get('POSTGRES_USER', config.getdef('database', 'user', 'postgres')),
-    'password': os.environ.get('POSTGRES_PASSWORD', config.getdef('database', 'password', 'postgres')),
+    'password': os.environ.get('POSTGRES_PASSWORD', config.getdef('database', 'password', '')),
     'host': os.environ.get('POSTGRES_HOST', config.getdef('database', 'host', 'localhost')),
     'port': int(os.environ.get('POSTGRES_PORT', config.getdef('database', 'port', '5432'))),
     'dbname': os.environ.get('POSTGRES_DB', config.getdef('database', 'dbname', 'lenny'))
@@ -72,7 +72,7 @@ db_config = {
 # MinIO configuration - prioritize environment variables
 minio_config = {
     'root_user': os.environ.get('MINIO_ROOT_USER', config.getdef('minio', 'root_user', 'minioadmin')),
-    'root_password': os.environ.get('MINIO_ROOT_PASSWORD', config.getdef('minio', 'root_password', 'minioadmin')),
+    'root_password': os.environ.get('MINIO_ROOT_PASSWORD', config.getdef('minio', 'root_password', '')),
     'host': os.environ.get('MINIO_HOST', config.getdef('minio', 'host', 'localhost')),
     'port': int(os.environ.get('MINIO_PORT', config.getdef('minio', 'port', '9000')))
 }

@@ -27,10 +27,24 @@ sleep 5
 echo "Checking PostgreSQL status..."
 su - postgres -c "pg_ctl -D /var/lib/postgresql/data status" || echo "PostgreSQL failed to start - check /tmp/pg.log"
 
-# Skipped automatic DB/user creation - will be handled manually later if needed
-echo "Skipping PostgreSQL user/database setup"
+# Set PostgreSQL credentials
+if [ -z "$POSTGRES_USER" ]; then
+  export POSTGRES_USER=postgres
+fi
+if [ -z "$POSTGRES_PASSWORD" ]; then
+  export POSTGRES_PASSWORD=postgres
+fi
+if [ -z "$POSTGRES_DB" ]; then
+  export POSTGRES_DB=lenny
+fi
 
-# Setting default MinIO credentials if not provided ( will be used for testing ) changed later in production
+# After PostgreSQL starts, create the database and user if they don't exist
+echo "Setting up PostgreSQL user and database..."
+su - postgres -c "psql -c \"CREATE USER $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD' SUPERUSER;\" || true"
+su - postgres -c "psql -c \"CREATE DATABASE $POSTGRES_DB;\" || true"
+su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE $POSTGRES_DB TO $POSTGRES_USER;\" || true"
+
+# Setting default MinIO credentials if not provided ( will be used for testing ) changed later 
 if [ -z "$MINIO_ROOT_USER" ]; then
   export MINIO_ROOT_USER=dev_user
 fi
