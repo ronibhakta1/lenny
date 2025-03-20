@@ -3,22 +3,21 @@ FROM alpine:3.19
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     API_PORT=7000 \
-    PYTHONPATH=/app/lenny \
+    PYTHONPATH=/app \
     POSTGRES_USER=lenny_user \
     POSTGRES_PASSWORD=Lennytest123 \
     POSTGRES_DB=lenny_db \
     MINIO_ROOT_USER=admin \
     MINIO_ROOT_PASSWORD=minioadmin
 
-EXPOSE 7000 5432 9000 9001
+EXPOSE 7000 7002 5432 9000 9001
 
 # Group package installations to reduce layers and speed up build
 RUN apk add --no-cache \
     python3 \
     py3-pip \
     nginx \
-    uwsgi \
-    uwsgi-python3 \
+    # Removed uwsgi and uwsgi-python3 as they're no longer needed
     postgresql \
     postgresql-dev \
     curl \
@@ -42,7 +41,6 @@ WORKDIR /app
 COPY ./requirements.txt /app/requirements.txt
 COPY ./nginx.conf /etc/nginx/nginx.conf
 COPY ./conf.d/lenny.conf /etc/nginx/conf.d/lenny.conf
-COPY ./uwsgi.ini /app/uwsgi.ini
 COPY ./run.sh /app/run.sh
 
 # Install Python dependencies from requirements.txt
@@ -51,9 +49,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt --break-system-packages 
     && apk del gcc musl-dev linux-headers
 
 COPY ./lenny/ /app/lenny/
-COPY ./wsgi.py /app/wsgi.py
-COPY ./test_uwsgi.py /app/test_uwsgi.py
-COPY ./test.py /app/test.py
-RUN chmod +x /app/test.py
+COPY ./uvicorn_route.py /app/uvicorn_route.py
+RUN chmod +x /app/uvicorn_route.py
 
 CMD ["/app/run.sh"]

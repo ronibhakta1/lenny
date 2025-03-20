@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 from fastapi import APIRouter
 
-router = APIRouter(prefix="/v1")
+router = APIRouter()
 
-@router.get("/api")
+@router.get("/")
 async def home():
     return {"message": "Hello from Lenny API!", "status": "online"}

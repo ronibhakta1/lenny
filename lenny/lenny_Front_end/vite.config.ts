@@ -10,6 +10,7 @@ export default defineConfig({
       '/v1': {
         target: 'http://backend:7000',
         changeOrigin: true,
+        rewrite: (path) => path,
       },
     },
   },

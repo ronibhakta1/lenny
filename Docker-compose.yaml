@@ -13,6 +13,8 @@ services:
       - lenny_network
     depends_on:
       - backend
+    environment:
+      - BACKEND_URL=http://backend:7000
 
   backend:
     build:

@@ -8,7 +8,7 @@ Lenny is a free, open source Lending System for Libraries.
 
 * [`docker`](https://www.docker.com/) for deployment and containerization
 * [`nginx`](https://nginx.org/) handles patron requests (reverse proxy to app)
-* [`flask`](https://flask.palletsprojects.com/en/stable/) (python) as the web & API microframework
+* [`f`](https://flask.palletsprojects.com/en/stable/) (python) as the web & API microframework
 * `s3-like` API for storing digital assets (Amazon, Internet Archive, or local flat-file)
 * [`yaml`](https://en.wikipedia.org/wiki/YAML/) for configuring library-level rules
 * [`postgres`](https://www.postgresql.org/) for the database

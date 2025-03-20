@@ -37,55 +37,35 @@ su - postgres -c "psql -c \"ALTER USER $POSTGRES_USER WITH SUPERUSER;\"" || true
 echo "Starting MinIO..."
 minio server /data/minio --address ":9000" --console-address ":9001" &
 
+# Start the direct uvicorn server
+echo "Starting FastAPI with uvicorn..."
+export PYTHONPATH=/app
+cd /app
+python -m uvicorn lenny.app:app --host 0.0.0.0 --port 7002 --log-level debug &
+sleep 3
+
 # Start NGINX
 echo "Starting NGINX..."
-nginx &
+nginx -t && nginx &
+sleep 3
 
-# Set up socket directory permissions
-echo "Setting up socket directory permissions..."
-mkdir -p /tmp
-chmod 1777 /tmp
+# Print debugging information
+echo "Checking NGINX configuration:"
+nginx -t
 
-# Start UWSGI
-echo "Starting uWSGI..."
-uwsgi --ini /app/uwsgi.ini &
+echo "Network interfaces:"
+ip addr
 
-# Wait a moment for the socket to be created
-sleep 2
+echo "Listening ports:"
+netstat -tulpn || echo "netstat not available"
 
-# Make sure NGINX has permission to access the socket
-echo "Fixing socket permissions..."
-chmod 777 /tmp/uwsgi.sock
-chown nginx:www-data /tmp/uwsgi.sock || echo "Failed to set socket ownership"
+echo "Running processes:"
+ps aux | grep -E 'nginx|python|postgres'
 
-
-echo "All services started!"
-# First test with a basic WSGI app to ensure connections work
-echo "Testing with basic WSGI app..."
-uwsgi --socket /tmp/uwsgi_test.sock --chmod-socket=777 --file /app/test_uwsgi.py --callable=application --master --processes 1 --uid nginx --gid www-data --logto /tmp/uwsgi_test.log &
-sleep 2
-# Fix this line
-echo "Testing socket connection..."
-curl --unix-socket /tmp/uwsgi_test.sock http://localhost/ || echo "Socket test failed"
-
-# Then start the actual application
-# echo "Starting main uWSGI application..."
-# uwsgi --ini /app/uwsgi.ini &
-
-# Debug info
-echo "Socket files:"
-ls -la /tmp/*.sock
-
-# Add this near the end
-# If uWSGI is having issues, try running with uvicorn directly 
-echo "Testing direct FastAPI with uvicorn..."
-python /app/test.py &
-
-# Add debugging output before the final wait
 echo "NGINX error log:"
 cat /var/log/nginx/error.log || echo "No NGINX error log found"
 
-echo "uWSGI log:"
-cat /tmp/uwsgi.log || echo "No uWSGI log found"
+echo "Services running:"
+ps aux | grep -E "nginx|python|postgres"
 
 wait
