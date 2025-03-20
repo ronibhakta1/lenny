@@ -31,8 +31,6 @@ services:
       - ./lenny/configs/settings.cfg:/app/lenny/configs/settings.cfg:ro
     environment:
       - API_PORT=7000
-      - POSTGRES_HOST=localhost
-      - MINIO_HOST=localhost
     command: /app/run.sh
     networks:
       - lenny_network

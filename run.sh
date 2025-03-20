@@ -27,11 +27,16 @@ sleep 5
 echo "Checking PostgreSQL status..."
 su - postgres -c "pg_ctl -D /var/lib/postgresql/data status" || echo "PostgreSQL failed to start - check /tmp/pg.log"
 
-# Create DB/user if they don't exist
-echo "Setting up PostgreSQL user and database..."
-su - postgres -c "psql -c \"CREATE USER $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD';\"" || true
-su - postgres -c "psql -c \"CREATE DATABASE $POSTGRES_DB OWNER $POSTGRES_USER;\"" || true
-su - postgres -c "psql -c \"ALTER USER $POSTGRES_USER WITH SUPERUSER;\"" || true
+# Skipped automatic DB/user creation - will be handled manually later if needed
+echo "Skipping PostgreSQL user/database setup"
+
+# Setting default MinIO credentials if not provided ( will be used for testing ) changed later in production
+if [ -z "$MINIO_ROOT_USER" ]; then
+  export MINIO_ROOT_USER=dev_user
+fi
+if [ -z "$MINIO_ROOT_PASSWORD" ]; then
+  export MINIO_ROOT_PASSWORD=dev_password
+fi
 
 # Start MinIO
 echo "Starting MinIO..."
@@ -50,17 +55,17 @@ nginx -t && nginx &
 sleep 3
 
 # Print debugging information
-echo "Checking NGINX configuration:"
-nginx -t
+# echo "Checking NGINX configuration:"
+# nginx -t
 
-echo "Network interfaces:"
-ip addr
+# echo "Network interfaces:"
+# ip addr
 
 echo "Listening ports:"
 netstat -tulpn || echo "netstat not available"
 
-echo "Running processes:"
-ps aux | grep -E 'nginx|python|postgres'
+# echo "Running processes:"
+# ps aux | grep -E 'nginx|python|postgres'
 
 echo "NGINX error log:"
 cat /var/log/nginx/error.log || echo "No NGINX error log found"

@@ -1,19 +1,14 @@
 FROM alpine:3.19
 
-# Set environment variables
+# Set only non-sensitive environment variables
 ENV PYTHONUNBUFFERED=1 \
     API_PORT=7000 \
-    PYTHONPATH=/app \
-    POSTGRES_USER=lenny_user \
-    POSTGRES_PASSWORD=Lennytest123 \
-    POSTGRES_DB=lenny_db \
-    MINIO_ROOT_USER=admin \
-    MINIO_ROOT_PASSWORD=minioadmin
+    PYTHONPATH=/app
 
 EXPOSE 7000 7002 5432 9000 9001
 
 # Group package installations to reduce layers and speed up build
-RUN apk add --no-cache \
+RUN apk  add --no-cache \
     python3 \
     py3-pip \
     nginx \
