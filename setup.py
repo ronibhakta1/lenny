@@ -47,7 +47,7 @@ setup(
         "Topic :: Internet :: WWW/HTTP",
     ],
     author='ArchiveLabs',
-    author_email='michael.karpeles@gmail.com',
+    author_email='info@archive.org',
     packages=['lenny'],
     platforms='any',
     license='LICENSE',
