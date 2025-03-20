@@ -8,8 +8,8 @@ Lenny is a free, open source Lending System for Libraries.
 
 * [`docker`](https://www.docker.com/) for deployment and containerization
 * [`nginx`](https://nginx.org/) handles patron requests (reverse proxy to app)
-* [`f`](https://flask.palletsprojects.com/en/stable/) (python) as the web & API microframework
-* `s3-like` API for storing digital assets (Amazon, Internet Archive, or local flat-file)
+* [`FastAPI`](https://fastapi.tiangolo.com/) (python) as the web & API microframework
+* [`Minio`](https://min.io/docs/minio/linux/developers/minio-drivers.html#python-sdk) API for storing digital assets (Amazon, Internet Archive, or local flat-file)
 * [`yaml`](https://en.wikipedia.org/wiki/YAML/) for configuring library-level rules
 * [`postgres`](https://www.postgresql.org/) for the database
 * [`SQLAlchemy`](https://www.sqlalchemy.org/) for the database python [`ORM`](https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping)
