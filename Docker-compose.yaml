@@ -1,21 +1,4 @@
 services:
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: lenny_frontend
-    ports:
-      - "8080:8080"
-    volumes:
-      - "./lenny/lenny_Front_end:/app/lenny/lenny_Front_end"
-    command: sh -c "cd '/app/lenny/lenny_Front_end' && npm install && npm run dev"
-    networks:
-      - lenny_network
-    depends_on:
-      - backend
-    environment:
-      - BACKEND_URL=http://backend:7000
-
   backend:
     build:
       context: .
