@@ -8,8 +8,8 @@ Lenny is a free, open source Lending System for Libraries.
 
 * [`docker`](https://www.docker.com/) for deployment and containerization
 * [`nginx`](https://nginx.org/) handles patron requests (reverse proxy to app)
-* [`flask`](https://flask.palletsprojects.com/en/stable/) (python) as the web & API microframework
-* `s3-like` API for storing digital assets (Amazon, Internet Archive, or local flat-file)
+* [`FastAPI`](https://fastapi.tiangolo.com/) (python) as the web & API microframework
+* [`Minio`](https://min.io/docs/minio/linux/developers/minio-drivers.html#python-sdk) API for storing digital assets (Amazon, Internet Archive, or local flat-file)
 * [`yaml`](https://en.wikipedia.org/wiki/YAML/) for configuring library-level rules
 * [`postgres`](https://www.postgresql.org/) for the database
 * [`SQLAlchemy`](https://www.sqlalchemy.org/) for the database python [`ORM`](https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping)
@@ -25,6 +25,18 @@ Lenny is a free, open source Lending System for Libraries.
 * `/v{1}/opds`
 * `/v{1}/stats`
 
+## Installation
+
+First, copy the file `lenny_TEMPLATE.env` to `lenny.env` (gitignored) and edit it to have the correct values (such as desired psql credentials).
+
+Second, run docker compose:
+
+```
+docker compose -p lenny up -d --build
+```
+
+Finally, navigate to localhost:8080 or whatever `$LENNY_PORT` you specified in your `lenny.env`
+
 ## Pilot
 
 We're seeking partnerships with libraries who would like to try lending digital resources to their patrons. 
@@ -32,4 +44,3 @@ We're seeking partnerships with libraries who would like to try lending digital 
 ## Open Topics
 
 * Authentication - How does your library perform authentication currently?
-
