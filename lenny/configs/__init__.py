@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""
+    Configurations for Lenny
+
+    :copyright: (c) 2015 by AUTHORS
+    :license: see LICENSE for more details
+"""
+
 import os
 from dotenv import load_dotenv
 
