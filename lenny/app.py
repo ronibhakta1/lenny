@@ -11,3 +11,4 @@ app.include_router(api.router, prefix="/v1/api")
 
 if __name__ == "__main__":
     uvicorn.run("lenny.app:app", **OPTIONS)
+    print("hello")
