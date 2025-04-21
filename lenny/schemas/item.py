@@ -33,3 +33,52 @@ class Item(BaseModel):
                 "current_waitlist_size": 0,
             }
         }
+
+
+class ItemUpdate(BaseModel):
+    title: Optional[str] = None
+    item_status: Optional[str] = None
+    language: Optional[str] = None
+    is_readable: Optional[bool] = None
+    is_lendable: Optional[bool] = None
+    is_waitlistable: Optional[bool] = None
+    is_printdisabled: Optional[bool] = None
+    is_login_required: Optional[bool] = None
+    num_lendable_total: Optional[int] = None
+    current_num_lendable: Optional[int] = None
+    current_waitlist_size: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "title": "Updated Test Book Title",
+                "current_num_lendable": 4,
+            }
+        }
+
+class ItemDelete(BaseModel):
+    identifier: str
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "identifier": "book1"
+            }
+        }
+
+class ItemDeleteResponse(BaseModel):
+    identifier: str
+    title: str
+    status: str
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "identifier": "book1",
+                "title": "Test Book",
+                "status": "deleted"
+            }
+        }

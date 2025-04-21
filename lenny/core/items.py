@@ -154,7 +154,8 @@ def delete_item(session: Session, identifier: str) -> bool:
     session.commit()
     return True
 
-def update_item_access(session: Session, identifier: str, open_access: bool) -> bool:
+def update_item_access(session: Session, identifier: str) -> bool:
+    """Synchronizes the item's presence in the protected S3 bucket based on its item_status."""
     # Ensure buckets exist before update operation
     initialize_minio_buckets()
     
@@ -170,39 +171,56 @@ def update_item_access(session: Session, identifier: str, open_access: bool) -> 
         return False
 
     # Extract the object name from the s3 paths
+    if not item.s3_public_path:
+        # Cannot proceed if there's no public path
+        print(f"Warning: Item {identifier} has no s3_public_path. Cannot update access.")
+        return False
     object_name = item.s3_public_path.split("/")[-1]
+    protected_bucket = S3_CONFIG["protected_bucket"]
 
-    if open_access:
-        if item.s3_protected_path:
+    is_borrowable = item.item_status.lower() == "borrowable"
+    is_in_protected = item.s3_protected_path is not None
+
+    try:
+        if is_borrowable and not is_in_protected:
+            # Copy from public to protected
+            print(f"Item {identifier} is borrowable, copying to protected bucket.")
+            response = minio_client.get_object(S3_CONFIG["public_bucket"], object_name)
+            stats = minio_client.stat_object(S3_CONFIG["public_bucket"], object_name)
+            file_size = stats.size if stats else 0
+            
+            minio_client.put_object(
+                protected_bucket,
+                object_name,
+                response,
+                length=file_size,
+            )
+            item.s3_protected_path = f"s3://{protected_bucket}/{object_name}"
+            session.commit()
+            response.close()
+            response.release_conn()
+            print(f"Item {identifier} copied to protected bucket.")
+
+        elif not is_borrowable and is_in_protected:
+            # Remove from protected
+            print(f"Item {identifier} is not borrowable, removing from protected bucket.")
             protected_object_name = item.s3_protected_path.split("/")[-1]
-            try:
-                minio_client.remove_object(S3_CONFIG["protected_bucket"], protected_object_name)
-                item.s3_protected_path = None
-                session.commit()
-            except minio_error.S3Error as e:
-                raise Exception(f"MinIO protected delete error: {str(e)}")
-    else:
-        if not item.s3_protected_path:
-            protected_bucket = S3_CONFIG["protected_bucket"]
-            try:
-                response = minio_client.get_object(S3_CONFIG["public_bucket"], object_name)
-                file_size = 0
-                
-                # Get file stats to get actual size
-                stats = minio_client.stat_object(S3_CONFIG["public_bucket"], object_name)
-                if stats:
-                    file_size = stats.size
-                
-                minio_client.put_object(
-                    protected_bucket,
-                    object_name,
-                    response,
-                    length=file_size,
-                )
-                item.s3_protected_path = f"s3://{protected_bucket}/{object_name}"
-                session.commit()
-                response.close()
-                response.release_conn()
-            except minio_error.S3Error as e:
-                raise Exception(f"MinIO protected copy error: {str(e)}")
+            minio_client.remove_object(protected_bucket, protected_object_name)
+            item.s3_protected_path = None
+            session.commit()
+            print(f"Item {identifier} removed from protected bucket.")
+        else:
+            # No change needed
+            print(f"Item {identifier} access status already consistent. Borrowable: {is_borrowable}, In Protected: {is_in_protected}")
+            pass 
+
+    except minio_error.S3Error as e:
+        session.rollback() # Rollback DB changes on S3 error
+        print(f"MinIO error during access update for {identifier}: {str(e)}")
+        raise Exception(f"MinIO error during access update: {str(e)}")
+    except Exception as e:
+        session.rollback()
+        print(f"General error during access update for {identifier}: {str(e)}")
+        raise # Re-raise other exceptions
+
     return True

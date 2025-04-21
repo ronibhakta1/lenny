@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, Request, Body, Header
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 from lenny.models import get_db
 from lenny.models.items import Item
 from lenny.core.admin import verify_librarian
-from lenny.core.items import upload_item, delete_item
+from lenny.core.items import upload_item, delete_item, update_item_access
+from lenny.schemas.item import Item as ItemSchema, ItemDeleteResponse, ItemUpdate as ItemUpdateSchema
 import os
 import shutil
 
@@ -30,7 +31,7 @@ async def root():
     """
     return HTMLResponse(content=html_content, media_type="text/html")
 
-@router.post("/items", status_code=status.HTTP_201_CREATED)
+@router.post("/items", status_code=status.HTTP_201_CREATED, response_model=ItemSchema)
 async def create_item(
     identifier: str = Form(...),
     title: str = Form(...),
@@ -97,7 +98,64 @@ async def create_item(
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-@router.delete("/items/{identifier}")
+@router.get("/items/{identifier}", response_model=ItemSchema)
+def get_item_endpoint(identifier: str, db: Session = Depends(get_session)):
+    item = db.query(Item).filter(Item.identifier == identifier).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+    return item
+
+@router.patch("/items/{identifier}", response_model=ItemSchema)
+def update_item_endpoint(
+    identifier: str,
+    item_update_data: ItemUpdateSchema = Body(...),
+    s3_access_key: str = Header(...),
+    s3_secret_key: str = Header(...),
+    db: Session = Depends(get_session),
+):
+    if not verify_librarian(s3_access_key, s3_secret_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid S3 credentials")
+
+    item = db.query(Item).filter(Item.identifier == identifier).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+
+    # Get update data from the Pydantic model, excluding unset fields
+    update_data = item_update_data.model_dump(exclude_unset=True)
+
+    if not update_data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
+
+    item_status_changed = 'item_status' in update_data and update_data['item_status'] != item.item_status
+
+    updated = False
+    for key, value in update_data.items():
+        if hasattr(item, key):
+            setattr(item, key, value)
+            updated = True
+
+    if updated:
+        try:
+            db.commit()
+            db.refresh(item)
+            # If item_status was part of the update, synchronize S3 access
+            if item_status_changed:
+                try:
+                    update_item_access(session=db, identifier=identifier)
+                    # Note: update_item_access now commits its own changes if successful
+                except Exception as s3_error:
+                    # Log the S3 error, but the primary item update is already committed.
+                    # Decide if this should be a critical failure or just a warning.
+                    print(f"Warning: Failed to update S3 access for item {identifier} after status change: {s3_error}")
+                    # Optionally raise an HTTPException here if S3 sync failure is critical
+                    # raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Item updated but failed to sync S3 access: {s3_error}")
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {str(e)}")
+
+    return item
+
+@router.delete("/items/{identifier}", response_model=ItemDeleteResponse)
 def delete_item_endpoint(
     identifier: str,
     s3_access_key: str = Form(...),
