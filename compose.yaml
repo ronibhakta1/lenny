@@ -15,6 +15,7 @@ services:
     - LENNY_PORT=1337  # When in docker, run Lenny as 1337, reverse proxies from nginx
     volumes:
       - ./lenny/migrations:/app/lenny/migrations  # Optional: Mount migrations directory
+      - ./Preloaded_books:/app/Preloaded_books # Mount preloaded books
     networks:
       - lenny_network
 

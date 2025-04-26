@@ -5,7 +5,7 @@ from . import Base
 class Item(Base):
     __tablename__ = 'items'
 
-    identifier = Column(String(50), primary_key=True)
+    identifier = Column(String(100), primary_key=True)
     title = Column(String(255), nullable=False)
     item_status = Column(String(20), nullable=False)
     language = Column(String(10), nullable=False)

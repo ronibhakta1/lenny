@@ -24,7 +24,8 @@ for _, module_name, _ in pkgutil.iter_modules(lenny.models.__path__):
     try:
         importlib.import_module(f"lenny.models.{module_name}")
     except ImportError as e:
-        print(f"Warning: Failed to import {module_name}: {e}")
+        # print(f"Warning: Failed to import {module_name}: {e}")
+        pass  # Or log the warning
 
 # Configure DB_URI from environment variables (override if needed)
 db_user = os.getenv("POSTGRES_USER")

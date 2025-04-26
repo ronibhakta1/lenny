@@ -62,5 +62,10 @@ fi
 
 echo "Applying migrations..."
 alembic -c /app/alembic.ini upgrade head || { echo "Migration upgrade failed"; exit 1; }
+
+# Preloading is now handled by the FastAPI startup event in app.py
+# echo "Preloading books..."
+# python -c 'from lenny.models import get_db; from lenny.core.items import preload_books; preload_books(get_db)'
+
 echo "Starting FastAPI and NGINX..."
 python -m uvicorn lenny.app:app --host 0.0.0.0 --port 1337 --workers="${LENNY_WORKERS:-1}" --log-level="${LENNY_LOG_LEVEL:-info}" & exec nginx
