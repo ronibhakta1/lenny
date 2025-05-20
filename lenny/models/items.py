@@ -1,5 +1,5 @@
 #!/usr/bin/env python 
-from sqlalchemy  import Column, String, Boolean, Integer, DateTime
+from sqlalchemy  import Column, String, Boolean, Integer, BigInteger, DateTime
 from sqlalchemy.sql import func
 from . import Base
 
