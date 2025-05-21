@@ -45,5 +45,8 @@ for bucket_name in ["bookshelf-public", "bookshelf-encrypted"]:
             ]
         }
         s3.set_bucket_policy(bucket_name, json.dumps(policy))
+        
+# Ensure all SQLAlchemy tables are created at startup
+Base.metadata.create_all(bind=engine)
 
 __all__ = ["Base", "db", "s3", "engine"]
