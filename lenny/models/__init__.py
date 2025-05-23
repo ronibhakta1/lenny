@@ -7,6 +7,7 @@
     :license: see LICENSE for more details
 """
 import json
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
@@ -30,22 +31,28 @@ s3 = Minio(
 
 # Instantiate s3 buckets
 for bucket_name in ["bookshelf-public", "bookshelf-encrypted"]:
-    if not s3.bucket_exists(bucket_name):
-        s3.make_bucket(bucket_name)
-        # Setting public read-only policy
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["*"]},
-                    "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"]
-                }
-            ]
-        }
-        s3.set_bucket_policy(bucket_name, json.dumps(policy))
-        
+    try:
+        if not s3.bucket_exists(bucket_name):
+            s3.make_bucket(bucket_name)
+            # Setting public read-only policy
+            policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": ["*"]},
+                        "Action": ["s3:GetObject"],
+                        "Resource": [f"arn:aws:s3:::{bucket_name}/*"]
+                    }
+                ]
+            }
+            s3.set_bucket_policy(bucket_name, json.dumps(policy))
+            print(f"Bucket '{bucket_name}' created and policy set.")
+        else:
+            print(f"Bucket '{bucket_name}' already exists.")
+    except Exception as e:
+        logging.exception(f"Error creating bucket '{bucket_name}': {e}")
+
 # Ensure all SQLAlchemy tables are created at startup
 Base.metadata.create_all(bind=engine)
 

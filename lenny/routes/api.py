@@ -32,5 +32,6 @@ async def root():
 
 @router.post('/upload', status_code=status.HTTP_200_OK)
 async def upload():
+    
     return {"message": "Upload endpoint"}
 
