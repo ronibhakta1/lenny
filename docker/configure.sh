@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ENV_FILE="lenny.env"
+ENV_FILE=".env"
 
 # Exit if the file already exists
 if [ -f "$ENV_FILE" ]; then

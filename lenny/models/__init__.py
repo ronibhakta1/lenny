@@ -21,39 +21,7 @@ Base = declarative_base()
 engine = create_engine(DB_URI, echo=DEBUG, client_encoding='utf8')
 db = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
 
-# Configure S3 Connection
-s3 = Minio(
-    endpoint=S3_CONFIG["endpoint"],
-    access_key=S3_CONFIG["access_key"],
-    secret_key=S3_CONFIG["secret_key"],
-    secure=S3_CONFIG["secure"],
-)
-
-# Instantiate s3 buckets
-for bucket_name in ["bookshelf-public", "bookshelf-encrypted"]:
-    try:
-        if not s3.bucket_exists(bucket_name):
-            s3.make_bucket(bucket_name)
-            # Setting public read-only policy
-            policy = {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Principal": {"AWS": ["*"]},
-                        "Action": ["s3:GetObject"],
-                        "Resource": [f"arn:aws:s3:::{bucket_name}/*"]
-                    }
-                ]
-            }
-            s3.set_bucket_policy(bucket_name, json.dumps(policy))
-            print(f"Bucket '{bucket_name}' created and policy set.")
-        else:
-            print(f"Bucket '{bucket_name}' already exists.")
-    except Exception as e:
-        logging.exception(f"Error creating bucket '{bucket_name}': {e}")
-
 # Ensure all SQLAlchemy tables are created at startup
 Base.metadata.create_all(bind=engine)
 
-__all__ = ["Base", "db", "s3", "engine"]
+__all__ = ["Base", "db", "engine"]
