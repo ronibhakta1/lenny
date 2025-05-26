@@ -14,6 +14,9 @@ from lenny.configs import DB_URI, DEBUG
 
 Base = declarative_base()
 
+# Import all models here to ensure they are registered with Base
+from . import items
+
 # Configure Database Connection
 engine = create_engine(DB_URI, echo=DEBUG, client_encoding='utf8')
 db = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
@@ -21,4 +24,4 @@ db = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False)
 # Ensure all SQLAlchemy tables are created at startup
 Base.metadata.create_all(bind=engine)
 
-__all__ = ["Base", "db", "engine"]
+__all__ = ["Base", "db", "engine", "items"]

@@ -8,13 +8,17 @@
     :license: see LICENSE for more details
 """
 
-from fastapi import APIRouter, status, UploadFile, File
+from fastapi import APIRouter, status, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from fastapi import HTTPException
-from lenny.schemas.item import ItemCreate
-from lenny.core.itemsUpload import schedule_file_for_upload # Added import
-
+from pathlib import Path
+from lenny.core.itemsUpload import upload_items
+from lenny.models import db
+from lenny.models.items import Item
 router = APIRouter()
+
+
+MAX_FILE_SIZE = 50 * 1024 * 1024
 
 @router.get('/', status_code=status.HTTP_200_OK)
 async def root():
@@ -33,54 +37,58 @@ async def root():
     """
     return HTMLResponse(content=html_content, media_type="text/html")
 
-@router.post('/upload', status_code=status.HTTP_200_OK )
-async def create_items(items: ItemCreate ,files: list[UploadFile] = File(...)):
+@router.post('/upload', status_code=status.HTTP_200_OK)
+async def create_items(
+    openlibrary_edition: int = Form(..., gt=0, description="OpenLibrary Edition ID (must be a positive integer)"),
+    encrypted: bool = Form(False, description="Set to true if the file is encrypted"),
+    file: UploadFile = File(..., description="The PDF or EPUB file to upload (max 50MB)")
+    ):
     allowed_extensions = {".pdf", ".epub"}
     allowed_mime_types = {"application/pdf", "application/epub+zip"}
-    
-    processed_files_count = 0
-    for file_to_upload in files:
-        # Validate file extension
-        file_extension = ""
-        if file_to_upload.filename:
-            parts = file_to_upload.filename.split(".")
-            if len(parts) > 1:
-                file_extension = "." + parts[-1].lower()
 
-        if file_extension not in allowed_extensions:
-            # Optionally, collect errors and report them all at once, 
-            # or raise immediately / skip this file
-            print(f"Skipping file {file_to_upload.filename}: Invalid extension {file_extension}")
-            continue # Skip this file
+    if file.size is not None and file.size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File '{file.filename}' is too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB."
+        )
 
-        # Validate MIME type
-        if file_to_upload.content_type not in allowed_mime_types:
-            print(f"Skipping file {file_to_upload.filename}: Invalid MIME type {file_to_upload.content_type}")
-            continue # Skip this file
-        
-        # If validations pass, schedule the file for upload
-        # Assuming schedule_file_for_upload will handle the 'items' metadata (title, openlibrary_edition)
-        # and the file itself.
-        try:
-            await schedule_file_for_upload(
-                item_data=items, 
-                file=file_to_upload,
-                filename=file_to_upload.filename, 
-                content_type=file_to_upload.content_type
+    existing_item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
+    if existing_item:
+        db.close()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"An item with OpenLibrary Edition ID '{openlibrary_edition}' already exists."
+        )
+
+    if not file.filename:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A file with no name was uploaded.")
+
+    file_extension = Path(file.filename).suffix.lower()
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File '{file.filename}' has an invalid extension. Only PDF and EPUB files are allowed."
+        )
+
+    if file.content_type not in allowed_mime_types:
+        if not (file_extension == ".epub" and file.content_type == "application/octet-stream"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File '{file.filename}' has an invalid MIME type. Only PDF (application/pdf) and EPUB (application/epub+zip) files are allowed."
             )
-            processed_files_count += 1
-        except Exception as e:
-            # Log the error and continue with other files, or raise HTTPException
-            print(f"Failed to schedule file {file_to_upload.filename} for upload: {e}")
-            # Depending on desired behavior, you might want to raise an HTTPException here
-            # or collect errors to return to the client.
-            # For now, just printing and continuing.
 
-    if processed_files_count == 0 and len(files) > 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid files were processed. Only PDF and EPUB files are allowed.")
-    
-    if processed_files_count < len(files):
-        return HTMLResponse(status_code=status.HTTP_207_MULTI_STATUS, content=f"{processed_files_count} of {len(files)} files accepted for upload. Some files were skipped due to validation errors.")
-
-    return HTMLResponse(status_code=status.HTTP_200_OK, content=f"All {processed_files_count} files accepted and scheduled for upload successfully.")
-
+    try:
+        upload_items(
+            openlibrary_edition=openlibrary_edition,
+            encrypted=encrypted,
+            files=[file]
+        )
+        return HTMLResponse(status_code=status.HTTP_200_OK, content="File uploaded successfully.")
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred during upload: {str(e)}")
+    finally:
+        db.close()

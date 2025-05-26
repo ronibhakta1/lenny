@@ -10,10 +10,9 @@
 from pydantic import BaseModel
 from typing import Optional
 
-class ItemCreate(BaseModel):
+class Item(BaseModel):
     
     openlibrary_edition: int
-    title : str
     encrypted: Optional[bool] = False
     
     class Config:
@@ -21,7 +20,6 @@ class ItemCreate(BaseModel):
         json_schema_extra = {
             "example": {
                 "openlibrary_edition": 1234567890,
-                "title" : "The Great Gatsby",
                 "encrypted": False
             
             }

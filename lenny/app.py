@@ -14,7 +14,7 @@ app = FastAPI(
 
 app.include_router(api.router, prefix="/v1/api")
 
-app.mount("/static", StaticFiles(directory="Lenny/static"), name="static")
+app.mount("/static", StaticFiles(directory="lenny/static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
