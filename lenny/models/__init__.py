@@ -6,14 +6,11 @@
     :copyright: (c) 2015 by AUTHORS
     :license: see LICENSE for more details
 """
-import json
-import logging
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
-from minio import Minio
-
-from lenny.configs import DB_URI, S3_CONFIG, DEBUG
+from lenny.configs import DB_URI, DEBUG
 
 Base = declarative_base()
 
