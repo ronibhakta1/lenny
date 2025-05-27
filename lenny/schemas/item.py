@@ -15,7 +15,6 @@ class ItemCreate(BaseModel):
     id: Optional[int] = None
     openlibrary_edition: int
     encrypted: bool = False
-    s3_filepath: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     
