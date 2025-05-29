@@ -22,5 +22,23 @@ s3 = session.client(
     endpoint_url=f"http://{S3_CONFIG['endpoint']}",
     use_ssl=S3_CONFIG['secure']
 )
+
+# Define bucket names
+BUCKET_NAMES = ["bookshelf-public", "bookshelf-encrypted"]
+
+# Create buckets if they don't exist
+for bucket_name in BUCKET_NAMES:
+    try:
+        # Check if the bucket already exists
+        s3.head_bucket(Bucket=bucket_name)
+        print(f"Bucket '{bucket_name}' already exists.")
+    except Exception as e:
+        # If head_bucket throws an exception (e.g., NoSuchBucket), the bucket doesn't exist
+        try:
+            s3.create_bucket(Bucket=bucket_name)
+            print(f"Bucket '{bucket_name}' created successfully.")
+        except Exception as create_error:
+            print(f"Error creating bucket '{bucket_name}': {create_error}")
+
 __all__ = ['s3']
 
