@@ -25,7 +25,7 @@ def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFi
         if not file_upload.filename:
             continue 
 
-        file_extension = Path(file_upload.filename).suffix
+        file_extension = Path(file_upload.filename).suffix.lower()
         s3_object_name = f"{openlibrary_edition}{file_extension}"
         
         try:
