@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ENV_FILE="lenny.env"
+ENV_FILE=".env"
 
 # Exit if the file already exists
 if [ -f "$ENV_FILE" ]; then
@@ -26,6 +26,7 @@ DB_NAME="${DB_NAME:-lenny}"
 
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-$(openssl rand -base64 30 | tr -dc 'A-Za-z0-9' | head -c 20)}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-$(openssl rand -base64 60 | tr -dc 'A-Za-z0-9' | head -c 40)}"
+S3_ENDPOINT="${S3_ENDPOINT:-s3:9000}"
 MINIO_SECURE="${MINIO_SECURE:-false}"
 
 # Write to lenny.env
@@ -46,9 +47,13 @@ DB_HOST=$DB_HOST
 DB_PORT=$DB_PORT
 DB_PASSWORD=$DB_PASSWORD
 DB_NAME=$DB_NAME
+POSTGRES_USER=$DB_USER
+POSTGRES_PASSWORD=$DB_PASSWORD
+POSTGRES_DB=$DB_NAME
 
 # MinIO (S3)
 MINIO_ROOT_USER=$MINIO_ROOT_USER
 MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD
+S3_ENDPOINT=$S3_ENDPOINT
 MINIO_SECURE=$MINIO_SECURE
 EOF

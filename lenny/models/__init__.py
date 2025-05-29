@@ -10,40 +10,18 @@ import json
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
-from minio import Minio
-
-from lenny.configs import DB_URI, S3_CONFIG, DEBUG
+from lenny.configs import DB_URI, DEBUG
 
 Base = declarative_base()
+
+# Import all models here to ensure they are registered with Base
+from . import items
 
 # Configure Database Connection
 engine = create_engine(DB_URI, echo=DEBUG, client_encoding='utf8')
 db = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
 
-# Configure S3 Connection
-s3 = Minio(
-    endpoint=S3_CONFIG["endpoint"],
-    access_key=S3_CONFIG["access_key"],
-    secret_key=S3_CONFIG["secret_key"],
-    secure=S3_CONFIG["secure"],
-)
+# Ensure all SQLAlchemy tables are created at startup
+Base.metadata.create_all(bind=engine)
 
-# Instantiate s3 buckets
-for bucket_name in ["bookshelf-public", "bookshelf-encrypted"]:
-    if not s3.bucket_exists(bucket_name):
-        s3.make_bucket(bucket_name)
-        # Setting public read-only policy
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["*"]},
-                    "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"]
-                }
-            ]
-        }
-        s3.set_bucket_policy(bucket_name, json.dumps(policy))
-
-__all__ = ["Base", "db", "s3", "engine"]
+__all__ = ["Base", "db", "engine", "items"]

@@ -10,13 +10,10 @@
 from pydantic import BaseModel
 from typing import Optional
 
-class ItemCreate(BaseModel):
+class Item(BaseModel):
     
-    id: Optional[int] = None
     openlibrary_edition: int
-    encrypted: bool = False
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    encrypted: Optional[bool] = False
     
     class Config:
         from_attributes = True

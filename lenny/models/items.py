@@ -1,4 +1,13 @@
 #!/usr/bin/env python 
+
+"""
+    Item Model for Lenny,
+    including the definition of the Item table and its attributes.
+    
+    :copyright: (c) 2015 by AUTHORS
+    :license: see LICENSE for more details
+"""
+
 from sqlalchemy  import Column, String, Boolean, Integer, BigInteger, DateTime
 from sqlalchemy.sql import func
 from . import Base
