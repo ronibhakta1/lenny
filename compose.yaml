@@ -14,7 +14,7 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      - LENNY_PORT=1337  # When in docker, run Lenny as 1337, reverse proxies from nginx
+      - LENNY_PORT=1337 
       - S3_ENDPOINT=s3:9000
       - DB_HOST=db
     volumes:
@@ -54,29 +54,6 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
-    networks:
-      - lenny_network
-
-  createbuckets:
-    image: minio/mc:latest
-    env_file: .env  
-    container_name: lenny_createbuckets
-    depends_on:
-      s3:
-        condition: service_healthy
-    environment:
-      - MINIO_ROOT_USER
-      - MINIO_ROOT_PASSWORD
-    entrypoint: >
-      /bin/sh -c "
-      for i in $(seq 1 10); do
-        mc alias set myminio http://s3:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD && break || sleep 3;
-      done;
-      mc mb myminio/bookshelf-public 2>/dev/null || true;
-      mc anonymous set download myminio/bookshelf-public 2>/dev/null || true;
-      mc mb myminio/bookshelf-encrypted 2>/dev/null || true;
-      mc anonymous set download myminio/bookshelf-encrypted 2>/dev/null || true;
-      exit 0;"
     networks:
       - lenny_network
 

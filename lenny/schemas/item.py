@@ -21,7 +21,6 @@ class Item(BaseModel):
             "example": {
                 "openlibrary_edition": 1234567890,
                 "encrypted": False
-            
             }
         }
         

@@ -17,7 +17,6 @@ from lenny.models import db
 from lenny.models.items import Item
 router = APIRouter()
 
-
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
 @router.get('/', status_code=status.HTTP_200_OK)

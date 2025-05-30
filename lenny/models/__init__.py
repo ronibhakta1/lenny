@@ -6,7 +6,7 @@
     :copyright: (c) 2015 by AUTHORS
     :license: see LICENSE for more details
 """
-
+import json
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base 
 from lenny.configs import DB_URI, DEBUG
