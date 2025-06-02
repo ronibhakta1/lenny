@@ -1,4 +1,3 @@
-\
 import requests
 import tempfile
 import re
@@ -7,7 +6,7 @@ import time
 
 OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json?q=id_standard_ebooks:*&fields=key,title,id_standard_ebooks,editions&limit=103"
 STANDARDEBOOKS_BASE_URL = "https://standardebooks.org/ebooks"
-UPLOAD_API_URL = "http://localhost:8080/v1/api/upload"
+UPLOAD_API_URL = "http://localhost:{LENNY_PORT}/v1/api/upload"
 
 def extract_edition_number(ol_key_str):
     if not ol_key_str:
