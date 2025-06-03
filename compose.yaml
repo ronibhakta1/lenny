@@ -57,6 +57,20 @@ services:
     networks:
       - lenny_network
 
+  readium:
+    image: ghcr.io/readium/readium:0.1.0
+    container_name: lenny_readium
+    ports:
+      - "15080:15080"
+    volumes:
+      - readium_bookshelf:/srv/publications
+    depends_on:
+      - s3
+      - api
+    env_file: .env
+    networks:
+      - lenny_network
+
 networks:
   lenny_network:
     driver: bridge
@@ -64,3 +78,4 @@ networks:
 volumes:
   db_data:
   bookshelf_data:
+  readium_bookshelf:

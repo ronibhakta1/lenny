@@ -1,93 +1,75 @@
 #!/usr/bin/env python
 
 """
-    API routes for Lenny,
-    including the root endpoint and upload endpoint.
-
+    Items Upload Module for Lenny,
+    including the upload functionality for items to the database and MinIO storage.
+    
     :copyright: (c) 2015 by AUTHORS
     :license: see LICENSE for more details
 """
-
-from fastapi import APIRouter, status, UploadFile, File, Form
-from fastapi.responses import HTMLResponse
-from fastapi import HTTPException
+import os
 from pathlib import Path
-from lenny.core.itemsUpload import upload_items
+from fastapi import UploadFile, HTTPException, status
+from sqlalchemy.orm import Session
+from botocore.exceptions import ClientError 
+
 from lenny.models import db
-from lenny.models.items import Item
-router = APIRouter()
+from lenny.models.items import Item, FormatEnum 
+from lenny.core import s3 
 
-MAX_FILE_SIZE = 50 * 1024 * 1024
+def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFile], db_session: Session = db):
 
-@router.get('/', status_code=status.HTTP_200_OK)
-async def root():
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Lenny API</title>
-    </head>
-    <body>
-        <h1 style="text-align: center;">Lenny: A Free, Open Source Lending System for Libraries</h1>
-        <img src="/static/lenny.png" alt="Lenny Logo" style="display: block; margin: 0 auto;">
-        <p style="text-align: center;">You can download & deploy it from <a href="https://github.com/ArchiveLabs/lenny">Github</a> </p>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content, media_type="text/html")
+    bucket_name = "bookshelf-encrypted" if encrypted else "bookshelf-public"
 
-@router.post('/upload', status_code=status.HTTP_200_OK)
-async def create_items(
-    openlibrary_edition: int = Form(..., gt=0, description="OpenLibrary Edition ID (must be a positive integer)"),
-    encrypted: bool = Form(False, description="Set to true if the file is encrypted"),
-    file: UploadFile = File(..., description="The PDF or EPUB file to upload (max 50MB)")
-    ):
-    allowed_extensions = {".pdf", ".epub"}
-    allowed_mime_types = {"application/pdf", "application/epub+zip"}
+    for file_upload in files:
+        if not file_upload.filename:
+            continue 
 
-    if file.size is not None and file.size > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File '{file.filename}' is too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB."
-        )
-
-    existing_item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
-    if existing_item:
-        db.close()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"An item with OpenLibrary Edition ID '{openlibrary_edition}' already exists."
-        )
-
-    if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A file with no name was uploaded.")
-
-    file_extension = Path(file.filename).suffix.lower()
-    if file_extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File '{file.filename}' has an invalid extension. Only PDF and EPUB files are allowed."
-        )
-
-    if file.content_type not in allowed_mime_types:
-        if not (file_extension == ".epub" and file.content_type == "application/octet-stream"):
+        file_extension = Path(file_upload.filename).suffix.lower()
+        
+        item_format: FormatEnum
+        if file_extension == ".pdf":
+            item_format = FormatEnum.PDF
+        elif file_extension == ".epub":
+            item_format = FormatEnum.EPUB
+        else:
+            
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File '{file.filename}' has an invalid MIME type. Only PDF (application/pdf) and EPUB (application/epub+zip) files are allowed."
+                detail=f"Unsupported file format: '{file_extension}' for file '{file_upload.filename}'. Only '.pdf' and '.epub' are supported."
             )
 
+        s3_object_name = f"{openlibrary_edition}{file_extension}"
+        
+        try:
+            file_upload.file.seek(0)
+            extra_args = {'ContentType': file_upload.content_type}
+            
+            s3.upload_fileobj(
+                file_upload.file, 
+                bucket_name,
+                s3_object_name,
+                ExtraArgs=extra_args
+            )
+            s3_filepath = f"{bucket_name}/{s3_object_name}"
+
+            new_item = Item(
+                openlibrary_edition=openlibrary_edition,
+                encrypted=encrypted,
+                s3_filepath=s3_filepath,
+                formats=item_format 
+            )
+            db_session.add(new_item)
+        
+        except ClientError as e: 
+            db_session.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload '{file_upload.filename}' to S3: {e.response.get('Error', {}).get('Message', str(e))}.")
+        except Exception as e: 
+            db_session.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An error occurred with file \'{file_upload.filename}\': {str(e)}.")
+
     try:
-        upload_items(
-            openlibrary_edition=openlibrary_edition,
-            encrypted=encrypted,
-            files=[file]
-        )
-        return HTMLResponse(status_code=status.HTTP_200_OK, content="File uploaded successfully.")
-    except HTTPException as e:
-        db.rollback()
-        raise e
+        db_session.commit()
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred during upload: {str(e)}")
-    finally:
-        db.close()
+        db_session.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database commit failed: {str(e)}.")
