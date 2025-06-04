@@ -19,13 +19,16 @@ from lenny.core import s3
 
 def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFile], db_session: Session = db):
 
-    bucket_name = "bookshelf-encrypted" if encrypted else "bookshelf-public"
-
+    bucket_name = "bookshelf" 
+        
     for file_upload in files:
         if not file_upload.filename:
             continue 
         file_extension = Path(file_upload.filename).suffix.lower()
-        s3_object_name = f"{openlibrary_edition}{file_extension}"
+        if encrypted:
+            s3_object_name = f"{openlibrary_edition}_encrypted{file_extension}"
+        else:
+            s3_object_name = f"{openlibrary_edition}{file_extension}"
         
         try:
             file_upload.file.seek(0)
