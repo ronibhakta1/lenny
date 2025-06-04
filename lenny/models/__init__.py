@@ -20,10 +20,16 @@ from . import items
 engine = create_engine(DB_URI, echo=DEBUG, client_encoding='utf8')
 db = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
 
-
 def init_db(engine_to_init=engine):
     """Initializes the database and creates tables."""
     Base.metadata.create_all(bind=engine_to_init)
 
+def _auto_init_db():
+    try:
+        init_db(engine)
+    except Exception as e:
+        print(f"[WARNING] Database initialization failed: {e}")
+
+_auto_init_db()
 
 __all__ = ["Base", "db", "engine", "items", "init_db"]
