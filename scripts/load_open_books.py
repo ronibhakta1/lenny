@@ -10,7 +10,8 @@ HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0"}
 OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
 STANDARDEBOOKS_BASE_URL = "https://standardebooks.org/ebooks"
 LENNY_PORT = os.getenv("LENNY_PORT")  
-UPLOAD_API_URL = f"http://localhost:{LENNY_PORT}/v1/api/upload"
+LENNY_HOST = os.getenv("LENNY_HOST")
+UPLOAD_API_URL = f"http://{LENNY_HOST}:{LENNY_PORT}/v1/api/upload"
 
 class OpenLibrary:
     HTTP_TIMEOUT = 5
