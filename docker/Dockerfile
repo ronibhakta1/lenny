@@ -15,8 +15,6 @@ EXPOSE 8080 5432 9000 9001
 COPY ./lenny/ /app/lenny/
 RUN chmod +x /app/lenny/app.py
 
-COPY ./scripts/ /app/scripts/
-
 RUN apt-get update && apt-get install -y \
     nginx \
     libpq-dev \
@@ -25,8 +23,6 @@ RUN adduser --disabled-password --gecos "" nginx
 
 COPY ./docker/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY ./docker/nginx/conf.d/lenny.conf /etc/nginx/conf.d/lenny.conf
-COPY ./docker/entrypoint.sh /app/docker/entrypoint.sh
-RUN chmod +x /app/docker/entrypoint.sh
 
-# Run FastAPI app, Nginx, and book loader script
-CMD ["sh", "/app/docker/entrypoint.sh"]
+# Run FastAPI app and Nginx
+CMD ["sh", "-c", "python -m uvicorn lenny.app:app --host 0.0.0.0 --port 1337 --workers=${LENNY_WORKERS:-1} --log-level=${LENNY_LOG_LEVEL:-info} & exec nginx"]

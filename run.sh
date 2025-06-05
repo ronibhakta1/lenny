@@ -16,4 +16,8 @@ else
     export $(grep -v '^#' .env | xargs)
 
     docker-compose -p lenny up -d
+    
+    if [ "$LOAD_OPEN_BOOKS" = "1" ]; then
+        docker exec -it lenny_api python scripts/load_open_books.py
+    fi
 fi
