@@ -19,14 +19,14 @@ from lenny.core import s3
 
 def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFile], db_session: Session = db):
 
-    bucket_name = "bookshelf-encrypted" if encrypted else "bookshelf-public"
-
+    bucket_name = "bookshelf" 
+        
     for file_upload in files:
         if not file_upload.filename:
             continue 
+        
 
         file_extension = Path(file_upload.filename).suffix.lower()
-        
         item_format: FormatEnum
         if file_extension == ".pdf":
             item_format = FormatEnum.PDF
@@ -38,8 +38,10 @@ def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFi
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unsupported file format: '{file_extension}' for file '{file_upload.filename}'. Only '.pdf' and '.epub' are supported."
             )
-
-        s3_object_name = f"{openlibrary_edition}{file_extension}"
+        if encrypted:
+            s3_object_name = f"{openlibrary_edition}_encrypted{file_extension}"
+        else:
+            s3_object_name = f"{openlibrary_edition}{file_extension}"
         
         try:
             file_upload.file.seek(0)
