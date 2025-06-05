@@ -4,6 +4,8 @@ python -m uvicorn lenny.app:app --host 0.0.0.0 --port 1337 --workers=${LENNY_WOR
 
 nginx &
 
-python scripts/load_open_books.py
+if [ "$LOAD_OPEN_BOOKS" = "1" ]; then
+    python scripts/load_open_books.py
+fi
 
 wait
