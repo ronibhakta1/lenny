@@ -52,8 +52,8 @@ DB_URI = (
 # MinIO configuration
 S3_CONFIG = {
     'endpoint': os.environ.get('S3_ENDPOINT'),
-    'access_key': os.environ.get('MINIO_ROOT_USER'),
-    'secret_key': os.environ.get('MINIO_ROOT_PASSWORD'),
+    'access_key': os.environ.get('S3_ACCESS_KEY'),
+    'secret_key': os.environ.get('S3_SECRET_KEY'),
     'secure': os.environ.get('S3_SECURE', 'false').lower() == 'true',
 }
 
