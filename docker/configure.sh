@@ -28,8 +28,6 @@ S3_ACCESS_KEY="${MINIO_ROOT_USER:-$(openssl rand -base64 30 | tr -dc 'A-Za-z0-9'
 S3_SECRET_KEY="${MINIO_ROOT_PASSWORD:-$(openssl rand -base64 60 | tr -dc 'A-Za-z0-9' | head -c 40)}"
 S3_ENDPOINT="${S3_ENDPOINT:-s3:9000}"
 
-LOAD_OPEN_BOOKS="${LOAD_OPEN_BOOKS:-1}"
-
 
 # Write to lenny.env
 cat <<EOF > "$ENV_FILE"
@@ -57,7 +55,5 @@ S3_SECRET_KEY=KzobScJ9ov6O6VYZ5FpNTs9gBsfEi8NZx9TNyMgg
 S3_ENDPOINT=$S3_ENDPOINT
 S3_PROVIDER=minio
 S3_SECURE=false
-
-LOAD_OPEN_BOOKS=$LOAD_OPEN_BOOKS
 
 EOF
