@@ -27,8 +27,7 @@ class OpenLibrary:
     @staticmethod
     def extract_standardebooks_id(book: Dict[str, Any]) -> str:
         try:
-            sid = book['id_standard_ebooks'][0]
-            return StandardEbooks.verify_url(sid)
+            return book['id_standard_ebooks'][0]
         except KeyError as e:
             return None
 
@@ -62,7 +61,7 @@ class OpenLibrary:
         page = 1
         while True:
             docs, page = OpenLibrary.search(query, fields=fields, page=page, limit=100)
-            if not page_docs:
+            if not docs:
                 break
             yield from docs
 
@@ -70,6 +69,8 @@ class StandardEbooks:
     BASE_URL = "https://standardebooks.org/ebooks"
     HTTP_TIMEOUT = 5
 
+    EPUB_HEADER = b'PK\x03\x04'
+    
     @classmethod
     def construct_download_url(cls, identifier: str) -> str:
         identifier_path = identifier
@@ -77,8 +78,8 @@ class StandardEbooks:
         return f"{cls.BASE_URL}/{identifier_path}/downloads/{identifier_file}.epub?source=download"
 
     @classmethod
-    def verify_download(content):
-        if content.getbuffer().nbytes and content.read(4).startswith(b'PK\x03\x04'):
+    def verify_download(cls, content):
+        if content and content.getbuffer().nbytes and content.read(4).startswith(cls.EPUB_HEADER):
             content.seek(0)
             return content
         return None
@@ -103,15 +104,6 @@ class StandardEbooks:
         except requests.exceptions.RequestException as e:
             print(f"Error downloading {url}: {e}")
             return None
-
-    @classmethod
-    def verify_url(cls, identifier: str) -> bool:
-        url = cls.construct_download_url(identifier)
-        try:
-            response = requests.head(url, headers=HTTP_HEADERS, timeout=cls.HTTP_TIMEOUT, allow_redirects=True)
-            return response.status_code == 200
-        except requests.exceptions.RequestException:
-            return False
 
 class Lenny:
 
@@ -146,9 +138,9 @@ def import_standardebooks():
         olid = OpenLibrary.extract_olid(doc)
         sid = OpenLibrary.extract_standardebooks_id(doc)
         if olid and sid:
-            file_content = StandardEbooks.download(sid)
-            if StandardEbooks.verify_download(file_content):
-                Lenny.upload(olid, file_content, encrypted=False)
+            epub = StandardEbooks.download(sid)
+            if StandardEbooks.verify_download(epub):
+                Lenny.upload(olid, epub, encrypted=False)
 
 if __name__ == "__main__":
     requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
