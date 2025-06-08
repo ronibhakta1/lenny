@@ -117,6 +117,7 @@ class Lenny:
             'file': ('book.epub', file_content, 'application/epub+zip')
         }
         try:
+            print(UPLOAD_API_URL)
             response = requests.post(
                 UPLOAD_API_URL,
                 data=data_payload,

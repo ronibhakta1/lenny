@@ -63,7 +63,7 @@ services:
       - lenny_network
 
   readium:
-    image: ghcr.io/readium/readium:0.2.0
+    image: ghcr.io/readium/readium:0.2.1
     container_name: lenny_readium
     ports:
       - "15080:15080"
@@ -80,7 +80,10 @@ services:
       serve /srv/publications
       --s3-access-key ${S3_ACCESS_KEY}
       --s3-secret-key ${S3_SECRET_KEY}
-      --s3-endpoint http://s3:9000
+      --s3-endpoint ${S3_ENDPOINT}
+      --s3-use-path-style
+      --address 0.0.0.0
+      --debug
       --address 0.0.0.0
     networks:
       - lenny_network
