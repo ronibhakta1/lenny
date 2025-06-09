@@ -33,7 +33,9 @@ cd lenny
 ./run.sh
 ```
 
-Navigate to localhost:8080 or whatever `$LENNY_PORT` you specified in your `lenny.env`
+This process will run `docker/configure.sh` and generate a gitignored `.env` file with reasonable default values, if not present.
+
+Navigate to localhost:8080 or whatever `$LENNY_PORT` is specified in your `.env`
 
 You may enter the API container via:
 
@@ -44,7 +46,7 @@ docker exec -it lenny_api bash
 ## Importing Test Books
 
 ```
-# Run the importer: you can Ctrl+c after a few books are loaded
+# Run the importer: you can Ctrl+c after a few books are loaded (will load ~800)
 docker exec -it lenny_api python scripts/load_open_books.py 
 ```
 
