@@ -18,26 +18,26 @@ from lenny.models.items import Item
 from lenny.core import s3 
 
 def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFile], db_session: Session = db):
-
-    if encrypted:
-        bucket_name = "bookshelf-encrypted"
-    else:
-        bucket_name = "bookshelf-public"
+    bucket_name = "bookshelf" 
         
     for file_upload in files:
         if not file_upload.filename:
             continue 
         file_extension = Path(file_upload.filename).suffix.lower()
-
-        # Set formats enum value based on file extension
+        item_format: FormatEnum
         if file_extension == ".pdf":
             formats_value = "PDF"
         elif file_extension == ".epub":
             formats_value = "EPUB"
         else:
-            formats_value = "EPUB_PDF"  # fallback for test coverage
-
-        s3_object_name = f"{openlibrary_edition}{file_extension}"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file format: '{file_extension}' for file '{file_upload.filename}'. Only '.pdf' and '.epub' are supported."
+            )
+        if encrypted:
+            s3_object_name = f"{openlibrary_edition}_encrypted{file_extension}"
+        else:
+            s3_object_name = f"{openlibrary_edition}{file_extension}"
         
         try:
             file_upload.file.seek(0)

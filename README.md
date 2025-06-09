@@ -28,16 +28,36 @@ Lenny is a free, open source Lending System for Libraries.
 ## Installation
 
 ```
-docker/configure.sh  # generates lenny.env
-docker compose -p lenny up -d --build
+git clone git@github.com:ArchiveLabs/lenny.git
+cd lenny
+./run.sh
 ```
 
-Navigate to localhost:8080 or whatever `$LENNY_PORT` you specified in your `lenny.env`
+This process will run `docker/configure.sh` and generate a gitignored `.env` file with reasonable default values, if not present.
+
+Navigate to localhost:8080 or whatever `$LENNY_PORT` is specified in your `.env`
 
 You may enter the API container via:
 
 ```
 docker exec -it lenny_api bash
+```
+
+## Importing Test Books
+
+```
+# Run the importer: you can Ctrl+c after a few books are loaded (will load ~800)
+docker exec -it lenny_api python scripts/load_open_books.py 
+```
+
+## Testing Readium Server
+
+```
+# Load a manifest URL
+BOOK=$(echo -n "s3://bookshelf/32941311.epub" |  base64 | tr '/+' '_-' | tr -d '=')
+# Should be http://localhost:15080/czM6Ly9ib29rc2hlbGYvMzI5NDEzMTEuZXB1Yg/manifest.json
+echo "http://localhost:15080/$BOOK/manifest.json"
+curl "http://localhost:15080/$BOOK/manifest.json"
 ```
 
 ## Rebuilding
