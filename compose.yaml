@@ -3,10 +3,10 @@ services:
   api:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/api/Dockerfile
     container_name: lenny_api
     ports:
-      - "8080:80"  
+      - "8080:80"
     depends_on:
       db:
         condition: service_healthy
@@ -59,6 +59,16 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    networks:
+      - lenny_network
+
+  reader:
+    build:
+      context: .
+      dockerfile: docker/reader/Dockerfile
+    container_name: lenny_reader
+    ports:
+      - "3000:3000"
     networks:
       - lenny_network
 
