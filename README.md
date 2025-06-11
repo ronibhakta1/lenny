@@ -27,6 +27,16 @@
 
 ## Installation
 
+To install and run Lenny as a production application:
+
+```
+curl -fsSL https://raw.githubusercontent.com/ArchiveLabs/lenny/refs/heads/main/install.sh | sudo sh
+```
+
+## Development Setup
+
+If you have `git` and `docker` installed on your system, the following commands will set up Lenny:
+
 ```
 git clone git@github.com:ArchiveLabs/lenny.git
 cd lenny
@@ -43,14 +53,14 @@ You may enter the API container via:
 docker exec -it lenny_api bash
 ```
 
-## Importing Test Books
+### Importing Test Books
 
 ```
 # Run the importer: you can Ctrl+c after a few books are loaded (will load ~800)
 docker exec -it lenny_api python scripts/load_open_books.py 
 ```
 
-## Testing Readium Server
+### Testing Readium Server
 
 ```
 # Load a manifest URL
@@ -60,7 +70,7 @@ echo "http://localhost:15080/$BOOK/manifest.json"
 curl "http://localhost:15080/$BOOK/manifest.json"
 ```
 
-## Rebuilding
+### Rebuilding
 
 ```
 docker compose -p lenny down
