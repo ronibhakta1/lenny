@@ -8,6 +8,11 @@ if [ -f "$ENV_FILE" ]; then
   exit 0
 fi
 
+genpass() {
+    len=${1:-32}
+    dd if=/dev/urandom bs=1 count=$((len * 2)) 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | head -c "$len"
+}
+
 # Use environment variables if they are set, otherwise provide defaults or generate secure values
 LENNY_DOMAIN="${LENNY_DOMAIN:-localhost}"
 LENNY_HOST="${LENNY_HOST:-0.0.0.0}"
@@ -21,13 +26,13 @@ LENNY_SSL_KEY="${LENNY_SSL_KEY:-}"
 DB_USER="${POSTGRES_USER:-librarian}"
 DB_HOST="${POSTGRES_HOST:-127.0.0.1}"
 DB_PORT="${POSTGRES_PORT:-5432}"
-DB_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 32)}"
+
+DB_PASSWORD="${POSTGRES_PASSWORD:-$(genpass 32)}"
 DB_NAME="${DB_NAME:-lenny}"
 
-S3_ACCESS_KEY="${MINIO_ROOT_USER:-$(openssl rand -base64 30 | tr -dc 'A-Za-z0-9' | head -c 20)}"
-S3_SECRET_KEY="${MINIO_ROOT_PASSWORD:-$(openssl rand -base64 60 | tr -dc 'A-Za-z0-9' | head -c 40)}"
+S3_ACCESS_KEY="${MINIO_ROOT_USER:-$(genpass 20)}
+S3_SECRET_KEY="${MINIO_ROOT_PASSWORD:-$(genpass 40)}"
 S3_ENDPOINT="${S3_ENDPOINT:-s3:9000}"
-
 
 # Write to lenny.env
 cat <<EOF > "$ENV_FILE"
@@ -50,8 +55,8 @@ DB_NAME=$DB_NAME
 DB_TYPE=postgres
 
 # S3 Credentials
-S3_ACCESS_KEY=O0YwWzR6bGej3dheTdhc
-S3_SECRET_KEY=KzobScJ9ov6O6VYZ5FpNTs9gBsfEi8NZx9TNyMgg
+S3_ACCESS_KEY=$S3_ACCESS_KEY
+S3_SECRET_KEY=$S3_SECRET_KEY
 S3_ENDPOINT=$S3_ENDPOINT
 S3_PROVIDER=minio
 S3_SECURE=false
