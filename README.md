@@ -1,6 +1,6 @@
 # Lenny
 
-Lenny is a free, open source Lending System for Libraries.
+[Lenny](https://lennyforlibraries.org/) is a free, open source, Library-in-a-Box for libraries to preserve and lend digital books.
 
 <img width="175" src="https://github.com/user-attachments/assets/b7d70bf8-d795-419c-97b1-5cf4f9bad3f9">
 
