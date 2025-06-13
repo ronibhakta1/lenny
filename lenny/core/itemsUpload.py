@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError 
 
 from lenny.models import db
-from lenny.models.items import Item  
+from lenny.models.items import FormatEnum, Item  
 from lenny.core import s3 
 
 def upload_items(openlibrary_edition: int, encrypted: bool, files: list[UploadFile], db_session: Session = db):
