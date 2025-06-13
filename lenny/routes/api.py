@@ -43,7 +43,7 @@ async def home(request: Request):
 @router.get("/items")
 async def get_items(request: Request):
     from lenny.core import s3
-    return list(s3.get_bookshelf_keys())
+    return list(s3.get_keys())
     
 @router.get("/items/{book_id}/manifest.json")
 async def get_manifest(request: Request, book_id: str, format: str=".epub"):
