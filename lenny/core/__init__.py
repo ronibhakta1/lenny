@@ -11,48 +11,50 @@
 import boto3
 from lenny.configs import S3_CONFIG
 
+class LennyS3:
 
-# Initialize S3 client for MinIO
-session = boto3.session.Session()
+    BOOKSHELF_BUCKET = "bookshelf"
+    
+    def __init__(self):
+        # Initialize S3 client for MinIO
+        self.s3 = boto3.session.Session().client(
+            service_name='s3',
+            aws_access_key_id=S3_CONFIG['access_key'],
+            aws_secret_access_key=S3_CONFIG['secret_key'],
+            endpoint_url=f"http://{S3_CONFIG['endpoint']}",
+            use_ssl=S3_CONFIG['secure']
+        )
+        self._initialize()
 
-s3 = session.client(
-    service_name='s3',
-    aws_access_key_id=S3_CONFIG['access_key'],
-    aws_secret_access_key=S3_CONFIG['secret_key'],
-    endpoint_url=f"http://{S3_CONFIG['endpoint']}",
-    use_ssl=S3_CONFIG['secure']
-)
+    def __getattr__(self, name):
+        # Delegate any unknown attribute or method to the boto3 s3 client
+        return getattr(self.s3, name)
 
-# Define bucket names
-BUCKET_NAMES = ["bookshelf"]
-
-# Create buckets if they don't exist
-for bucket_name in BUCKET_NAMES:
-    try:
-        # Check if the bucket already exists
-        s3.head_bucket(Bucket=bucket_name)
-        print(f"Bucket '{bucket_name}' already exists.")
-    except Exception as e:
-        # If head_bucket throws an exception (e.g., NoSuchBucket), the bucket doesn't exist
+    def _initialize(self):
         try:
-            s3.create_bucket(Bucket=bucket_name)
-            print(f"Bucket '{bucket_name}' created successfully.")
-        except Exception as create_error:
-            print(f"Error creating bucket '{bucket_name}': {create_error}")
+            self.s3.head_bucket(Bucket=self.BOOKSHELF_BUCKET)
+            print(f"Bucket '{self.BOOKSHELF_BUCKET}' already exists.")
+        except Exception as e:
+            try:
+                self.s3.create_bucket(Bucket=self.BOOKSHELF_BUCKET)
+                print(f"Bucket '{self.BOOKSHELF_BUCKET}' created successfully.")
+            except Exception as create_error:
+                print(f"Error creating bucket '{self.BOOKSHELF_BUCKET}': {create_error}")
 
-def get_bookshelf_keys(prefix=''):
-    """
-    Lists all object keys (filenames) in a specified S3 bucket,
-    optionally filtered by a prefix. Handles pagination automatically.
-    """
-    paginator = s3.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket='bookshelf', Prefix=prefix)
-    for page in pages:
-        if 'Contents' in page:
-            for obj in page['Contents']:
-                yield obj['Key']
+    def get_keys(self, bucket=None, prefix=''):
+        """
+        Lists all object keys (filenames) in a specified S3 bucket,
+        optionally filtered by a prefix. Handles pagination automatically.
+        """
+        bucket=bucket or self.BOOKSHELF_BUCKET
+        paginator = self.s3.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
 
-s3.get_bookshelf_keys = get_bookshelf_keys
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    yield obj['Key']
+
+s3 = LennyS3()
                 
 __all__ = ['s3']
-
