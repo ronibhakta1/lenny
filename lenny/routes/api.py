@@ -8,8 +8,9 @@
     :license: see LICENSE for more details
 """
 
+from pathlib import Path
 import requests
-from typing import Optional
+from typing import Optional, Generator
 from fastapi import (
     APIRouter,
     Request,
@@ -19,61 +20,46 @@ from fastapi import (
     HTTPException,
     status
 )
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    RedirectResponse,
+    Response
+)
 from lenny.core.itemsUpload import upload_items
-from lenny.core.utils import encode_book_path
-from lenny.core.openlibrary import OpenLibrary
+from lenny.core.api import LennyAPI
 from lenny.models import db
 from lenny.models.items import Item
-from lenny.configs import PORT
 
 router = APIRouter()
 
-MAX_FILE_SIZE = 50 * 1024 * 1024
-
-def get_lenny_uri(request: Request, port=True):
-    host = f"{request.url.scheme}://{request.url.hostname}"
-    if port and PORT and PORT not in {80, 443}:
-        host += f":{PORT}"
-    return host
-
 @router.get('/', status_code=status.HTTP_200_OK)
 async def home(request: Request):
-    return request.app.templates.TemplateResponse("index.html", {"request": request})
+    kwargs = {"request": request}
+    return request.app.templates.TemplateResponse("index.html", kwargs)
 
 @router.get("/items")
-async def get_items(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
-    items = db.query(Item).offset(offset).limit(limit).all()
-    imap = dict((i.openlibrary_edition, i) for i in items)
-    olids = [f"OL{i}M" for i in imap.keys()]
-    q = f"edition_key:({' OR '.join(olids)})"
-    return dict((
-        # keyed by olid as int
-        int(book.olid),
-        # openlibrary book with item added as `lenny`
-        book + {"lenny": imap[int(book.olid)]}
-    ) for book in OpenLibrary.search(query=q))
+async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limit: Optional[int]=None):
+    fields = fields.split(",") if fields else None
+    return LennyAPI.get_enriched_items(
+        fields=fields, offset=offset, limit=limit
+    )
+
+@router.get("/opds")
+async def get_opds(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
+    return LennyAPI.opds_feed(offset=offset, limit=limit)
     
 @router.get("/items/{book_id}/manifest.json")
-async def get_manifest(request: Request, book_id: str, format: str=".epub"):
+async def get_manifest(book_id: str, format: str=".epub"):
     # TODO: permission/auth checks go here, or decorate this route
-    def rewrite_self(manifest, manifest_uri):
-        for i in range(len(manifest['links'])):
-            if manifest['links'][i].get('rel') == 'self':
-                manifest['links'][i]['href'] = manifest_uri
-        return manifest
-
-    readium_uri = f"http://lenny_readium:15080/{encode_book_path(book_id, format=format)}/manifest.json"
-    manifest = requests.get(readium_uri).json()
-    manifest_uri = f"{get_lenny_uri(request)}/v1/api/item/{book_id}/manifest.json"
-    return rewrite_self(manifest, manifest_uri)
+    readium_url = LennyAPI.make_readium_url(book_id, format, "manifest.json")
+    manifest = requests.get(readium_url).json()
+    return LennyAPI.patch_readium_manifest(manifest, book_id)
 
 # Proxy all other readium requests
-@router.get("/items/{book_id}/{readium_uri:path}")
-async def proxy_readium(request: Request, book_id: str, readium_uri: str, format: str=".epub"):
+@router.get("/items/{book_id}/{readium_path:path}")
+async def proxy_readium(request: Request, book_id: str, readium_path: str, format: str=".epub"):
     # TODO: permission/auth checks go here, or decorate this route
-    readium_url = f"http://lenny_readium:15080/{encode_book_path(book_id, format=format)}/{readium_uri}"
-    print(readium_url)
+    readium_url = LennyAPI.make_readium_url(book_id, format, readium_path)
     r = requests.get(readium_url, params=dict(request.query_params))
     if readium_url.endswith('.json'):
         return r.json()
@@ -82,9 +68,9 @@ async def proxy_readium(request: Request, book_id: str, readium_uri: str, format
 
 # Redirect to the Thorium Web Reader
 @router.get("/read/{book_id}")
-async def redirect_reader(request: Request, book_id: str, format: str = "epub"):
-    manifest_uri = f"{get_lenny_uri(request)}/v1/api/items/{book_id}/manifest.json"
-    reader_url = f"{get_lenny_uri(request, port=False)}:3000/read?book={manifest_uri}"
+async def redirect_reader(book_id: str, format: str = "epub"):
+    manifest_uri = LennyAPI.make_manifest_url(book_id)
+    reader_url = LennyAPI.make_reader_url(manifest_uri)
     return RedirectResponse(url=reader_url, status_code=307)
 
 @router.post('/upload', status_code=status.HTTP_200_OK)
@@ -96,10 +82,10 @@ async def create_items(
     allowed_extensions = {".pdf", ".epub"}
     allowed_mime_types = {"application/pdf", "application/epub+zip"}
 
-    if file.size is not None and file.size > MAX_FILE_SIZE:
+    if file.size is not None and file.size > LennyAPI.MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File '{file.filename}' is too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB."
+            detail=f"File '{file.filename}' is too large. Maximum size is {LennyAPI.MAX_FILE_SIZE // (1024 * 1024)}MB."
         )
 
     existing_item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
