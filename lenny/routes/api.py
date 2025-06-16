@@ -10,6 +10,7 @@
 
 import requests
 from typing import Optional
+from pathlib import Path
 from fastapi import (
     APIRouter,
     Request,
