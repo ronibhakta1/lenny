@@ -1,7 +1,9 @@
-
 import requests
 from io import BytesIO
 from lenny.configs import LENNY_HTTP_HEADERS    
+import logging
+
+logger = logging.getLogger(__name__)
 
 class LennyClient:
 
@@ -26,9 +28,9 @@ class LennyClient:
                 timeout=timeout,
                 verify=False
             )
-            print(response.content)
+            logger.info(f"Upload response (OLID: {olid}): {response.content}")
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
-            print(f"Error uploading to Lenny (OLID: {olid}): {e}")
+            logger.error(f"Error uploading to Lenny (OLID: {olid}): {e}")
             return False

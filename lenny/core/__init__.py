@@ -7,6 +7,9 @@
     :license: see LICENSE for more details
 """
 
+import logging
+logger = logging.getLogger(__name__)
+
 import boto3
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base 
@@ -37,7 +40,7 @@ class LennyDB:
         try:
             self.Base.metadata.create_all(bind=self.engine)
         except Exception as e:
-            print(f"[WARNING] Database initialization failed: {e}")
+            logger.warning(f"[WARNING] Database initialization failed: {e}")
 
 class LennyS3:
 
@@ -61,13 +64,13 @@ class LennyS3:
     def _initialize(self):
         try:
             self.s3.head_bucket(Bucket=self.BOOKSHELF_BUCKET)
-            print(f"Bucket '{self.BOOKSHELF_BUCKET}' already exists.")
+            logger.info(f"Bucket '{self.BOOKSHELF_BUCKET}' already exists.")
         except Exception as e:
             try:
                 self.s3.create_bucket(Bucket=self.BOOKSHELF_BUCKET)
-                print(f"Bucket '{self.BOOKSHELF_BUCKET}' created successfully.")
+                logger.info(f"Bucket '{self.BOOKSHELF_BUCKET}' created successfully.")
             except Exception as create_error:
-                print(f"Error creating bucket '{self.BOOKSHELF_BUCKET}': {create_error}")
+                logger.error(f"Error creating bucket '{self.BOOKSHELF_BUCKET}': {create_error}")
 
     def get_keys(self, bucket=None, prefix=''):
         """
