@@ -1,4 +1,3 @@
-
 import requests
 from pathlib import Path
 from fastapi import UploadFile
@@ -24,6 +23,7 @@ from lenny.configs import (
     SCHEME, HOST, PORT,
     READER_PORT,
 )
+import io
 
 
 class LennyAPI:
@@ -143,12 +143,19 @@ class LennyAPI:
         if not fp.size or fp.size > cls.MAX_FILE_SIZE:
             raise FileTooLargeError(
                 f"{fp.filename} exceeds {cls.MAX_FILE_SIZE // (1024 * 1024)}MB."
-            )            
+            )
+        try:
+            # Read file content into memory to avoid closed file issues
+            fp.file.seek(0)
+            file_bytes = fp.file.read()
+            file_obj = io.BytesIO(file_bytes)
+            file_obj.seek(0)
+        except Exception as e:
+            raise S3UploadError(f"Failed to prepare file '{fp.filename}' for upload: {e}")
 
-        fp.file.seek(0)
         try:
             return s3.upload_fileobj(
-                fp.file,
+                file_obj,
                 s3.BOOKSHELF_BUCKET,
                 filename,
                 ExtraArgs={'ContentType': fp.content_type}
@@ -157,6 +164,10 @@ class LennyAPI:
             raise S3UploadError(
                 f"Failed to upload '{fp.filename}' to S3: "
                 f"{e.response.get('Error', {}).get('Message', str(e))}."
+            )
+        except ValueError as e:
+            raise S3UploadError(
+                f"File '{fp.filename}' is closed or unreadable: {e}"
             )
     
     @classmethod
@@ -170,8 +181,6 @@ class LennyAPI:
 
             if ext in cls.VALID_EXTS:
                 formats += cls.VALID_EXTS[ext].value
-
-                # Upload the unencrypted file to s3
                 cls.upload_file(fp, f"{filename}{ext}")
                 if encrypt:
                     cls.upload_file(cls.encrypt_file(fp), f"{filename}_encrypted{ext}")

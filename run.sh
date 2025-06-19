@@ -43,6 +43,13 @@ MODE=
 LOG=
 REBUILD=false
 PRELOAD=""
+PUBLIC=false
+OS=""
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    OS="mac"
+elif [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$(uname -s)" == "Linux" ]]; then
+    OS="linux"
+fi
 
 # Parse cli args
 while [[ $# -gt 0 ]]; do
@@ -69,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       LOG=true
       shift
       ;;
+    --public)
+      PUBLIC=true
+      shift
+      ;;
     *)
       echo "Unknown argument: $1"
       shift
@@ -86,6 +97,41 @@ if [[ "$MODE" == "dev" ]]; then
     pip install --index-url --index-url "${PIP_INDEX_URL:-https://pypi.org/simple}" --no-cache-dir -r requirements.txt
     source ./env/bin/activate
     uvicorn lenny.app:app --reload
+    # Expose public URL if --public is set
+    if [[ "$PUBLIC" == "true" ]]; then
+        if ! command -v ngrok &> /dev/null; then
+            echo "[+] Installing ngrok..."
+            if [[ "$OS" == "mac" ]]; then
+                brew install --cask ngrok
+            elif [[ "$OS" == "linux" ]]; then
+                NGROK_ZIP="ngrok-stable-linux-amd64.zip"
+                curl -L -o "$NGROK_ZIP" https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
+                unzip -o "$NGROK_ZIP"
+                sudo mv ngrok /usr/local/bin/
+                rm "$NGROK_ZIP"
+            else
+                echo "[!] Please install ngrok manually from https://ngrok.com/download"
+                exit 1
+            fi
+        fi
+        PORT="${LENNY_PORT:-8080}"
+        echo "[+] Exposing local service on port $PORT via ngrok..."
+        ngrok http "$PORT" --log=stdout > ngrok.log 2>&1 &
+        NGROK_PID=$!
+        # Wait for ngrok to start and fetch the public URL
+        for i in {1..10}; do
+            sleep 1
+            URL=$(curl -s http://localhost:4040/api/tunnels | grep -Eo '"public_url":"https:[^"]+' | head -n1 | cut -d '"' -f4)
+            if [[ -n "$URL" ]]; then
+                echo "[+] Your public URL is: $URL"
+                break
+            fi
+        done
+        if [[ -z "$URL" ]]; then
+            echo "[!] Failed to get ngrok public URL. Check ngrok.log for details."
+        fi
+        wait $NGROK_PID
+    fi
 else
     echo "Running in production mode..."
     export $(grep -v '^#' .env | xargs)
@@ -110,8 +156,50 @@ else
             fi
 
             echo "[+] Preloading ${PRELOAD:-ALL}/~800 book(s) from StandardEbooks (~$EST_MIN minutes)..."
-        docker exec -it lenny_api python scripts/preload.py $LIMIT
+            docker exec -it lenny_api python scripts/preload.py $LIMIT
         fi
+    fi
+
+    if [[ "$PUBLIC" == "true" ]]; then
+        if ! command -v cloudflared &> /dev/null; then
+            echo "[+] Installing cloudflared..."
+            if [[ "$OS" == "mac" ]]; then
+                brew install cloudflared
+            elif [[ "$OS" == "linux" ]]; then
+                curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+                chmod +x cloudflared
+                sudo mv cloudflared /usr/local/bin/
+            else
+                echo "[!] Please install cloudflared manually from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
+                exit 1
+            fi
+        fi
+        PORT="${LENNY_PORT:-8080}"
+        echo "[+] Exposing local service on port $PORT via cloudflared..."
+        cloudflared tunnel --url http://localhost:"$PORT" --no-autoupdate > cloudflared.log 2>&1 &
+        CF_PID=$!
+        for i in {1..30}; do
+            sleep 1
+            # Try to extract any https://*.trycloudflare.com or https://*.cfargotunnel.com URL
+            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1)
+            if [[ -n "$URL" ]]; then
+                echo "[+] Your public URL is: $URL/v1/api/"
+                break
+            fi
+        done
+        if [[ -z "$URL" ]]; then
+            echo "[!] Failed to get cloudflared public URL. Full cloudflared.log follows:"
+            cat cloudflared.log
+        fi
+        if [[ "$LOG" == "true" ]]; then
+            docker compose logs -f &
+            LOG_PID=$!
+            # Wait for either process to exit (cloudflared or logs)
+            wait $CF_PID $LOG_PID
+        else
+            wait $CF_PID
+        fi
+        exit 0
     fi
 
     if [[ "$LOG" == "true" ]]; then
