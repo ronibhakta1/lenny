@@ -97,41 +97,6 @@ if [[ "$MODE" == "dev" ]]; then
     pip install --index-url --index-url "${PIP_INDEX_URL:-https://pypi.org/simple}" --no-cache-dir -r requirements.txt
     source ./env/bin/activate
     uvicorn lenny.app:app --reload
-    # Expose public URL if --public is set
-    if [[ "$PUBLIC" == "true" ]]; then
-        if ! command -v ngrok &> /dev/null; then
-            echo "[+] Installing ngrok..."
-            if [[ "$OS" == "mac" ]]; then
-                brew install --cask ngrok
-            elif [[ "$OS" == "linux" ]]; then
-                NGROK_ZIP="ngrok-stable-linux-amd64.zip"
-                curl -L -o "$NGROK_ZIP" https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
-                unzip -o "$NGROK_ZIP"
-                sudo mv ngrok /usr/local/bin/
-                rm "$NGROK_ZIP"
-            else
-                echo "[!] Please install ngrok manually from https://ngrok.com/download"
-                exit 1
-            fi
-        fi
-        PORT="${LENNY_PORT:-8080}"
-        echo "[+] Exposing local service on port $PORT via ngrok..."
-        ngrok http "$PORT" --log=stdout > ngrok.log 2>&1 &
-        NGROK_PID=$!
-        # Wait for ngrok to start and fetch the public URL
-        for i in {1..10}; do
-            sleep 1
-            URL=$(curl -s http://localhost:4040/api/tunnels | grep -Eo '"public_url":"https:[^"]+' | head -n1 | cut -d '"' -f4)
-            if [[ -n "$URL" ]]; then
-                echo "[+] Your public URL is: $URL"
-                break
-            fi
-        done
-        if [[ -z "$URL" ]]; then
-            echo "[!] Failed to get ngrok public URL. Check ngrok.log for details."
-        fi
-        wait $NGROK_PID
-    fi
 else
     echo "Running in production mode..."
     export $(grep -v '^#' .env | xargs)
