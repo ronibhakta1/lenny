@@ -2,6 +2,44 @@
 
 ./docker/configure.sh
 
+MODE=
+LOG=
+REBUILD=false
+PRELOAD=""
+PUBLIC=false
+
+# Parse cli args
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rebuild)
+      REBUILD=true
+      shift
+      ;;
+    --preload)
+      # If next arg exists and is a value (not another flag)
+      if [[ -n "$2" && "$2" != --* ]]; then
+        PRELOAD="$2"
+        shift 2
+      else
+        PRELOAD=true
+        shift
+      fi
+      ;;
+    --log)
+      LOG=true
+      shift
+      ;;
+    --public)
+      PUBLIC=true
+      shift
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      shift
+      ;;
+  esac
+done
+
 # Function to wait for a Docker container to be running
 # Arguments:
 #   $1: The name of the Docker container to wait for (e.g., "lenny_api")
@@ -39,135 +77,80 @@ function wait_for_docker_container() {
     return 0 # Indicate success
 }
 
-MODE=
-LOG=
-REBUILD=false
-PRELOAD=""
-PUBLIC=false
-OS=""
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    OS="mac"
-elif [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$(uname -s)" == "Linux" ]]; then
-    OS="linux"
+function install_cloudflared() {
+    echo "[+] Installing cloudflared..."
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        brew install cloudflared
+	OS="mac"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$(uname -s)" == "Linux" ]]; then
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+        chmod +x cloudflared
+        sudo mv cloudflared /usr/local/bin/
+    else
+        echo "[!] Please install cloudflared manually from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
+        exit 1
+    fi
+}
+
+function create_tunnel() {
+    ! command -v cloudflared &> /dev/null && install_cloudflared
+    PORT="${LENNY_PORT:-8080}"
+    echo "[+] Exposing local service on port $PORT via cloudflared..."
+    cloudflared tunnel --url http://localhost:"$PORT" --no-autoupdate > cloudflared.log 2>&1 &
+    CF_PID=$!
+
+    # Trap to ensure cloudflared is killed if script exits or interrupted
+    trap 'echo "[+] Cleaning up cloudflared..."; kill $CF_PID 2>/dev/null' EXIT
+
+    for i in {1..30}; do
+        sleep 1
+        # Try to extract any https://*.trycloudflare.com or https://*.cfargotunnel.com URL
+        URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1)
+        if [[ -n "$URL" ]]; then
+            echo "[+] Your public URL is: $URL"
+	    read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
+	    export LENNY_PROXY=$URL
+            return 0
+        fi
+    done
+    if [[ -z "$URL" ]]; then
+        echo "[!] Failed to get cloudflared public URL. Full cloudflared.log follows:"
+        cat cloudflared.log
+    fi
+}
+
+echo "[+] Loading .env file"
+export $(grep -v '^#' .env | xargs)
+
+if [[ "$PUBLIC" == "true" ]]; then
+    create_tunnel    
 fi
 
-# Parse cli args
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --rebuild)
-      REBUILD=true
-      shift
-      ;;
-    --preload)
-      # If next arg exists and is a value (not another flag)
-      if [[ -n "$2" && "$2" != --* ]]; then
-        PRELOAD="$2"
-        shift 2
-      else
-        PRELOAD=true
-        shift
-      fi
-      ;;
-    --dev)
-      MODE="dev"
-      shift
-      ;;
-    --log)
-      LOG=true
-      shift
-      ;;
-    --public)
-      PUBLIC=true
-      shift
-      ;;
-    *)
-      echo "Unknown argument: $1"
-      shift
-      ;;
-  esac
-done
-
-
-if [[ "$MODE" == "dev" ]]; then
-    echo "Running in development mode..."
-    if [ ! -f ./env/bin/activate ]; then
-        virtualenv env
-    fi
-    source ./env/bin/activate
-    pip install --index-url --index-url "${PIP_INDEX_URL:-https://pypi.org/simple}" --no-cache-dir -r requirements.txt
-    source ./env/bin/activate
-    uvicorn lenny.app:app --reload
+if [[ "$REBUILD" == "true" ]]; then
+    echo "[+] Performing full rebuild..."
+    docker compose down --volumes --remove-orphans
+    docker compose build --no-cache
+    LENNY_PROXY="$LENNY_PROXY" docker compose up -d
 else
-    echo "Running in production mode..."
-    export $(grep -v '^#' .env | xargs)
+    LENNY_PROXY="$LENNY_PROXY" docker-compose -p lenny up -d
+fi
 
-    if [[ "$REBUILD" == "true" ]]; then
-        echo "Performing full rebuild..."
-        docker compose down --volumes --remove-orphans
-        docker compose build --no-cache
-        docker compose up -d
-    else
-        docker-compose -p lenny up -d
-    fi
-
-    if [[ -n "$PRELOAD" ]]; then
-        if wait_for_docker_container "lenny_api" 15 2; then
-            if [[ "$PRELOAD" =~ ^[0-9]+$ ]]; then
-                EST_MIN=$(echo "scale=2; (800 / $PRELOAD) / 60" | bc)
-                LIMIT="-n $PRELOAD"
-            else
-                EST_MIN=$(echo "scale=2; 800 / 60" | bc)
-                LIMIT=""
-            fi
-
-            echo "[+] Preloading ${PRELOAD:-ALL}/~800 book(s) from StandardEbooks (~$EST_MIN minutes)..."
-            docker exec -it lenny_api python scripts/preload.py $LIMIT
-        fi
-    fi
-
-    if [[ "$PUBLIC" == "true" ]]; then
-        if ! command -v cloudflared &> /dev/null; then
-            echo "[+] Installing cloudflared..."
-            if [[ "$OS" == "mac" ]]; then
-                brew install cloudflared
-            elif [[ "$OS" == "linux" ]]; then
-                curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-                chmod +x cloudflared
-                sudo mv cloudflared /usr/local/bin/
-            else
-                echo "[!] Please install cloudflared manually from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
-                exit 1
-            fi
-        fi
-        PORT="${LENNY_PORT:-8080}"
-        echo "[+] Exposing local service on port $PORT via cloudflared..."
-        cloudflared tunnel --url http://localhost:"$PORT" --no-autoupdate > cloudflared.log 2>&1 &
-        CF_PID=$!
-        for i in {1..30}; do
-            sleep 1
-            # Try to extract any https://*.trycloudflare.com or https://*.cfargotunnel.com URL
-            URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1)
-            if [[ -n "$URL" ]]; then
-                echo "[+] Your public URL is: $URL/v1/api/"
-                break
-            fi
-        done
-        if [[ -z "$URL" ]]; then
-            echo "[!] Failed to get cloudflared public URL. Full cloudflared.log follows:"
-            cat cloudflared.log
-        fi
-        if [[ "$LOG" == "true" ]]; then
-            docker compose logs -f &
-            LOG_PID=$!
-            # Wait for either process to exit (cloudflared or logs)
-            wait $CF_PID $LOG_PID
+if [[ -n "$PRELOAD" ]]; then
+    if wait_for_docker_container "lenny_api" 15 2; then
+        if [[ "$PRELOAD" =~ ^[0-9]+$ ]]; then
+            EST_MIN=$(echo "scale=2; (800 / $PRELOAD) / 60" | bc)
+            LIMIT="-n $PRELOAD"
         else
-            wait $CF_PID
+            EST_MIN=$(echo "scale=2; 800 / 60" | bc)
+            LIMIT=""
         fi
-        exit 0
-    fi
 
-    if [[ "$LOG" == "true" ]]; then
-        docker compose logs -f
+        echo "[+] Preloading ${PRELOAD:-ALL}/~800 book(s) from StandardEbooks (~$EST_MIN minutes)..."
+        docker exec -it lenny_api python scripts/preload.py $LIMIT
     fi
+fi
+
+if [[ "$LOG" == "true" ]]; then
+    docker compose logs -f
 fi

@@ -22,7 +22,7 @@ from lenny.core.opds import (
     OPDS_REL_ACQUISITION
 )
 from lenny.configs import (
-    SCHEME, HOST, PORT,
+    SCHEME, HOST, PORT, PROXY,
     READER_PORT
 )
 import io
@@ -42,9 +42,11 @@ class LennyAPI:
         return cls.make_url(f"/v1/api/items/{book_id}/readium/manifest.json")
 
     @classmethod
-    def make_url(cls, path, port=PORT):
+    def make_url(cls, path):
         """Constructs a public Lenny URL that points to the public HOST and PORT
-        """        
+        """
+        if PROXY:
+            return f"{PROXY}{path}"
         url = f"{SCHEME}://{HOST}"
         if port and port not in {80, 443}:
             url += f":{port}"
