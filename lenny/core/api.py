@@ -1,4 +1,3 @@
-
 import requests
 from pathlib import Path
 from fastapi import UploadFile
@@ -23,12 +22,13 @@ from lenny.core.opds import (
     OPDS_REL_ACQUISITION
 )
 from lenny.configs import (
-    SCHEME, HOST, PORT,
+    SCHEME, HOST, PORT, PROXY,
     READER_PORT
 )
 
 class LennyAPI:
 
+    DEFAULT_LIMIT = 50
     OPDS_TITLE = "Lenny Catalog"
     MAX_FILE_SIZE = 50 * 1024 * 1024
     VALID_EXTS = {
@@ -42,9 +42,11 @@ class LennyAPI:
         return cls.make_url(f"/v1/api/items/{book_id}/readium/manifest.json")
 
     @classmethod
-    def make_url(cls, path, port=PORT):
+    def make_url(cls, path):
         """Constructs a public Lenny URL that points to the public HOST and PORT
-        """        
+        """
+        if PROXY:
+            return f"{PROXY}{path}"
         url = f"{SCHEME}://{HOST}"
         if port and port not in {80, 443}:
             url += f":{port}"
@@ -57,17 +59,18 @@ class LennyAPI:
         return True
 
     @classmethod
-    def _enrich_items(cls, items, fields=None):
-        items = Item.get_many(offset=None, limit=None)
+    def _enrich_items(cls, items, fields=None, limit=None):
         imap = dict((i.openlibrary_edition, i) for i in items)
         olids = [f"OL{i}M" for i in imap.keys()]
-        q = f"edition_key:({' OR '.join(olids)})"
-        return dict((
-            # keyed by olid as int
-            int(book.olid),
-            # openlibrary book with item added as `lenny`
-            book + {"lenny": imap[int(book.olid)]}
-        ) for book in OpenLibrary.search(query=q, fields=fields))
+        if olids:
+            q = f"edition_key:({' OR '.join(olids)})"
+            return dict((
+                # keyed by olid as int
+                int(book.olid),
+                # openlibrary book with item added as `lenny`
+                book + {"lenny": imap[int(book.olid)]}
+            ) for book in OpenLibrary.search(query=q, fields=fields))
+        return {}
     
     @classmethod
     def get_enriched_items(cls, fields=None, offset=None, limit=None):
@@ -76,6 +79,7 @@ class LennyAPI:
         additional `lenny` field containing Lenny's record for this
         item in the LennyDB
         """
+        limit = limit or cls.DEFAULT_LIMIT
         return cls._enrich_items(
             Item.get_many(offset=offset, limit=limit),
             fields=fields
@@ -158,8 +162,8 @@ class LennyAPI:
             raise FileTooLargeError(
                 f"{fp.filename} exceeds {cls.MAX_FILE_SIZE // one_mb}MB."
             )
-
         fp.file.seek(0)
+
         try:
             return s3.upload_fileobj(
                 fp.file,
@@ -171,6 +175,10 @@ class LennyAPI:
             raise S3UploadError(
                 f"Failed to upload '{fp.filename}' to S3: "
                 f"{e.response.get('Error', {}).get('Message', str(e))}."
+            )
+        except ValueError as e:
+            raise S3UploadError(
+                f"File '{fp.filename}' is closed or unreadable: {e}"
             )
     
     @classmethod
@@ -184,8 +192,6 @@ class LennyAPI:
 
             if ext in cls.VALID_EXTS:
                 formats += cls.VALID_EXTS[ext].value
-
-                # Upload the unencrypted file to s3
                 cls.upload_file(fp, f"{filename}{ext}")
                 if encrypt:
                     cls.upload_file(cls.encrypt_file(fp), f"{filename}_encrypted{ext}")

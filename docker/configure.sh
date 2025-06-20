@@ -14,7 +14,6 @@ genpass() {
 }
 
 # Use environment variables if they are set, otherwise provide defaults or generate secure values
-LENNY_DOMAIN="${LENNY_DOMAIN:-localhost}"
 LENNY_HOST="${LENNY_HOST:-127.0.0.1}"
 LENNY_PORT="${LENNY_PORT:-8080}"
 LENNY_WORKERS="${LENNY_WORKERS:-1}"
@@ -40,7 +39,7 @@ S3_ENDPOINT="${S3_ENDPOINT:-s3:9000}"
 # Write to lenny.env
 cat <<EOF > "$ENV_FILE"
 # API
-LENNY_DOMAIN=$LENNY_DOMAIN
+LENNY_PROXY=
 LENNY_HOST=$LENNY_HOST
 LENNY_PORT=$LENNY_PORT
 LENNY_WORKERS=$LENNY_WORKERS

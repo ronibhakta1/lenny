@@ -61,7 +61,6 @@ async def redirect_reader(book_id: str, format: str = "epub"):
         HTTPException(status_code=400, detail="Unauthorized request")
     manifest_uri = LennyAPI.make_manifest_url(book_id)
     reader_url = LennyAPI.make_url(f"/read?book={manifest_uri}")
-    print(reader_url)
     return RedirectResponse(url=reader_url, status_code=307)
 
 @router.get("/items/{book_id}/readium/manifest.json")
@@ -118,8 +117,6 @@ async def upload(
     except FileTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except S3UploadError as e:
-        print("?")
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
-        print(e)
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
