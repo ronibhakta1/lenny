@@ -14,7 +14,7 @@ genpass() {
 }
 
 # Use environment variables if they are set, otherwise provide defaults or generate secure values
-LENNY_HOST="${LENNY_HOST:-127.0.0.1}"
+LENNY_HOST="localhost"
 LENNY_PORT="${LENNY_PORT:-8080}"
 LENNY_WORKERS="${LENNY_WORKERS:-1}"
 LENNY_LOG_LEVEL="${LENNY_LOG_LEVEL:-debug}"
