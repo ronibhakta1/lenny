@@ -108,7 +108,7 @@ function create_tunnel() {
         # Try to extract any https://*.trycloudflare.com or https://*.cfargotunnel.com URL
         URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1)
         if [[ -n "$URL" ]]; then
-            echo "[+] Your public URL is: $URL"
+            echo "[+] Your public URL is: $URL/v1/api/"
 	    read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
 	    export LENNY_PROXY=$URL
             return 0
@@ -153,4 +153,6 @@ fi
 
 if [[ "$LOG" == "true" ]]; then
     docker compose logs -f
+elif [[ "$PUBLIC" == "true" ]]; then
+    read -p "[+] Press Enter to close tunnel..."
 fi
