@@ -90,7 +90,7 @@ class LennyAPI:
         """
         Convert combined Lenny+OL items to OPDS 2.0 JSON feed.
         """
-        read_uri = cls.make_url("/v1/api/read/")
+        read_uri = cls.make_url("/v1/api/items/")
         
         feed = OPDSFeed(
             metadata={"title": cls.OPDS_TITLE},
@@ -106,7 +106,7 @@ class LennyAPI:
 
             # hardcode format for now...
             links = [Link(
-                href=f"{read_uri}{edition_id}",
+                href=f"{read_uri}{edition_id}/read",
                 type="application/epub+zip",
                 rel=OPDS_REL_ACQUISITION
             )]

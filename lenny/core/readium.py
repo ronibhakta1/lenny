@@ -41,6 +41,6 @@ class ReadiumAPI:
         for i in range(len(manifest['links'])):
             if manifest['links'][i].get('rel') == 'self':
                 manifest['links'][i]['href'] = LennyAPI.make_url(
-                    f"/v1/api/item/{book_id}/readium/manifest.json"
+                    f"/v1/api/items/{book_id}/readium/manifest.json"
                 )
         return manifest

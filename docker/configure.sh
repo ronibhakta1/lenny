@@ -34,7 +34,7 @@ DB_NAME="${DB_NAME:-lenny}"
 
 S3_ACCESS_KEY="${MINIO_ROOT_USER:-$(genpass 20)}"
 S3_SECRET_KEY="${MINIO_ROOT_PASSWORD:-$(genpass 40)}"
-S3_ENDPOINT="${S3_ENDPOINT:-s3:9000}"
+S3_ENDPOINT="${S3_ENDPOINT:-http://s3:9000}"
 
 # Write to lenny.env
 cat <<EOF > "$ENV_FILE"
