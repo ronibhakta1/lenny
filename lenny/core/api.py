@@ -25,7 +25,6 @@ from lenny.configs import (
     SCHEME, HOST, PORT, PROXY,
     READER_PORT
 )
-import io
 
 class LennyAPI:
 
@@ -163,18 +162,11 @@ class LennyAPI:
             raise FileTooLargeError(
                 f"{fp.filename} exceeds {cls.MAX_FILE_SIZE // (1024 * 1024)}MB."
             )
-        try:
-            # Read file content into memory to avoid closed file issues
-            fp.file.seek(0)
-            file_bytes = fp.file.read()
-            file_obj = io.BytesIO(file_bytes)
-            file_obj.seek(0)
-        except Exception as e:
-            raise S3UploadError(f"Failed to prepare file '{fp.filename}' for upload: {e}")
+        fp.file.seek(0)
 
         try:
             return s3.upload_fileobj(
-                file_obj,
+                fp.file,
                 s3.BOOKSHELF_BUCKET,
                 filename,
                 ExtraArgs={'ContentType': fp.content_type}

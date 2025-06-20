@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
 
-from lenny.core import db
-from lenny.core import models  # Ensure all models are registered before initializing
-
-
-_ = models.Item
-# Ensure tables are created at startup
-db._initialize()  
-
 from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
