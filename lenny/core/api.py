@@ -29,6 +29,7 @@ import io
 
 class LennyAPI:
 
+    DEFAULT_LIMIT = 50
     OPDS_TITLE = "Lenny Catalog"
     MAX_FILE_SIZE = 50 * 1024 * 1024
     VALID_EXTS = {
@@ -59,17 +60,18 @@ class LennyAPI:
         return True
 
     @classmethod
-    def _enrich_items(cls, items, fields=None):
-        items = Item.get_many(offset=None, limit=None)
+    def _enrich_items(cls, items, fields=None, limit=None):
         imap = dict((i.openlibrary_edition, i) for i in items)
         olids = [f"OL{i}M" for i in imap.keys()]
-        q = f"edition_key:({' OR '.join(olids)})"
-        return dict((
-            # keyed by olid as int
-            int(book.olid),
-            # openlibrary book with item added as `lenny`
-            book + {"lenny": imap[int(book.olid)]}
-        ) for book in OpenLibrary.search(query=q, fields=fields))
+        if olids:
+            q = f"edition_key:({' OR '.join(olids)})"
+            return dict((
+                # keyed by olid as int
+                int(book.olid),
+                # openlibrary book with item added as `lenny`
+                book + {"lenny": imap[int(book.olid)]}
+            ) for book in OpenLibrary.search(query=q, fields=fields))
+        return {}
     
     @classmethod
     def get_enriched_items(cls, fields=None, offset=None, limit=None):
@@ -78,6 +80,7 @@ class LennyAPI:
         additional `lenny` field containing Lenny's record for this
         item in the LennyDB
         """
+        limit = limit or cls.DEFAULT_LIMIT
         return cls._enrich_items(
             Item.get_many(offset=offset, limit=limit),
             fields=fields
