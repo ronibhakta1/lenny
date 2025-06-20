@@ -107,7 +107,7 @@ class LennyAPI:
             # hardcode format for now...
             links = [Link(
                 href=f"{read_uri}{edition_id}/read",
-                type="application/epub+zip",
+                type="text/html",
                 rel=OPDS_REL_ACQUISITION
             )]
             if data.cover_url:
