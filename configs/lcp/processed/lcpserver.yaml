@@ -1,10 +1,10 @@
 public_base_url: http://localhost:8081
 port: 8081
-dsn: "postgres://librarian:Bk8rkjdWMYA06tFR9pQ5K5gWf3RB1CXD@db:5432/lenny?sslmode=disable"
+dsn: ""
 
 access:
-  username: lke6EmV35KR4q5st
-  password: 2g8ObwYPNFJF7tSWvL7TpohWC8QbKxKF
+  username:
+  password: 
 
 license:
   provider: "http://lennyforlibrarians.org"
