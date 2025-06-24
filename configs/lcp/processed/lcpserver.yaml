@@ -1,0 +1,21 @@
+public_base_url: http://localhost:8081
+port: 8081
+dsn: "postgres://librarian:Bk8rkjdWMYA06tFR9pQ5K5gWf3RB1CXD@db:5432/lenny?sslmode=disable"
+
+access:
+  username: lke6EmV35KR4q5st
+  password: 2g8ObwYPNFJF7tSWvL7TpohWC8QbKxKF
+
+license:
+  provider: "http://lennyforlibrarians.org"
+  profile: "http://readium.org/lcp/basic-profile"
+  hint_link: "http://lennyforlibrarians.org/help/lcp/{license_id}"
+
+status:
+  renew_default_days: 30
+  renew_max_days: 365
+  renew_link: "http://lennyforlibrarians.org/renew/{license_id}"
+
+certificate:
+  cert: "/app/cert/cert-edrlab-test.pem"
+  private_key: "/app/cert/privkey-edrlab-test.pem"
