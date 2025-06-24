@@ -9,6 +9,7 @@ __pycache__/
 lenny.env
 configs/lcp/processed/lcpserver.yaml
 
+
 # C extensions
 *.so
 
