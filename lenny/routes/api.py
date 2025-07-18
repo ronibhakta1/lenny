@@ -138,13 +138,13 @@ async def borrow_item(book_id: int, email: str = Body(..., embed=True)):
         raise HTTPException(status_code=400, detail=str(e))
     
 @router.post('/items/checkout', status_code=status.HTTP_200_OK)
-async def checkout_items(book_ids: List[int] = Body(...), email: str = Body(..., embed=True)):
+async def checkout_items(openlibrary_editions: List[int] = Body(...), email: str = Body(..., embed=True)):
     """
-    Handles the checkout process for multiple books. Requires patron's email and a list of book_ids.
+    Handles the checkout process for multiple books. Requires patron's email and a list of openlibrary_editions.
     Calls checkout_items to process the borrow for all books.
     """
     try:
-        loans = LennyAPI.checkout_items(book_ids, email)
+        loans = LennyAPI.checkout_items(openlibrary_editions, email)
         return {
             "success": True,
             "loan_ids": [loan.id for loan in loans],
@@ -162,5 +162,28 @@ async def return_item(book_id: int, email: str = Body(..., embed=True)):
     try:
         loan = LennyAPI.return_items(book_id, email)
         return {"success": True, "loan_id": loan.id, "returned_at": str(loan.returned_at)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+@router.post('/items/borrowed', status_code=status.HTTP_200_OK)
+async def get_borrowed_items(email: str = Body(..., embed=True)):
+    """
+    Returns a list of active (not returned) borrowed items for the given patron's email.
+    Calls get_borrowed_items to fetch the list.
+    """
+    try:
+        loans = LennyAPI.get_borrowed_items(email)
+        return {
+            "success": True,
+            "loans": [
+                {
+                    "loan_id": loan.id,
+                    "openlibrary_edition": getattr(loan, "openlibrary_edition", None),
+                    "borrowed_at": str(loan.created_at),
+                }
+                for loan in loans
+            ],
+            "count": len(loans)
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

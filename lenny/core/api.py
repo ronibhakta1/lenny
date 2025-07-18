@@ -105,19 +105,14 @@ class LennyAPI:
 
             links = [
                 Link(
-                    href=f"{read_uri}{edition_id}/read",
-                    type="text/html",
-                    rel=OPDS_REL_ACQUISITION
-                ),
-                Link(
                     href=f"{read_uri}{edition_id}/borrow",
                     type="application/json",
-                    rel="borrow"
+                    rel=OPDS_REL_ACQUISITION
                 ),
                 Link(
                     href=f"{read_uri}{edition_id}/return",
                     type="application/json",
-                    rel="return"
+                    rel=OPDS_REL_ACQUISITION
                 )
             ]
             if data.cover_url:
@@ -239,27 +234,32 @@ class LennyAPI:
         return hashlib.sha256(email.strip().lower().encode('utf-8')).hexdigest()
     
     @classmethod
-    def borrow_items(cls, book_id: int, email: str):
+    def borrow_items(cls, openlibrary_edition: int, email: str):
         """
         Lending: A patron finds a book, clicks "borrow", and a Loan record is created in the LennyDB
         after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
         """
-        from lenny.core.models import Loan
-        
+        from lenny.core.models import Loan, Item
+        # Find the item by openlibrary_edition
+        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
+        if not item:
+            raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
         # Check auth before lending
-        if not cls.auth_check(book_id, email):
+        if not cls.auth_check(item.id, email):
             raise Exception("Patron is not authorized to borrow this book.")
         email_hash = cls.hash_email(email)
-        existing_loan = db.query(Loan).filter(
-            Loan.item_id == book_id,
+        # Only block if there is an active (not returned) loan
+        active_loan = db.query(Loan).filter(
+            Loan.item_id == item.id,
             Loan.patron_email_hash == email_hash,
+            Loan.returned_at == None
         ).first()
-        if existing_loan:
+        if active_loan:
             raise Exception("Book is already borrowed by this patron and not yet returned.")
         # Create a new loan record
         try:
             loan = Loan(
-                item_id=book_id,
+                item_id=item.id,
                 patron_email_hash=email_hash,
             )
             db.add(loan)
@@ -270,25 +270,30 @@ class LennyAPI:
             raise DatabaseInsertError(f"Failed to create loan record: {str(e)}.")
         
     @classmethod
-    def borrow_redirect(cls, book_id: int, email: str):
+    def borrow_redirect(cls, openlibrary_edition: int, email: str):
         """
         Borrows a book and redirects user to the reader if successful.
         """
-        loan = cls.borrow_items(book_id, email)
+        loan = cls.borrow_items(openlibrary_edition, email)
         # Construct the redirect URL
-        redirect_url = cls.make_url(f"/items/{book_id}/read")
+        # Find the item id for redirect
+        from lenny.core.models import Item
+        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
+        if not item:
+            raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
+        redirect_url = cls.make_url(f"/v1/api/items/{openlibrary_edition}/read")
         return {"success": True, "loan_id": loan.id, "redirect_url": redirect_url}
 
     @classmethod
-    def checkout_items(cls, book_ids: list, email: str):
+    def checkout_items(cls, openlibrary_editions: list, email: str):
         """
         Checks out multiple books for a patron.
         Returns a list of Loan objects. Rolls back all if any fail.
         """
         loans = []
         try:
-            for book_id in book_ids:
-                loan = cls.borrow_items(book_id, email)
+            for openlibrary_edition in openlibrary_editions:
+                loan = cls.borrow_items(openlibrary_edition, email)
                 loans.append(loan)
             return loans
         except Exception as e:
@@ -299,25 +304,37 @@ class LennyAPI:
     def get_borrowed_items(cls, email: str):
         """
         Returns a list of active (not returned) Loan objects for the given user email.
+        Ensures openlibrary_edition is set for each loan.
         """
-        from lenny.core.models import Loan
+        from lenny.core.models import Loan, Item
         email_hash = cls.hash_email(email)
         loans = db.query(Loan).filter(
             Loan.patron_email_hash == email_hash,
             Loan.returned_at == None
         ).all()
-        return loans
+        # Always enrich with openlibrary_edition and filter out loans with missing items
+        enriched_loans = []
+        for loan in loans:
+            item = db.query(Item).filter(Item.id == loan.item_id).first()
+            if item:
+                loan.openlibrary_edition = item.openlibrary_edition
+                enriched_loans.append(loan)
+        return enriched_loans
     
     @classmethod
-    def return_items(cls, book_id: int, email: str):
+    def return_items(cls, openlibrary_edition: int, email: str):
         """
         Marks a loan as returned for the patron and book.
         Returns the updated Loan object if successful. Rolls back on error.
         """
-        from lenny.core.models import Loan
+        from lenny.core.models import Loan, Item
+        # Find the item by openlibrary_edition
+        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
+        if not item:
+            raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
         email_hash = cls.hash_email(email)
         loan = db.query(Loan).filter(
-            Loan.item_id == book_id,
+            Loan.item_id == item.id,
             Loan.patron_email_hash == email_hash,
             Loan.returned_at == None
         ).first()
