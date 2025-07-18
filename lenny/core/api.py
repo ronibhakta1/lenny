@@ -57,6 +57,7 @@ class LennyAPI:
         # TODO: permission/auth checks go here
         # for userid, store/check hashed email in db?
         return True
+    
 
     @classmethod
     def _enrich_items(cls, items, fields=None, limit=None):
@@ -88,15 +89,13 @@ class LennyAPI:
     @classmethod
     def opds_feed(cls, offset=None, limit=None):
         """
-        Convert combined Lenny+OL items to OPDS 2.0 JSON feed.
+        Convert combined Lenny+OL items to OPDS 2.0 JSON feed, including borrow and return URLs.
         """
         read_uri = cls.make_url("/v1/api/items/")
-        
         feed = OPDSFeed(
             metadata={"title": cls.OPDS_TITLE},
             publications=[]
         )
-        
         items = cls.get_enriched_items(offset=offset, limit=limit)
         for edition_id, data in items.items():
             lenny = data["lenny"]
@@ -104,12 +103,23 @@ class LennyAPI:
             title = edition.get("title", "Untitled")
             authors = [Author(name=a) for a in edition.get("author_name", [])]
 
-            # hardcode format for now...
-            links = [Link(
-                href=f"{read_uri}{edition_id}/read",
-                type="text/html",
-                rel=OPDS_REL_ACQUISITION
-            )]
+            links = [
+                Link(
+                    href=f"{read_uri}{edition_id}/read",
+                    type="text/html",
+                    rel=OPDS_REL_ACQUISITION
+                ),
+                Link(
+                    href=f"{read_uri}{edition_id}/borrow",
+                    type="application/json",
+                    rel="borrow"
+                ),
+                Link(
+                    href=f"{read_uri}{edition_id}/return",
+                    type="application/json",
+                    rel="return"
+                )
+            ]
             if data.cover_url:
                 links.append(
                     Link(
@@ -222,3 +232,102 @@ class LennyAPI:
             except Exception as e:
                 db.rollback()
                 raise DatabaseInsertError(f"Failed to add item to db: {str(e)}.")
+
+    @staticmethod
+    def hash_email(email: str) -> str:
+        import hashlib
+        return hashlib.sha256(email.strip().lower().encode('utf-8')).hexdigest()
+    
+    @classmethod
+    def borrow_items(cls, book_id: int, email: str):
+        """
+        Lending: A patron finds a book, clicks "borrow", and a Loan record is created in the LennyDB
+        after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
+        """
+        from lenny.core.models import Loan
+        
+        # Check auth before lending
+        if not cls.auth_check(book_id, email):
+            raise Exception("Patron is not authorized to borrow this book.")
+        email_hash = cls.hash_email(email)
+        existing_loan = db.query(Loan).filter(
+            Loan.item_id == book_id,
+            Loan.patron_email_hash == email_hash,
+        ).first()
+        if existing_loan:
+            raise Exception("Book is already borrowed by this patron and not yet returned.")
+        # Create a new loan record
+        try:
+            loan = Loan(
+                item_id=book_id,
+                patron_email_hash=email_hash,
+            )
+            db.add(loan)
+            db.commit()
+            return loan
+        except Exception as e:
+            db.rollback()
+            raise DatabaseInsertError(f"Failed to create loan record: {str(e)}.")
+        
+    @classmethod
+    def borrow_redirect(cls, book_id: int, email: str):
+        """
+        Borrows a book and redirects user to the reader if successful.
+        """
+        loan = cls.borrow_items(book_id, email)
+        # Construct the redirect URL
+        redirect_url = cls.make_url(f"/items/{book_id}/read")
+        return {"success": True, "loan_id": loan.id, "redirect_url": redirect_url}
+
+    @classmethod
+    def checkout_items(cls, book_ids: list, email: str):
+        """
+        Checks out multiple books for a patron.
+        Returns a list of Loan objects. Rolls back all if any fail.
+        """
+        loans = []
+        try:
+            for book_id in book_ids:
+                loan = cls.borrow_items(book_id, email)
+                loans.append(loan)
+            return loans
+        except Exception as e:
+            db.rollback()
+            raise DatabaseInsertError(f"Failed to borrow one or more books: {str(e)}.")
+
+    @classmethod
+    def get_borrowed_items(cls, email: str):
+        """
+        Returns a list of active (not returned) Loan objects for the given user email.
+        """
+        from lenny.core.models import Loan
+        email_hash = cls.hash_email(email)
+        loans = db.query(Loan).filter(
+            Loan.patron_email_hash == email_hash,
+            Loan.returned_at == None
+        ).all()
+        return loans
+    
+    @classmethod
+    def return_items(cls, book_id: int, email: str):
+        """
+        Marks a loan as returned for the patron and book.
+        Returns the updated Loan object if successful. Rolls back on error.
+        """
+        from lenny.core.models import Loan
+        email_hash = cls.hash_email(email)
+        loan = db.query(Loan).filter(
+            Loan.item_id == book_id,
+            Loan.patron_email_hash == email_hash,
+            Loan.returned_at == None
+        ).first()
+        if not loan:
+            raise Exception("No active loan found for this patron and book.")
+        import datetime
+        try:
+            loan.returned_at = datetime.datetime.utcnow()
+            db.commit()
+            return loan
+        except Exception as e:
+            db.rollback()
+            raise DatabaseInsertError(f"Failed to return loan: {str(e)}.")
