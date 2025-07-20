@@ -234,7 +234,7 @@ class LennyAPI:
         return hashlib.sha256(email.strip().lower().encode('utf-8')).hexdigest()
     
     @classmethod
-    def borrow_items(cls, openlibrary_edition: int, email: str):
+    def borrow(cls, openlibrary_edition: int, email: str):
         """
         Lending: A patron finds a book, clicks "borrow", and a Loan record is created in the LennyDB
         after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
