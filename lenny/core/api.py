@@ -274,7 +274,7 @@ class LennyAPI:
         """
         Borrows a book and redirects user to the reader if successful.
         """
-        loan = cls.borrow_items(openlibrary_edition, email)
+        loan = cls.borrow(openlibrary_edition, email)
         # Construct the redirect URL
         # Find the item id for redirect
         from lenny.core.models import Item
@@ -293,7 +293,7 @@ class LennyAPI:
         loans = []
         try:
             for openlibrary_edition in openlibrary_editions:
-                loan = cls.borrow_items(openlibrary_edition, email)
+                loan = cls.borrow(openlibrary_edition, email)
                 loans.append(loan)
             return loans
         except Exception as e:
