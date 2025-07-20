@@ -9,7 +9,7 @@
 """
 
 import requests
-from typing import Optional, Generator
+from typing import Optional, Generator, List
 from fastapi import (
     APIRouter,
     Request,
@@ -17,12 +17,13 @@ from fastapi import (
     File,
     Form,
     HTTPException,
-    status
+    status,
+    Body,
 )
 from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
-    Response
+    Response,
 )
 from lenny.core.api import LennyAPI
 from lenny.core.readium import ReadiumAPI
@@ -120,3 +121,69 @@ async def upload(
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+
+
+
+@router.post('/items/{book_id}/borrow', status_code=status.HTTP_200_OK)
+async def borrow_item(book_id: int, email: str = Body(..., embed=True)):
+    """
+    Handles the borrow process for a single book . Requires patron's email.
+    Calls borrow_redirect to process the borrow and redirect logic.
+    """
+    try:
+        result = LennyAPI.borrow_redirect(book_id, email)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+@router.post('/items/checkout', status_code=status.HTTP_200_OK)
+async def checkout_items(openlibrary_editions: List[int] = Body(...), email: str = Body(..., embed=True)):
+    """
+    Handles the checkout process for multiple books. Requires patron's email and a list of openlibrary_editions.
+    Calls checkout_items to process the borrow for all books.
+    """
+    try:
+        loans = LennyAPI.checkout_items(openlibrary_editions, email)
+        return {
+            "success": True,
+            "loan_ids": [loan.id for loan in loans],
+            "count": len(loans)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+@router.post('/items/{book_id}/return', status_code=status.HTTP_200_OK)
+async def return_item(book_id: int, email: str = Body(..., embed=True)):
+    """
+    Handles the return process for a single borrowed book. Requires patron's email.
+    Calls return_items to mark the loan as returned.
+    """
+    try:
+        loan = LennyAPI.return_items(book_id, email)
+        return {"success": True, "loan_id": loan.id, "returned_at": str(loan.returned_at)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+@router.post('/items/borrowed', status_code=status.HTTP_200_OK)
+async def get_borrowed_items(email: str = Body(..., embed=True)):
+    """
+    Returns a list of active (not returned) borrowed items for the given patron's email.
+    Calls get_borrowed_items to fetch the list.
+    """
+    try:
+        loans = LennyAPI.get_borrowed_items(email)
+        return {
+            "success": True,
+            "loans": [
+                {
+                    "loan_id": loan.id,
+                    "openlibrary_edition": getattr(loan, "openlibrary_edition", None),
+                    "borrowed_at": str(loan.created_at),
+                }
+                for loan in loans
+            ],
+            "count": len(loans)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
