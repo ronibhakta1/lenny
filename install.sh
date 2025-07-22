@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 set -e
 echo "Welcome to Lenny Installer for Mac & Linux"
 
