@@ -240,23 +240,14 @@ class LennyAPI:
         after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
         """
         from lenny.core.models import Loan, Item
-        # Find the item by openlibrary_edition
         item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
         if not item:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
-        # Check auth before lending
         if not cls.auth_check(item.id, email):
             raise Exception("Patron is not authorized to borrow this book.")
         email_hash = cls.hash_email(email)
-        # Only block if there is an active (not returned) loan
-        active_loan = db.query(Loan).filter(
-            Loan.item_id == item.id,
-            Loan.patron_email_hash == email_hash,
-            Loan.returned_at == None
-        ).first()
-        if active_loan:
+        if Loan.loan_exists(item.id, email_hash):
             raise Exception("Book is already borrowed by this patron and not yet returned.")
-        # Create a new loan record
         try:
             loan = Loan(
                 item_id=item.id,
@@ -275,8 +266,6 @@ class LennyAPI:
         Borrows a book and redirects user to the reader if successful.
         """
         loan = cls.borrow(openlibrary_edition, email)
-        # Construct the redirect URL
-        # Find the item id for redirect
         from lenny.core.models import Item
         item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
         if not item:
@@ -312,7 +301,6 @@ class LennyAPI:
             Loan.patron_email_hash == email_hash,
             Loan.returned_at == None
         ).all()
-        # Always enrich with openlibrary_edition and filter out loans with missing items
         enriched_loans = []
         for loan in loans:
             item = db.query(Item).filter(Item.id == loan.item_id).first()
@@ -328,7 +316,6 @@ class LennyAPI:
         Returns the updated Loan object if successful. Rolls back on error.
         """
         from lenny.core.models import Loan, Item
-        # Find the item by openlibrary_edition
         item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
         if not item:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")

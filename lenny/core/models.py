@@ -50,6 +50,9 @@ class Loan(Base):
     returned_at = Column(DateTime(timezone=True), nullable=True)
 
     item = relationship('Item', back_populates='loans')
-
+    
+    @classmethod
+    def loan_exists(cls, item_id: int, patron_email_hash: str) -> bool:
+        return db.query(Loan).filter(Loan.item_id == item_id, Loan.patron_email_hash == patron_email_hash, Loan.returned_at == None).first()
 
 Item.loans = relationship('Loan', back_populates='item', cascade='all, delete-orphan')
