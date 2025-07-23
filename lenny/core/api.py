@@ -214,12 +214,24 @@ class LennyAPI:
         if Item.exists(openlibrary_edition):
             raise ItemExistsError(f"Item '{openlibrary_edition}' already exists.")
 
+        is_readable = not encrypt
+        is_lendable = encrypt
+        is_login_required = encrypt
+        is_waitlistable = encrypt
+        is_printdisabled = True
+
         if formats:= cls.upload_files(files, openlibrary_edition, encrypt=encrypt):
             try:
                 item = Item(
                     openlibrary_edition=openlibrary_edition,
                     encrypted=encrypt,
-                    formats=FormatEnum(formats)
+                    formats=FormatEnum(formats),
+                    is_readable=is_readable,
+                    is_lendable=is_lendable,
+                    is_login_required=is_login_required,
+                    num_lendable_total=1,
+                    is_waitlistable=is_waitlistable,
+                    is_printdisabled=is_printdisabled,
                 )
                 db.add(item)
                 db.commit()
@@ -240,13 +252,13 @@ class LennyAPI:
         after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
         """
         from lenny.core.models import Loan, Item
-        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
-        if not item:
+        item = Item.exists(openlibrary_edition)
+        if item is None:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
         if not cls.auth_check(item.id, email):
             raise Exception("Patron is not authorized to borrow this book.")
         email_hash = cls.hash_email(email)
-        if Loan.loan_exists(item.id, email_hash):
+        if Loan.exists(item.id, email_hash):
             raise Exception("Book is already borrowed by this patron and not yet returned.")
         try:
             loan = Loan(
@@ -267,8 +279,8 @@ class LennyAPI:
         """
         loan = cls.borrow(openlibrary_edition, email)
         from lenny.core.models import Item
-        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
-        if not item:
+        item = Item.exists(openlibrary_edition)
+        if item is None:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
         redirect_url = cls.make_url(f"/v1/api/items/{openlibrary_edition}/read")
         return {"success": True, "loan_id": loan.id, "redirect_url": redirect_url}
@@ -316,8 +328,8 @@ class LennyAPI:
         Returns the updated Loan object if successful. Rolls back on error.
         """
         from lenny.core.models import Loan, Item
-        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
-        if not item:
+        item =  Item.exists(openlibrary_edition)
+        if item is None:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
         email_hash = cls.hash_email(email)
         loan = db.query(Loan).filter(
@@ -327,6 +339,7 @@ class LennyAPI:
         ).first()
         if not loan:
             raise Exception("No active loan found for this patron and book.")
+        
         import datetime
         try:
             loan.returned_at = datetime.datetime.utcnow()
