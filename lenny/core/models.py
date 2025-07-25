@@ -40,7 +40,7 @@ class Item(Base):
         return db.query(Item).filter(Item.openlibrary_edition == olid).first()
 
     @classmethod
-    def encrypted(cls, olid):
+    def find_encrypted(cls, olid):
         return db.query(Item).filter(Item.openlibrary_edition == olid, Item.encrypted == True).first()
 
 class Loan(Base):

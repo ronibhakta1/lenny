@@ -246,21 +246,34 @@ class LennyAPI:
         return hashlib.sha256(email.strip().lower().encode('utf-8')).hexdigest()
     
     @classmethod
+    def read_redirect(cls, openlibrary_edition: int):
+        """
+        Redirects to the reader URL for a book that is open access or requires borrowing.
+        """
+        return cls.make_url(f"/v1/api/items/{openlibrary_edition}/read")
+    
+    @classmethod
     def borrow(cls, openlibrary_edition: int, email: str):
         """
         Lending: A patron finds a book, clicks "borrow", and a Loan record is created in the LennyDB
         after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
+        Only encrypted items can be borrowed; non-encrypted items cannot have loans created.
         """
         from lenny.core.models import Loan, Item
         item = Item.exists(openlibrary_edition)
         if item is None:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
+        if not item.encrypted:
+            raise Exception("This is a non-encrypted book, you cannot borrow it.")
         if not cls.auth_check(item.id, email):
             raise Exception("Patron is not authorized to borrow this book.")
         email_hash = cls.hash_email(email)
         if Loan.exists(item.id, email_hash):
             raise Exception("Book is already borrowed by this patron and not yet returned.")
         try:
+            item.num_lendable_total -= 1
+            item.is_lendable = item.num_lendable_total > 0
+            db.commit() 
             loan = Loan(
                 item_id=item.id,
                 patron_email_hash=email_hash,
@@ -278,12 +291,10 @@ class LennyAPI:
         Borrows a book and redirects user to the reader if successful.
         """
         loan = cls.borrow(openlibrary_edition, email)
-        from lenny.core.models import Item
-        item = Item.exists(openlibrary_edition)
-        if item is None:
-            raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
-        redirect_url = cls.make_url(f"/v1/api/items/{openlibrary_edition}/read")
-        return {"success": True, "loan_id": loan.id, "redirect_url": redirect_url}
+        if loan is None:
+            raise Exception("Failed to borrow book.")
+        return cls.read_redirect(openlibrary_edition)
+    
 
     @classmethod
     def checkout_items(cls, openlibrary_editions: list, email: str):
@@ -332,19 +343,73 @@ class LennyAPI:
         if item is None:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
         email_hash = cls.hash_email(email)
-        loan = db.query(Loan).filter(
-            Loan.item_id == item.id,
-            Loan.patron_email_hash == email_hash,
-            Loan.returned_at == None
-        ).first()
+        loan = Loan.exists(item.id, email_hash)
         if not loan:
             raise Exception("No active loan found for this patron and book.")
         
         import datetime
         try:
+            num_lendable_total = item.num_lendable_total + 1
+            item.num_lendable_total = num_lendable_total
+            item.is_lendable = num_lendable_total > 0
+            db.commit()  
+            
             loan.returned_at = datetime.datetime.utcnow()
             db.commit()
             return loan
         except Exception as e:
             db.rollback()
             raise DatabaseInsertError(f"Failed to return loan: {str(e)}.")
+    
+    @classmethod
+    def borrow_redirect_url(cls, openlibrary_edition: int, email: str):
+        """
+        Redirect URL for borrowing a book.
+        """
+        return cls.make_url(f"/v1/api/items/{openlibrary_edition}/borrow?email={email}")
+        
+    @classmethod
+    def open_access_redirect_url(cls, openlibrary_edition: int,):
+        """
+        Open access URL redirect for a book reader.
+        """
+        return cls.make_url(f"/v1/api/items/{openlibrary_edition}/read")
+        
+    @classmethod
+    def open_access(cls, openlibrary_edition: int, email: str):
+        item = Item.exists(openlibrary_edition)
+        if not item:
+            raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
+        if item.encrypted and item.is_readable is False:
+            return cls.borrow_redirect_url(openlibrary_edition, email)
+        if item.is_login_required and item.is_readable is True:
+            login = cls.auth_check(item.id, email)
+            if not login:
+                raise Exception("Patron is not authorized to read this book.")
+            return cls.open_access_redirect_url(openlibrary_edition)
+        else:
+            return cls.open_access_redirect_url(openlibrary_edition)
+        
+    @classmethod
+    def get_item(cls, openlibrary_edition: int):
+        """
+        Returns the Item object for the given Open Library edition ID.
+        """
+        item = Item.exists(openlibrary_edition)
+        if item is None:
+            raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
+        return item
+        
+    @classmethod
+    def has_active_loan(cls, openlibrary_edition: int, email: str) -> bool:
+        """
+        Checks if the user has an active loan for the given book (by OpenLibrary edition).
+        Returns True if an active loan exists, False otherwise.
+        """
+        from lenny.core.models import Loan, Item
+        item = Item.exists(openlibrary_edition)
+        if not item:
+            return False
+        email_hash = cls.hash_email(email)
+        return Loan.exists(item.id, email_hash) is not None
+
