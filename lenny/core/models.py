@@ -8,7 +8,8 @@
     :license: see LICENSE for more details
 """
 
-from sqlalchemy  import Column, String, Boolean, BigInteger, DateTime, Enum as SQLAlchemyEnum
+from sqlalchemy  import Column, String, Boolean, BigInteger, Integer, DateTime, Enum as SQLAlchemyEnum
+from datetime import timedelta, datetime
 from sqlalchemy.sql import func
 from lenny.core.db import session as db, Base
 from sqlalchemy import ForeignKey
@@ -29,7 +30,7 @@ class Item(Base):
     encrypted = Column(Boolean, default= False, nullable=False)
     formats = Column(SQLAlchemyEnum(FormatEnum), nullable=False)
     is_login_required = Column(Boolean, default= False, nullable=False)
-    num_lendable_total = Column(BigInteger, default=1, nullable=False)
+    num_lendable_total = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     
@@ -78,3 +79,19 @@ class Loan(Base):
 
 
 Item.loans = relationship('Loan', back_populates='item', cascade='all, delete-orphan')
+
+class Auth(Base):
+    __tablename__ = 'auth'
+    
+    email_token = Column(String, primary_key=True)
+    session_token = Column(String, nullable=True) # e.g IP Address
+    code = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    attempts = Column(Integer, default=0)
+    
+    @classmethod
+    def expire(cls, minutes: int =5):
+        """Delete auth less than N minutes."""
+        threshold = datetime.utcnow() - timedelta(minutes=minutes)
+        db.query(Auth).filter(cls.created_at < threshold).delete()
+        db.commit()
