@@ -54,10 +54,15 @@ class LennyAPI:
 
     @classmethod
     def auth_check(cls, book_id: int, email=None):
-        # Look up the book_id in the Item table
+        """Checks if the user is allowed to access the book.
+        """
+        if item := Item.exists(book_id):
+            if not item.encrypted:
+                return True
+        if 
         # if the book is *not* encrypted, then the auth_check succeeds!
         # i.e. the patron can be *allowed* to access this book
-        item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
+        item = Item.exists(book_id)
         if not item.encrypted:
             return True
 
@@ -246,15 +251,12 @@ class LennyAPI:
         after auth_check succeeds. DB will have a hash of the email and (optionally) the plain email for now.
         """
         from lenny.core.models import Loan, Item
-        # Find the item by openlibrary_edition
         item = db.query(Item).filter(Item.openlibrary_edition == openlibrary_edition).first()
         if not item:
             raise Exception(f"Item with openlibrary_edition {openlibrary_edition} not found.")
-        # Check auth before lending
         if not cls.auth_check(item.id, email):
             raise Exception("Patron is not authorized to borrow this book.")
         email_hash = cls.hash_email(email)
-        # Only block if there is an active (not returned) loan
         active_loan = db.query(Loan).filter(
             Loan.item_id == item.id,
             Loan.patron_email_hash == email_hash,
@@ -262,7 +264,6 @@ class LennyAPI:
         ).first()
         if active_loan:
             raise Exception("Book is already borrowed by this patron and not yet returned.")
-        # Create a new loan record
         try:
             loan = Loan(
                 item_id=item.id,
