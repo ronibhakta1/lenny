@@ -14,3 +14,6 @@ class FileTooLargeError(LennyAPIError): pass
 class S3UploadError(LennyAPIError): pass
 
 class UploaderNotAllowedError(LennyAPIError): pass
+
+class OTPGenerationError(LennyAPIError): pass
+

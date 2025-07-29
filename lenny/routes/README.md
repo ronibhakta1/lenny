@@ -9,30 +9,58 @@ Let's assume our server is called lib.org...
 
 ## API Usage Examples (curl)
 
-### Borrow a Book
+
+
+### Borrow a Book (Open Access)
+```sh
+curl -X POST "http://localhost:8080/v1/api/items/{openlibrary_edition}/borrow"
+```
+
+### Borrow a Book (Encrypted, OTP Flow)
+1. Authenticate with OTP to set cookies:
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/{openlibrary_edition}/borrow" \
   -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com"}'
+  -c cookies.txt \
+  -d '{"otp": "STATIC_OTP"}'
 ```
+
+2. Borrow the book using the cookies set above:
+```sh
+curl -X POST "http://localhost:8080/v1/api/items/{openlibrary_edition}/borrow" \
+  -b cookies.txt
+```
+
+> Replace `STATIC_OTP` with your actual OTP key. The first call sets cookies, the second call borrows the book.
+
 
 ### Return a Book
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/{openlibrary_edition}/return" \
-  -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com"}'
+  --cookie "email=user@example.com; logged_in=true"
 ```
+
 
 ### Get Borrowed Items
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/borrowed" \
-  -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com"}'
+  --cookie "email=user@example.com; logged_in=true"
 ```
+
 
 ### Checkout Multiple Books
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/checkout" \
-  -H "Content-Type: application/json" \
-  -d '{"openlibrary_editions": [12345678, 23456789], "email": "user@example.com"}'
+  --cookie "email=user@example.com; logged_in=true" \
+  -d '{"openlibrary_editions": [12345678, 23456789]}'
 ```
+
+### Authenticate (get cookies for encrypted books)
+```sh
+curl -X POST "http://localhost:8080/v1/api/auth" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "otp": "STATIC_OTP"}'
+```
+
+> **Note:**
+> For encrypted books, you must authenticate first (using `/auth`) to set the `email` and `logged_in` cookies before borrowing or reading.

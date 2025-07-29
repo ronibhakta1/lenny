@@ -29,6 +29,8 @@ READER_PORT = int(os.environ.get('READER_PORT', 3000))
 READIUM_PORT = int(os.environ.get('READIUM_PORT', 15080))
 READIUM_BASE_URL = f"http://lenny_readium:{READIUM_PORT}"
 
+OTP_KEY = os.environ.get('OTP_KEY')
+
 OPTIONS = {
     'host': HOST,
     'port': PORT,
