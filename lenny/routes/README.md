@@ -37,30 +37,29 @@ curl -X POST "http://localhost:8080/v1/api/items/{openlibrary_edition}/borrow" \
 ### Return a Book
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/{openlibrary_edition}/return" \
-  --cookie "email=user@example.com; logged_in=true"
+  --cookie "email=user@example.com; session=SIGNED_SESSION_COOKIE"
 ```
-
 
 ### Get Borrowed Items
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/borrowed" \
-  --cookie "email=user@example.com; logged_in=true"
+  --cookie "email=user@example.com; session=SIGNED_SESSION_COOKIE"
 ```
-
 
 ### Checkout Multiple Books
 ```sh
 curl -X POST "http://localhost:8080/v1/api/items/checkout" \
-  --cookie "email=user@example.com; logged_in=true" \
+  --cookie "email=user@example.com; session=SIGNED_SESSION_COOKIE" \
   -d '{"openlibrary_editions": [12345678, 23456789]}'
 ```
 
 ### Authenticate (get cookies for encrypted books)
 ```sh
+# The /auth endpoint will set both 'email' and 'session' cookies if OTP is valid.
 curl -X POST "http://localhost:8080/v1/api/auth" \
   -H "Content-Type: application/json" \
   -d '{"email": "user@example.com", "otp": "STATIC_OTP"}'
 ```
 
 > **Note:**
-> For encrypted books, you must authenticate first (using `/auth`) to set the `email` and `logged_in` cookies before borrowing or reading.
+> For encrypted books, you must authenticate first (using `/auth`) to set the `email` and `session` cookies before borrowing or reading. The `session` cookie is a signed value and must match the email. Use the `/auth` endpoint or the OTP flow to obtain valid cookies.
