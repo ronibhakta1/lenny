@@ -36,6 +36,7 @@ from lenny.core.exceptions import (
     S3UploadError,
     UploaderNotAllowedError,
 )
+from urllib.parse import quote
 
 router = APIRouter()
 
@@ -59,15 +60,17 @@ async def get_opds(request: Request, offset: Optional[int]=None, limit: Optional
 @router.get("/items/{book_id}/read")
 async def redirect_reader(book_id: str, format: str = "epub"):
     if not LennyAPI.auth_check(book_id):
-        HTTPException(status_code=400, detail="Unauthorized request")
+        raise HTTPException(status_code=400, detail="Unauthorized request")
     manifest_uri = LennyAPI.make_manifest_url(book_id)
-    reader_url = LennyAPI.make_url(f"/read?book={manifest_uri}")
+    # URL encode the manifest URI for use as a path parameter
+    encoded_manifest_uri = quote(manifest_uri, safe='')
+    reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
     return RedirectResponse(url=reader_url, status_code=307)
 
 @router.get("/items/{book_id}/readium/manifest.json")
 async def get_manifest(book_id: str, format: str=".epub"):
     if not LennyAPI.auth_check(book_id):
-        HTTPException(status_code=400, detail="Unauthorized request")
+        raise HTTPException(status_code=400, detail="Unauthorized request")
     try:
         return ReadiumAPI.get_manifest(book_id, format)
     except ItemNotFoundError as e:
@@ -77,7 +80,7 @@ async def get_manifest(book_id: str, format: str=".epub"):
 @router.get("/items/{book_id}/readium/{readium_path:path}")
 async def proxy_readium(request: Request, book_id: str, readium_path: str, format: str=".epub"):
     if not LennyAPI.auth_check(book_id):
-        HTTPException(status_code=400, detail="Unauthorized request")
+        raise HTTPException(status_code=400, detail="Unauthorized request")
     readium_url = ReadiumAPI.make_url(book_id, format, readium_path)
     r = requests.get(readium_url, params=dict(request.query_params))
     if readium_url.endswith('.json'):
