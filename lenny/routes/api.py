@@ -37,8 +37,9 @@ from lenny.core.exceptions import (
     S3UploadError,
     UploaderNotAllowedError
 )
-from lenny.configs import OTP_KEY
+from urllib.parse import quote
 
+from lenny.configs import OTP_KEY
 COOKIES_MAX_AGE = 604800,  # 1 week
 
 router = APIRouter()
@@ -73,7 +74,9 @@ async def redirect_reader(request: Request,book_id: str, format: str = "epub"):
             status_code = 401
         )
     manifest_uri = LennyAPI.make_manifest_url(book_id)
-    reader_url = LennyAPI.make_url(f"/read?book={manifest_uri}")
+    # URL encode the manifest URI for use as a path parameter
+    encoded_manifest_uri = quote(manifest_uri, safe='')
+    reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
     return RedirectResponse(url=reader_url, status_code=307)
 
 @router.get("/items/{book_id}/readium/manifest.json")

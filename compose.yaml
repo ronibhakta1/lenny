@@ -68,13 +68,18 @@ services:
       context: .
       dockerfile: docker/reader/Dockerfile
     container_name: lenny_reader
+    env_file: .env
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE=${NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE}
+      - NEXT_PUBLIC_MANIFEST_FORCE_ENABLE=${NEXT_PUBLIC_MANIFEST_FORCE_ENABLE}
     ports:
       - "${READER_PORT:-3000}"
     networks:
       - lenny_network
 
   readium:
-    image: ghcr.io/readium/readium:0.3.0
+    image: ghcr.io/readium/readium:0.4.0
     container_name: lenny_readium
     ports:
       - "${READIUM_PORT:-15080}"

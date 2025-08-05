@@ -15,6 +15,8 @@ WORKDIR /app/thorium-web
 
 RUN --mount=type=cache,id=pnpm_store,target=/pnpm/store pnpm install --frozen-lockfile
 
+RUN pnpm build
+
 EXPOSE 3000
 
-CMD ["pnpm", "dev"]
+CMD ["pnpm", "start"]
