@@ -80,10 +80,8 @@ class LennyAPI:
         if item := Item.exists(openlibrary_edition):
             if not item.is_login_required:
                 return item # open access book
-            session_email = cls.validate_session_cookie(session)
-            if not (email and session and email == session_email) and item.is_login_required:
-                return None # not authenticated user for open access book
-            return item
+            if session_email := cls.validate_session_cookie(session):
+                return item if email and email == session_email else None
         raise ItemNotFoundError(f"Item with OpenLibrary edition {openlibrary_edition} does not exist.")
 
 
