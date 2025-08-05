@@ -66,12 +66,11 @@ class LennyAPI:
     @classmethod
     def validate_session_cookie(cls, session_cookie: str):
         """Validates the session cookie and returns the email if valid."""
-        if not session_cookie:
-            return None
-        try:
-            return cls.signer.unsign(session_cookie).decode('utf-8')
-        except BadSignature:
-            return None
+        if session_cookie:
+            try:
+                return cls.signer.unsign(session_cookie).decode('utf-8')
+            except BadSignature:
+                return None
 
     @classmethod
     def auth_check(cls, openlibrary_edition: int, email = None , session: str = None):
