@@ -60,7 +60,7 @@ class LennyAPI:
         return f"{url}{path}"
     
     @classmethod
-    def make_session_cookie(cls,email: str):
+    def make_session_cookie(cls, email: str):
         return cls.signer.sign(email).decode('utf-8')
     
     @classmethod
