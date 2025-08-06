@@ -26,8 +26,8 @@ from fastapi.responses import (
     RedirectResponse,
     Response
 )
+from lenny.core import auth
 from lenny.core.api import LennyAPI
-from lenny.core.readium import ReadiumAPI
 from lenny.core.exceptions import (
     ItemExistsError,
     ItemNotFoundError,
@@ -37,7 +37,9 @@ from lenny.core.exceptions import (
     S3UploadError,
     UploaderNotAllowedError
 )
+from lenny.core.readium import ReadiumAPI
 from urllib.parse import quote
+from typing import Optional
 
 from lenny.configs import OTP_KEY
 COOKIES_MAX_AGE = 604800,  # 1 week
@@ -142,7 +144,20 @@ async def upload(
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
-from typing import Optional
+@router.post("/authenticate")
+async def authenticate(response: Response, email: str = Form(...), otp: str = Form(...)):
+    if session_cookie := auth.OTP.authenticate(email, otp):
+        response.set_cookie(
+            key="session",
+            value=session_cookie,
+            max_age=auth.COOKIE_TTL,
+            httponly=True,   # Prevent JavaScript access
+            secure=True,     # Only over HTTPS in production
+            samesite="Lax",  # Helps mitigate CSRF
+            path="/"
+        )
+        return {"success": True}
+    return {"success": False}
 
 @router.post('/items/{book_id}/borrow', status_code=status.HTTP_200_OK)
 async def borrow_item(request: Request, response: Response, book_id: int, otp: Optional[str] = Body(None, embed=True)):

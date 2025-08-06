@@ -22,3 +22,6 @@ class EmailNotFoundError(LennyAPIError): pass
 class ExistingLoanError(LennyAPIError): pass
 
 class LoanNotFoundError(LennyAPIError): pass
+
+class RateLimitError(LennyAPIError): pass
+
