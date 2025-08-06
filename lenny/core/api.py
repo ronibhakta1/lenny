@@ -8,7 +8,6 @@ from lenny.core.models import Item, Loan, FormatEnum
 from lenny.core.openlibrary import OpenLibrary
 from lenny.core.exceptions import (
     EmailNotFoundError,
-    ExistingLoanError,
     ItemExistsError,
     InvalidFileError,
     DatabaseInsertError,
@@ -258,35 +257,7 @@ class LennyAPI:
     def hash_email(email: str) -> str:
         import hashlib
         return hashlib.sha256(email.strip().lower().encode('utf-8')).hexdigest()
-    
-    @classmethod
-    def borrow(cls, openlibrary_edition: int, email: str):
-        """
-        Borrows a book for a patron. Returns the Loan object if successful.
-        """
-        if item := Item.exists(openlibrary_edition):
-            if not email:
-                raise EmailNotFoundError("Email is required to borrow encrypted items.")
-            email_hash = cls.hash_email(email)
-            active_loan = db.query(Loan).filter(
-                Loan.item_id == item.id,
-                Loan.patron_email_hash == email_hash,
-                Loan.returned_at == None
-            ).first()
-            if active_loan:
-                raise ExistingLoanError("Book is already borrowed by this patron and not yet returned.")
-            try:
-                loan = Loan(
-                    item_id=item.id,
-                    patron_email_hash=email_hash,
-                )
-                db.add(loan)
-                db.commit()
-                return loan
-            except Exception as e:
-                db.rollback()
-                raise DatabaseInsertError(f"Failed to create loan record: {str(e)}.")
-        raise ItemNotFoundError(f"Item with openlibrary_edition {openlibrary_edition} not found.")
+
         
     @classmethod
     def borrow_redirect(cls, openlibrary_edition: int, email: str = None):
@@ -321,17 +292,6 @@ class LennyAPI:
         except Exception as e:
             db.rollback()
             raise DatabaseInsertError(f"Failed to borrow one or more books: {str(e)}.")
-
-    @classmethod
-    def has_active_loan(cls, openlibrary_edition: int, email: str) -> bool:
-        """
-        Checks if the user has an active loan for the given book (by OpenLibrary edition).
-        Returns True if an active loan exists, False otherwise.
-        """
-        if item := Item.exists(openlibrary_edition):
-            email_hash = cls.hash_email(email)
-            return Loan.Loan_exists(item.id, email_hash)
-        return False
         
     @classmethod
     def get_borrowed_items(cls, email: str):
