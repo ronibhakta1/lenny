@@ -273,7 +273,7 @@ class LennyAPI:
             # If encrypted, require email and create a loan
             if not email:
                 raise EmailNotFoundError("Email is required to borrow encrypted items.")
-            loan = cls.borrow(openlibrary_edition, email)
+            loan = item.borrow(email)
             return {"success": True, "loan ID": loan.id, "redirect_url": redirect_url}
         raise ItemNotFoundError(f"Item with openlibrary_edition {openlibrary_edition} not found.")
 
@@ -286,7 +286,10 @@ class LennyAPI:
         loans = []
         try:
             for openlibrary_edition in openlibrary_editions:
-                loan = cls.borrow(openlibrary_edition, email)
+                item = Item.exists(openlibrary_edition)
+                if not item:
+                    raise ItemNotFoundError(f"Item with openlibrary_edition {openlibrary_edition} not found.")
+                loan = item.borrow(email)
                 loans.append(loan)
             return loans
         except Exception as e:

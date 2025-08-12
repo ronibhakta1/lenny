@@ -26,6 +26,7 @@ from fastapi.responses import (
     RedirectResponse,
     Response
 )
+from fastapi.templating import Jinja2Templates
 from lenny.core import auth
 from lenny.core.api import LennyAPI
 from lenny.core.exceptions import (
@@ -45,6 +46,7 @@ from lenny.configs import OTP_KEY
 COOKIES_MAX_AGE = 604800,  # 1 week
 
 router = APIRouter()
+templates = Jinja2Templates(directory="lenny/templates")
 
 @router.get('/', status_code=status.HTTP_200_OK)
 async def home(request: Request):
@@ -68,13 +70,7 @@ async def redirect_reader(request: Request,book_id: str, format: str = "epub"):
     email = request.cookies.get("email")
     session = request.cookies.get("session")
     if not LennyAPI.auth_check(book_id, email=email , session=session):
-        return JSONResponse(
-            {
-                "auth_required": True,
-                "message": "Authentication requied to borrow this book."
-            },
-            status_code = 401
-        )
+        return RedirectResponse(url="/authenticate", status_code=303)
     manifest_uri = LennyAPI.make_manifest_url(book_id)
     # URL encode the manifest URI for use as a path parameter
     encoded_manifest_uri = quote(manifest_uri, safe='')
@@ -144,20 +140,57 @@ async def upload(
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
+@router.get("/authenticate")
+async def show_email_form(request: Request):
+    """
+    Serves the email entry form for authentication.
+    """
+    return templates.TemplateResponse("email_form.html", {"request": request})
+
+@router.post("/send-otp")
+async def send_otp(request: Request, email: str = Form(...)):
+    """
+    Handles email submission, sends OTP, and redirects to OTP form.
+    """
+    # Here we would send the OTP to the email (and IP if needed)
+    # For now, just redirect to OTP form with email as query param
+    response = RedirectResponse(url=f"/otp?email={email}", status_code=303)
+    return response
+
+@router.get("/otp")
+async def show_otp_form(request: Request, email: str):
+    """
+    Serves the OTP entry form, passing the email to the template.
+    """
+    return templates.TemplateResponse("otp_form.html", {"request": request, "email": email})
+
 @router.post("/authenticate")
-async def authenticate(response: Response, email: str = Form(...), otp: str = Form(...)):
-    if session_cookie := auth.OTP.authenticate(email, otp):
+async def authenticate(response: Response, request: Request, email: str = Form(...), otp: str = Form(...)):
+    """
+    Authenticates a patron using email and OTP. Sets session and email cookies if successful.
+    """
+    ip_address = request.client.host
+    if session_cookie := auth.OTP.authenticate(email, otp, ip_address):
         response.set_cookie(
             key="session",
             value=session_cookie,
             max_age=auth.COOKIE_TTL,
-            httponly=True,   # Prevent JavaScript access
-            secure=True,     # Only over HTTPS in production
-            samesite="Lax",  # Helps mitigate CSRF
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/"
+        )
+        response.set_cookie(
+            key="email",
+            value=email,
+            max_age=auth.COOKIE_TTL,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
             path="/"
         )
         return {"success": True}
-    return {"success": False}
+    return templates.TemplateResponse("otp_form.html", {"request": request, "email": email, "error": "Invalid OTP. Please try again."})
 
 @router.post('/items/{book_id}/borrow', status_code=status.HTTP_200_OK)
 async def borrow_item(request: Request, response: Response, book_id: int, otp: Optional[str] = Body(None, embed=True)):
@@ -171,37 +204,7 @@ async def borrow_item(request: Request, response: Response, book_id: int, otp: O
 
     success = LennyAPI.auth_check(book_id, email=email, session=session )
     if not success:
-        # If not logged in, check OTP and set cookies if valid
-        if not (email and session):
-            if otp is not None and str(otp) == str(OTP_KEY):
-                # Dummy email address for testing purposes
-                email_address = "user@example.com"
-                signed_cookie = LennyAPI.make_session_cookie(email_address)
-                resp = JSONResponse({"message": "Auth cookies set for borrowing. Please retry borrow request."})
-                resp.set_cookie(
-                    key="email",
-                    value=email_address,
-                    httponly=True,
-                    secure=True,
-                    max_age=COOKIES_MAX_AGE,
-                )
-                resp.set_cookie(
-                    key="session",
-                    value=signed_cookie,
-                    httponly=True,
-                    secure=True,
-                    max_age=COOKIES_MAX_AGE,
-                )
-                return resp
-            else:
-                return JSONResponse({"auth_required": True, "message": "OTP required or invalid."}, status_code=401)
-        return JSONResponse(
-            {
-                "auth_required": True,
-                "message": "Authentication requied to borrow this book."
-            },
-            status_code = 401
-        )
+        return RedirectResponse(url="/authenticate", status_code=303)
     try:
         result = LennyAPI.borrow_redirect(book_id, email)
         return result
@@ -278,3 +281,13 @@ async def get_borrowed_items(request: Request):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get('/logout', status_code=status.HTTP_200_OK)
+async def logout_page(request: Request):
+    """
+    Logs out the user and shows a logout confirmation page with a login link.
+    """
+    response = templates.TemplateResponse("logout.html", {"request": request})
+    response.delete_cookie(key="session", path="/")
+    response.delete_cookie(key="email", path="/")
+    return response

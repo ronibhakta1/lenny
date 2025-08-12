@@ -71,7 +71,6 @@ class Item(Base):
     def exists(cls, olid):
         return db.query(Item).filter(Item.openlibrary_edition == olid).first()
     
-    @classmethod
     def borrow(self, email: str):
         """
         Borrows a book for a patron. Returns the Loan object if successful.
@@ -119,19 +118,3 @@ class Loan(Base):
         ).first() is not None
 
 Item.loans = relationship('Loan', back_populates='item', cascade='all, delete-orphan')
-
-class Auth(Base):
-    __tablename__ = 'auth'
-    
-    email_token = Column(String, primary_key=True)
-    session_token = Column(String, nullable=True) # e.g IP Address
-    code = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    attempts = Column(Integer, default=0)
-    
-    @classmethod
-    def expire(cls, minutes: int =5):
-        """Delete auth less than N minutes."""
-        threshold = datetime.utcnow() - timedelta(minutes=minutes)
-        db.query(Auth).filter(cls.created_at < threshold).delete()
-        db.commit()
