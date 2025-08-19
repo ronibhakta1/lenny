@@ -13,14 +13,43 @@ ATTEMPT_WINDOW_SECONDS = 60
 SERIALIZER = URLSafeTimedSerializer(SEED, salt="auth-cookie")
 COOKIE_TTL = 3600
 
-def create_session_cookie(email: str) -> str:
+def create_session_cookie(email: str, ip: str = None) -> str:
     """Returns a signed + encrypted session cookie."""
-    return SERIALIZER.dumps(email)
+    if ip:
+        # New format: serialize both email and IP
+        data = {"email": email, "ip": ip}
+        return SERIALIZER.dumps(data)
+    else:
+        # Backward compatibility: serialize just email
+        return SERIALIZER.dumps(email)
 
 def get_authenticated_email(session) -> Optional[str]:
     """Retrieves and verifies email from signed cookie."""
     try:
-        return SERIALIZER.loads(session, max_age=COOKIE_TTL)
+        data = SERIALIZER.loads(session, max_age=COOKIE_TTL)
+        if isinstance(data, dict):
+            # New format with IP
+            return data.get("email")
+        else:
+            # Old format, just email
+            return data
+    except BadSignature:
+        return None
+
+def verify_session_cookie(session, client_ip: str = None) -> Optional[str]:
+    """Retrieves and verifies email from signed cookie, optionally checking IP."""
+    try:
+        data = SERIALIZER.loads(session, max_age=COOKIE_TTL)
+        if isinstance(data, dict):
+            # New format with IP verification
+            email = data.get("email")
+            stored_ip = data.get("ip")
+            if client_ip and stored_ip and client_ip != stored_ip:
+                return None  # IP mismatch
+            return email
+        else:
+            # Old format, just email (no IP verification possible)
+            return data
     except BadSignature:
         return None
         
@@ -69,7 +98,7 @@ class OTP:
         return len(attempts) >= ATTEMPT_LIMIT
 
     @classmethod
-    def authenticate(cls, email: str, otp: str) -> Optional[str]:
+    def authenticate(cls, email: str, otp: str, ip: str = None) -> Optional[str]:
         """
         Validates OTP for a window of past `OTP_VALID_MINUTES`.
         Returns a signed session cookie if authentication is successful.
@@ -78,5 +107,5 @@ class OTP:
         for delta in range(OTP_VALID_MINUTES):
             ts = now_minute - delta
             if cls.verify(email, ts, otp):
-                return create_session_cookie(email)
+                return create_session_cookie(email, ip)
         return None
