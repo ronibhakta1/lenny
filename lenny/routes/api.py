@@ -127,8 +127,9 @@ async def upload(
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.post("/authenticate")
-async def authenticate(response: Response, email: str = Form(...), otp: str = Form(...)):
-    if session_cookie := auth.OTP.authenticate(email, otp):
+async def authenticate(request: Request, response: Response, email: str = Form(...), otp: str = Form(...)):
+    client_ip = request.client.host
+    if session_cookie := auth.OTP.authenticate(email, otp, client_ip):
         response.set_cookie(
             key="session",
             value=session_cookie,
