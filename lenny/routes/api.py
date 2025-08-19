@@ -42,7 +42,6 @@ from lenny.core.readium import ReadiumAPI
 from urllib.parse import quote
 from typing import Optional
 
-from lenny.configs import OTP_KEY
 COOKIES_MAX_AGE = 604800,  # 1 week
 
 router = APIRouter()
