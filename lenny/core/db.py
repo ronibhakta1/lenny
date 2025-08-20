@@ -5,7 +5,11 @@ from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
 from lenny.configs import DB_URI, DEBUG
 
 logger = logging.getLogger(__name__)
-engine = create_engine(DB_URI, echo=DEBUG, client_encoding='utf8')
+# Only use client_encoding for PostgreSQL, not SQLite
+engine_kwargs = {'echo': DEBUG}
+if not DB_URI.startswith('sqlite'):
+    engine_kwargs['client_encoding'] = 'utf8'
+engine = create_engine(DB_URI, **engine_kwargs)
 session = scoped_session(sessionmaker(
     bind=engine, autocommit=False, autoflush=False))
 

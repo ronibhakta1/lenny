@@ -164,12 +164,12 @@ async def show_otp_form(request: Request, email: str):
     return templates.TemplateResponse("otp_form.html", {"request": request, "email": email})
 
 @router.post("/authenticate")
-async def authenticate(response: Response, request: Request, email: str = Form(...), otp: str = Form(...)):
+async def authenticate(request: Request, response: Response, email: str = Form(...), otp: str = Form(...)):
     """
     Authenticates a patron using email and OTP. Sets session and email cookies if successful.
     """
-    ip_address = request.client.host
-    if session_cookie := auth.OTP.authenticate(email, otp, ip_address):
+    client_ip = request.client.host
+    if session_cookie := auth.OTP.authenticate(email, otp, client_ip):
         response.set_cookie(
             key="session",
             value=session_cookie,
