@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import UploadFile
 from botocore.exceptions import ClientError
 import socket
-from lenny.core import db, s3
+from lenny.core import db, s3, auth
 from lenny.core.models import Item, Loan, FormatEnum
 from lenny.core.openlibrary import OpenLibrary
 from lenny.core.exceptions import (
@@ -26,10 +26,9 @@ from lenny.core.opds import (
 )
 from lenny.configs import (
     SCHEME, HOST, PORT, PROXY,
-    READER_PORT, LENNY_SEED
+    READER_PORT
 )
 import datetime
-from itsdangerous import TimestampSigner, BadSignature
 
 class LennyAPI:
 
@@ -41,7 +40,7 @@ class LennyAPI:
         ".epub": FormatEnum.EPUB
     }
     Item = Item
-    signer = TimestampSigner(LENNY_SEED)
+    # Cookie signing/verification now uses lenny.core.auth helpers
 
     @classmethod
     def make_manifest_url(cls, book_id):
@@ -60,16 +59,15 @@ class LennyAPI:
     
     @classmethod
     def make_session_cookie(cls, email: str):
-        return cls.signer.sign(email).decode('utf-8')
+        """Compatibility wrapper: create a session cookie using auth helpers."""
+        return auth.create_session_cookie(email)
     
     @classmethod
     def validate_session_cookie(cls, session_cookie: str):
         """Validates the session cookie and returns the email if valid."""
         if session_cookie:
-            try:
-                return cls.signer.unsign(session_cookie).decode('utf-8')
-            except BadSignature:
-                return None
+            return auth.verify_session_cookie(session_cookie)
+        return None
 
     @classmethod
     def auth_check(cls, openlibrary_edition: int, email = None , session: str = None):
