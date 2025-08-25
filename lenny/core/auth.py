@@ -11,7 +11,11 @@ OTP_VALID_MINUTES = 10
 ATTEMPT_LIMIT = 5
 ATTEMPT_WINDOW_SECONDS = 60
 SERIALIZER = URLSafeTimedSerializer(SEED, salt="auth-cookie")
-COOKIE_TTL = 3600
+COOKIE_TTL = 604800  # 7 days
+
+# Send-OTP limiter: 5 per 5 minutes
+EMAIL_REQUEST_LIMIT = 5          
+EMAIL_WINDOW_SECONDS = 300   
 
 def create_session_cookie(email: str, ip: str = None) -> str:
     """Returns a signed + encrypted session cookie."""
@@ -56,6 +60,7 @@ def verify_session_cookie(session, client_ip: str = None) -> Optional[str]:
 class OTP:
 
     _attempts = {}
+    _send_attempts = {}
 
     @staticmethod
     def generate(email: str, issued_minute: Optional[int]) -> str:
@@ -68,13 +73,24 @@ class OTP:
     @classmethod
     def verify(cls, email: str, ts: str, otp: str) -> bool:
         if cls.is_rate_limited(email):
-            raise RateLimitError
+            raise RateLimitError("Too many attempts. Please try again later.")
         expected_otp = cls.generate(email, ts)
         return hmac.compare_digest(otp, expected_otp)
+    
+    @classmethod
+    def is_send_rate_limited(cls, email: str) -> bool:
+        """Limit OTP send requests: 5 emails per 5 minutes per email."""
+        now = time.time()
+        attempts = cls._send_attempts.get(email, [])
+        attempts = [ts for ts in attempts if now - ts < EMAIL_WINDOW_SECONDS]
+        cls._send_attempts[email] = attempts + [now]
+        return len(attempts) >= EMAIL_REQUEST_LIMIT
 
     @classmethod
     def sendmail(cls, email: str, url: str):
         """Interim: Use OpenLibrary.org to send & rate limit otp"""
+        if cls.is_send_rate_limited(email):
+            raise RateLimitError("Too many attempts. Please try again later.")
         # TODO: send otp via Open Library
         otp = cls.generate(email)
         params = {
