@@ -57,7 +57,7 @@ class LennyAPI:
         return f"{url}{path}"
 
     @classmethod
-    def auth_check(cls, openlibrary_edition: int, email = None , session: str = None):
+    def auth_check(cls, openlibrary_edition: int, email: str = None, session: str = None):
         """
         Checks if the user is allowed to access the book.
         """

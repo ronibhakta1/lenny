@@ -1,11 +1,14 @@
 import hashlib
 import hmac
+import logging
 import time
 from datetime import datetime, timedelta
 from typing import Optional
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from lenny.configs import SEED
 from lenny.core.exceptions import RateLimitError
+
+logger = logging.getLogger(__name__)
 
 OTP_VALID_MINUTES = 10
 ATTEMPT_LIMIT = 5
@@ -93,6 +96,7 @@ class OTP:
             raise RateLimitError("Too many attempts. Please try again later.")
         # TODO: send otp via Open Library
         otp = cls.generate(email, ip_address)
+        logger.info(f"Generated OTP for {email} at {ip_address}: {otp}")
         params = {
             "email": email,
             "ip_address": ip_address,
