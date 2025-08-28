@@ -63,18 +63,18 @@ class OTP:
     _send_attempts = {}
 
     @staticmethod
-    def generate(email: str, issued_minute: Optional[int]) -> str:
-        """Generates an OTP for a given email and timestamp."""
+    def generate(email: str, ip_address: str, issued_minute: Optional[int] = None) -> str:
+        """Generates an OTP for a given email, IP address, and timestamp."""
         now = int(time.time() // 60)
         ts = issued_minute or now
-        payload = f"{email}:{ts}".encode()
+        payload = f"{email}:{ip_address}:{ts}".encode()
         return hmac.new(SEED, payload, hashlib.sha256).hexdigest()
 
     @classmethod
-    def verify(cls, email: str, ts: str, otp: str) -> bool:
+    def verify(cls, email: str, ip_address: str, ts: str, otp: str) -> bool:
         if cls.is_rate_limited(email):
             raise RateLimitError("Too many attempts. Please try again later.")
-        expected_otp = cls.generate(email, ts)
+        expected_otp = cls.generate(email, ip_address, ts)
         return hmac.compare_digest(otp, expected_otp)
     
     @classmethod
@@ -87,14 +87,15 @@ class OTP:
         return len(attempts) >= EMAIL_REQUEST_LIMIT
 
     @classmethod
-    def sendmail(cls, email: str, url: str):
+    def sendmail(cls, email: str, ip_address: str,url: str):
         """Interim: Use OpenLibrary.org to send & rate limit otp"""
         if cls.is_send_rate_limited(email):
             raise RateLimitError("Too many attempts. Please try again later.")
         # TODO: send otp via Open Library
-        otp = cls.generate(email)
+        otp = cls.generate(email, ip_address)
         params = {
             "email": email,
+            "ip_address": ip_address,
             "url": url,
             "otp": otp,
         }
@@ -116,7 +117,7 @@ class OTP:
     @classmethod
     def authenticate(cls, email: str, otp: str, ip: str = None) -> Optional[str]:
         """
-        Validates OTP for a window of past `OTP_VALID_MINUTES`.
+        Validates OTP for a window of past `OTP_VALID_MINUTES` and IP address.
         Returns a signed session cookie if authentication is successful.
         """
         now_minute = int(time.time() // 60)
