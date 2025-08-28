@@ -145,7 +145,7 @@ async def upload(
 @router.post("/authenticate")
 async def authenticate(request: Request, response: Response, email: str = Form(...), otp: str = Form(...)):
     client_ip = request.client.host
-    if not (email and otp):
+    if email and not otp:
         auth.OTP.sendmail(email, client_ip, url="/authenticate")
         return JSONResponse({
             "success": True,

@@ -90,7 +90,7 @@ class OTP:
         return len(attempts) >= EMAIL_REQUEST_LIMIT
 
     @classmethod
-    def sendmail(cls, email: str, ip_address: str,url: str):
+    def sendmail(cls, email: str, ip_address: str, url: str):
         """Interim: Use OpenLibrary.org to send & rate limit otp"""
         if cls.is_send_rate_limited(email):
             raise RateLimitError("Too many attempts. Please try again later.")
