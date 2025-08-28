@@ -11,7 +11,7 @@ OTP_VALID_MINUTES = 10
 ATTEMPT_LIMIT = 5
 ATTEMPT_WINDOW_SECONDS = 60
 SERIALIZER = URLSafeTimedSerializer(SEED, salt="auth-cookie")
-COOKIE_TTL = 604800  # 7 days
+COOKIE_TTL = 3600
 
 # Send-OTP limiter: 5 per 5 minutes
 EMAIL_REQUEST_LIMIT = 5          
