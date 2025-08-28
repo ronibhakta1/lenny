@@ -254,9 +254,9 @@ async def get_borrowed_items(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get('/logout', status_code=status.HTTP_200_OK)
-async def logout_page(request: Request):
+async def logout_page(response: Response):
     """
     Logs out the user and sends a logout confirmation JSON response.
     """
-    request.delete_cookie(key="session", path="/")
+    response.delete_cookie(key="session", path="/")
     return {"success": True, "message": "Logged out successfully."}
