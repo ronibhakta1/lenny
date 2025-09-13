@@ -46,6 +46,8 @@ def get_authenticated_email(session) -> Optional[str]:
 def verify_session_cookie(session, client_ip: str = None) -> Optional[str]:
     """Retrieves and verifies email from signed cookie, optionally checking IP."""
     try:
+        if not session:
+            raise ValueError("Session cookie missing. Please authenticate.")
         data = SERIALIZER.loads(session, max_age=COOKIE_TTL)
         if isinstance(data, dict):
             # New format with IP verification
