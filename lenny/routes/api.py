@@ -107,11 +107,10 @@ async def get_manifest(request: Request, book_id: str, format: str=".epub" , ses
 async def proxy_readium(request: Request, book_id: str, readium_path: str, format: str=".epub", session: Optional[str] = Cookie(None)):
     email = None
     if item := Item.exists(book_id):
-            if item.is_login_required:
-                session = request.cookies.get("session")
-                email = auth.verify_session_cookie(session, request.client.host)
-                if not email:
-                    raise HTTPException(status_code=401, detail="Authentication required to access this item.")
+        if item.is_login_required:
+            email = auth.verify_session_cookie(session, request.client.host)
+            if not email:
+                raise HTTPException(status_code=401, detail="Authentication required to access this item.")
     if not LennyAPI.auth_check(book_id, email=email, session=session):
         raise HTTPException(status_code=400, detail="Unauthorized request")
     readium_url = ReadiumAPI.make_url(book_id, format, readium_path)
