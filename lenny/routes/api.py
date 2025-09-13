@@ -91,7 +91,6 @@ async def get_manifest(request: Request, book_id: str, format: str=".epub" , ses
     email = None
     if item := Item.exists(book_id):
         if item.is_login_required:
-            session = request.cookies.get("session")
             email = auth.verify_session_cookie(session, request.client.host)
             if not email:
                 raise HTTPException(status_code=401, detail="Authentication required to access this item.")
@@ -180,7 +179,7 @@ async def authenticate(request: Request, response: Response, email: str = Form(.
     return {"success": False}
 
 @router.post('/items/{book_id}/borrow', status_code=status.HTTP_200_OK)
-async def borrow_item(request: Request,  book_id: int, session: str = Cookie(None)):
+async def borrow_item(request: Request,  book_id: int, session: Optional[str] = Cookie(None)):
     """
     Handles the borrowing of a book for a patron.
     Requires the patron's email and checks if they are logged in.
@@ -189,7 +188,6 @@ async def borrow_item(request: Request,  book_id: int, session: str = Cookie(Non
     email = None
     if item := Item.exists(book_id):
         if item.is_login_required:
-            session = request.cookies.get("session")
             email = auth.verify_session_cookie(session, request.client.host)
             if not email:
                 return RedirectResponse(url="/authenticate", status_code=303)
@@ -241,18 +239,17 @@ async def return_item(request: Request, book_id: int):
         raise HTTPException(status_code=400, detail=str(e))
     
 @router.post('/items/borrowed', status_code=status.HTTP_200_OK)
-async def get_borrowed_items(request: Request):
+async def get_borrowed_items(request: Request, session : Optional[str] = Cookie(None)):
     """
     Returns a list of active (not returned) borrowed items for the given patron's email.
     Calls get_borrowed_items to fetch the list.
     """
-    session = request.cookies.get("session")
     email = auth.verify_session_cookie(session, request.client.host)
     if not (email and session):
         return JSONResponse(
             {
                 "auth_required": True,
-                "message": "Authentication required to view borrowed items."
+                "message": "Authentication required to view encrypted borrowed items."
             },
             status_code=401
         )
