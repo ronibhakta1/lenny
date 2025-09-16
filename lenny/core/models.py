@@ -10,7 +10,6 @@
 
 from sqlalchemy  import Column, String, Boolean, BigInteger, Integer, DateTime, Enum as SQLAlchemyEnum
 from sqlalchemy.sql import func
-from lenny.core.api import LennyAPI
 from lenny.core.db import session as db, Base
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import relationship
@@ -76,6 +75,8 @@ class Item(Base):
         """
         if not email:
             raise EmailNotFoundError("Email is required to borrow encrypted items.")
+        
+        from lenny.core.api import LennyAPI
         
         email_hash = LennyAPI.hash_email(email)
         active_loan = db.query(Loan).filter(
