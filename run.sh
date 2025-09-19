@@ -111,6 +111,9 @@ function create_tunnel() {
             echo "[+] Your public URL is: $URL/v1/api/"
 	    read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
 	    export LENNY_PROXY=$URL
+        export NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS=$NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS:$URL
+        echo "NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS:"
+        echo $NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS
             return 0
         fi
     done
@@ -131,9 +134,9 @@ if [[ "$REBUILD" == "true" ]]; then
     echo "[+] Performing full rebuild..."
     docker compose down --volumes --remove-orphans
     docker compose build --no-cache
-    LENNY_PROXY="$LENNY_PROXY" docker compose up -d
+    LENNY_PROXY="$LENNY_PROXY" NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="$NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS" docker compose up -d
 else
-    LENNY_PROXY="$LENNY_PROXY" docker compose -p lenny up -d
+    LENNY_PROXY="$LENNY_PROXY" NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="$NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS" docker compose -p lenny up -d
 fi
 
 if [[ -n "$PRELOAD" ]]; then
