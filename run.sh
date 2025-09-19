@@ -123,7 +123,6 @@ function create_tunnel() {
 
 echo "[+] Loading .env file"
 export $(grep -v '^#' .env | xargs)
-export NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS:-127.0.0.1,localhost}"
 
 if [[ "$PUBLIC" == "true" ]]; then
     create_tunnel    
