@@ -82,7 +82,7 @@ function install_cloudflared() {
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
         brew install cloudflared
-	OS="mac"
+        OS="mac"
     elif [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$(uname -s)" == "Linux" ]]; then
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
         chmod +x cloudflared
@@ -107,11 +107,13 @@ function create_tunnel() {
         sleep 1
         # Try to extract any https://*.trycloudflare.com or https://*.cfargotunnel.com URL
         URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1)
+        PROXY_HOST=$(echo "$URL" | sed 's|https://||')
+
         if [[ -n "$URL" ]]; then
             echo "[+] Your public URL is: $URL/v1/api/"
-		    read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
-		    export LENNY_PROXY=$URL
-	        export NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS},$URL"
+            read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
+            export LENNY_PROXY=$URL
+            export NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS},$PROXY_HOST"
             return 0
         fi
     done
@@ -125,7 +127,7 @@ echo "[+] Loading .env file"
 export $(grep -v '^#' .env | xargs)
 
 if [[ "$PUBLIC" == "true" ]]; then
-    create_tunnel    
+    create_tunnel
 fi
 
 if [[ "$REBUILD" == "true" ]]; then
