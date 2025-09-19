@@ -109,9 +109,9 @@ function create_tunnel() {
         URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1)
         if [[ -n "$URL" ]]; then
             echo "[+] Your public URL is: $URL/v1/api/"
-	    read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
-	    export LENNY_PROXY=$URL
-        export "${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS},$URL"
+		    read -p "[+] Setting as LENNY_PROXY. Press Enter to continue..."
+		    export LENNY_PROXY=$URL
+	        export NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS},$URL"
             return 0
         fi
     done
