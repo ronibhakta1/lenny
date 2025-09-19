@@ -17,6 +17,7 @@ services:
       - S3_ENDPOINT=s3:9000
       - DB_HOST=db
       - LENNY_PROXY=${LENNY_PROXY}
+      - NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS=${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS}
     volumes:
       - .:/app
       - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
