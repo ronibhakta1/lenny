@@ -59,3 +59,8 @@ restart:
 .PHONY: rebuild
 rebuild:
 	@bash docker/utils/lenny.sh --rebuild
+
+.PHONY: stop
+stop:
+	@bash docker/utils/lenny.sh --stop
+	@$(MAKE) untunnel
