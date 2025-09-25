@@ -10,11 +10,13 @@
 
 from sqlalchemy  import Column, String, Boolean, BigInteger, Integer, DateTime, Enum as SQLAlchemyEnum
 from sqlalchemy.sql import func
-from lenny.core.db import session as db, Base
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.hybrid import hybrid_property
+from lenny.core.utils import hash_email
+from lenny.core.db import session as db, Base
 from lenny.core.exceptions import (
+    LoanNotRequiredError,
     EmailNotFoundError,
     DatabaseInsertError
 )
@@ -68,36 +70,37 @@ class Item(Base):
     @classmethod
     def exists(cls, olid):
         return db.query(Item).filter(Item.openlibrary_edition == olid).first()
-    
+
+    def unborrow(self, email: str):
+        if not item.is_login_required:
+            raise LoanNotRequiredError
+
+        if not email:
+            raise EmailNotFoundError("Email required to borrow encrypted items.")
+
+        if loan := Loan.exists(self.id, email):
+            return loan.finalize()
+
+        raise LoanNotFoundError("Patron has no active loan for this book.")
+
+
     def borrow(self, email: str):
         """
         Borrows a book for a patron. Returns the Loan object if successful.
         """
+        # If the book doesn't require auth, skip borrow
+        if not self.is_login_required:
+            raise LoanNotRequiredError
+        
         if not email:
             raise EmailNotFoundError("Email is required to borrow encrypted items.")
-        
-        from lenny.core.api import LennyAPI
-        
-        email_hash = LennyAPI.hash_email(email)
-        active_loan = db.query(Loan).filter(
-            Loan.item_id == self.id,
-            Loan.patron_email_hash == email_hash,
-            Loan.returned_at == None
-        ).first()
-        if active_loan:
+
+        hashed_email = hash_email(email)
+        if active_loan := Loan.exists(self.id, hashed_email, hashed=True):
             return active_loan
-        try:
-            loan = Loan(
-                item_id=self.id,
-                patron_email_hash=email_hash,
-            )
-            db.add(loan)
-            db.commit()
-            return loan
-        except Exception as e:
-            db.rollback()
-            raise DatabaseInsertError(f"Failed to create loan record: {str(e)}.")
-    
+        return Loan.create(self.id, hashed_email, hashed=True)
+
+
 class Loan(Base):
     __tablename__ = 'loans'
 
@@ -110,11 +113,34 @@ class Loan(Base):
     item = relationship('Item', back_populates='loans')
     
     @classmethod 
-    def Loan_exists(cls, item_id, patron_email_hash):
+    def exists(cls, item_id, email, hashed=False):
+        hashed_email = email if hashed else hash_email(email)
         return db.query(Loan).filter(
             Loan.item_id == item_id,
-            Loan.patron_email_hash == patron_email_hash,
+            Loan.patron_email_hash == hashed_email,
             Loan.returned_at == None
-        ).first() is not None
+        ).first()
+
+    @classmethod
+    def create(cls, item_id, email, hashed=False):
+        hashed_email = email if hashed else hash_email(email)
+        try:
+            loan = cls(item_id=item_id, patron_email_hash=hashed_email)
+            db.add(loan)
+            db.commit()
+            return loan
+        except Exception as e:
+            db.rollback()
+            raise DatabaseInsertError(f"Failed to create loan record: {str(e)}.")
+    
+    def finalize(self):
+        try:
+            loan.returned_at = datetime.datetime.utcnow()
+            db.add(loan)
+            db.commit()
+            return loan
+        except Exception as e:
+            db.rollback()
+            raise DatabaseInsertError(f"Failed to return loan: {str(e)}.")
 
 Item.loans = relationship('Loan', back_populates='item', cascade='all, delete-orphan')

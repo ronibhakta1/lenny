@@ -47,7 +47,7 @@ def verify_session_cookie(session, client_ip: str = None) -> Optional[str]:
     """Retrieves and verifies email from signed cookie, optionally checking IP."""
     try:
         if not session:
-            raise ValueError("Session cookie missing. Please authenticate.")
+            return None
         data = SERIALIZER.loads(session, max_age=COOKIE_TTL)
         if isinstance(data, dict):
             # New format with IP verification
@@ -73,7 +73,7 @@ class OTP:
         now = int(time.time() // 60)
         ts = issued_minute or now
         payload = f"{email}:{ip_address}:{ts}".encode()
-        return hmac.new(SEED, payload, hashlib.sha256).hexdigest()
+        return hmac.new(SEED.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
     @classmethod
     def verify(cls, email: str, ip_address: str, ts: str, otp: str) -> bool:
@@ -99,6 +99,7 @@ class OTP:
         # TODO: send otp via Open Library
         otp = cls.generate(email, ip_address)
         logger.info(f"Generated OTP for {email} at {ip_address}: {otp}")
+        print(f"Generated OTP for {email} at {ip_address}: {otp}")
         params = {
             "email": email,
             "ip_address": ip_address,
@@ -129,6 +130,6 @@ class OTP:
         now_minute = int(time.time() // 60)
         for delta in range(OTP_VALID_MINUTES):
             ts = now_minute - delta
-            if cls.verify(email, ts, otp):
+            if cls.verify(email, ip, ts, otp):
                 return create_session_cookie(email, ip)
         return None
