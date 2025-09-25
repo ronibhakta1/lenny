@@ -99,7 +99,6 @@ class OTP:
         # TODO: send otp via Open Library
         otp = cls.generate(email, ip_address)
         logger.info(f"Generated OTP for {email} at {ip_address}: {otp}")
-        print(f"Generated OTP for {email} at {ip_address}: {otp}")
         params = {
             "email": email,
             "ip_address": ip_address,
