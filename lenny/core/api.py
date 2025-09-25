@@ -1,10 +1,11 @@
 import requests
 import datetime
 from pathlib import Path
-from fastapi import UploadFile
+from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
 from lenny.core import db, s3, auth
+from lenny.core.utils import hash_email
 from lenny.core.models import Item, FormatEnum, Loan
 from lenny.core.openlibrary import OpenLibrary
 from lenny.core.exceptions import (
@@ -63,16 +64,24 @@ class LennyAPI:
         return f"{url}{path}"
 
     @classmethod
-    def auth_check(cls, openlibrary_edition: int, email: str = None, session: str = None):
+    def auth_check(cls, item, session: str=None, request: Request=None):
         """
         Checks if the user is allowed to access the book.
         """
-        if item := Item.exists(openlibrary_edition):
-            if not item.is_login_required:
-                return item # open access book
-            if session_email := cls.validate_session_cookie(session):
-                return item if email and email == session_email else None
-        raise ItemNotFoundError(f"Item with OpenLibrary edition {openlibrary_edition} does not exist.")
+        success = {"success": "authenticated"}
+        ip = request.client.host
+        redir = request.url.path
+
+        if item.is_login_required:
+            if not (email := auth.verify_session_cookie(session, ip)):
+                return {
+                    "error": "unauthenticated",
+                    "url": f"/v1/api/authenticate?redir={redir}",
+                    "required": ["email"],
+                    "message": "Not authenticated; POST to url to get a one-time-password"
+                }
+            success['email'] = email
+        return success
     
     @classmethod
     def make_session_cookie(cls, email: str):
@@ -235,6 +244,7 @@ class LennyAPI:
 
     @classmethod
     def add(cls, openlibrary_edition: int, files: list[UploadFile], uploader_ip:str, encrypt: bool=False):
+        """Adds a book into s3 and the database"""
         if not cls.is_allowed_uploader(uploader_ip):
             raise UploaderNotAllowedError(f"IP {uploader_ip} not in allow list")
 
@@ -255,55 +265,13 @@ class LennyAPI:
                 db.rollback()
                 raise DatabaseInsertError(f"Failed to add item to db: {str(e)}.")
 
-    @staticmethod
-    def hash_email(email: str) -> str:
-        import hashlib
-        return hashlib.sha256(email.strip().lower().encode('utf-8')).hexdigest()
-        
-    @classmethod
-    def borrow_redirect(cls, openlibrary_edition: int, email: str = None):
-        """
-        Borrows a book and redirects user to the reader if successful.
-        Only creates a loan for encrypted items, as per the Item model.
-        """
-        if item := Item.exists(openlibrary_edition):
-            redirect_url = cls.make_url(f"/v1/api/items/{openlibrary_edition}/read")
-            # If not encrypted, just allow access and redirect
-            if not item.encrypted:
-                return {"success": True, "redirect_url": redirect_url}
-            # If encrypted, require email and create a loan
-            if not email:
-                raise EmailNotFoundError("Email is required to borrow encrypted items.")
-            loan = item.borrow(email)
-            return {"success": True, "loan ID": loan.id, "redirect_url": redirect_url}
-        raise ItemNotFoundError(f"Item with openlibrary_edition {openlibrary_edition} not found.")
-
-    @classmethod
-    def checkout_items(cls, openlibrary_editions: list, email: str):
-        """
-        Checks out multiple books for a patron.
-        Returns a list of Loan objects. Rolls back all if any fail.
-        """
-        loans = []
-        try:
-            for openlibrary_edition in openlibrary_editions:
-                item = Item.exists(openlibrary_edition)
-                if not item:
-                    raise ItemNotFoundError(f"Item with openlibrary_edition {openlibrary_edition} not found.")
-                loan = item.borrow(email)
-                loans.append(loan)
-            return loans
-        except Exception as e:
-            db.rollback()
-            raise DatabaseInsertError(f"Failed to borrow one or more books: {str(e)}.")
-
     @classmethod
     def get_borrowed_items(cls, email: str):
         """
         Returns a list of active (not returned) Loan objects for the given user email.
         Ensures openlibrary_edition is set for each loan.
         """
-        email_hash = cls.hash_email(email)
+        email_hash = hash_email(email)
         loans = db.query(Loan).filter(
             Loan.patron_email_hash == email_hash,
             Loan.returned_at == None
@@ -316,27 +284,3 @@ class LennyAPI:
                 loan.openlibrary_edition = item.openlibrary_edition
                 enriched_loans.append(loan)
         return enriched_loans
-    
-    @classmethod
-    def return_items(cls, openlibrary_edition: int, email: str):
-        """
-        Marks a loan as returned for the patron and book.
-        Returns the updated Loan object if successful. Rolls back on error.
-        """
-        if item := Item.exists(openlibrary_edition):
-            email_hash = cls.hash_email(email)
-            loan = db.query(Loan).filter(
-                Loan.item_id == item.id,
-                Loan.patron_email_hash == email_hash,
-                Loan.returned_at == None
-            ).first()
-            if not loan:
-                raise LoanNotFoundError("No active loan found for this patron and book.")
-            try:
-                loan.returned_at = datetime.datetime.utcnow()
-                db.commit()
-                return loan
-            except Exception as e:
-                db.rollback()
-                raise DatabaseInsertError(f"Failed to return loan: {str(e)}.")
-        raise ItemNotFoundError(f"Item with openlibrary_edition {openlibrary_edition} not found.")
