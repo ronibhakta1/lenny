@@ -34,7 +34,7 @@ fi
 if [[ "$1" == "--start" || "$1" == "--rebuild" ]]; then
     docker compose -p lenny up -d
 elif [[ "$1" == "--restart" ]]; then
-    docker compose -p lenny restart lenny-api
+    docker compose -p lenny restart lenny_api
 elif [[ "$1" == "--stop" ]]; then
     docker compose -p lenny stop
 else
