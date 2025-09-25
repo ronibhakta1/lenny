@@ -3,47 +3,47 @@
 LENNY_ENV_FILE=".env"
 READER_ENV_FILE="reader.env"
 
-# Exit if the file already exists
-if [ -f "$ENV_FILE" ]; then
-  echo "$ENV_FILE already exists. No changes made."
-  exit 0
-fi
-
 genpass() {
     len=${1:-32}
     dd if=/dev/urandom bs=1 count=$((len * 2)) 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | head -c "$len"
 }
 
-# Use environment variables if they are set, otherwise provide defaults or generate secure values
-LENNY_HOST="localhost"
-LENNY_PORT="${LENNY_PORT:-8080}"
-LENNY_WORKERS="${LENNY_WORKERS:-1}"
-LENNY_LOG_LEVEL="${LENNY_LOG_LEVEL:-debug}"
-LENNY_RELOAD="${LENNY_RELOAD:-1}"
-LENNY_SSL_CRT="${LENNY_SSL_CRT:-}"
-LENNY_SSL_KEY="${LENNY_SSL_KEY:-}"
-LENNY_SEED="${LENNY_SEED:-$(genpass 32)}"
+# Exit if the file already exists
+if [ -f "$LENNY_ENV_FILE" ]; then
+  echo "Skipping configure: $LENNY_ENV_FILE already configured."
+else
+  echo "Creating $LENNY_ENV_FILE."
+ 
+  # Use environment variables if they are set, otherwise provide defaults or generate secure values
+  LENNY_HOST="localhost"
+  LENNY_PORT="${LENNY_PORT:-8080}"
+  LENNY_WORKERS="${LENNY_WORKERS:-1}"
+  LENNY_LOG_LEVEL="${LENNY_LOG_LEVEL:-debug}"
+  LENNY_RELOAD="${LENNY_RELOAD:-1}"
+  LENNY_SSL_CRT="${LENNY_SSL_CRT:-}"
+  LENNY_SSL_KEY="${LENNY_SSL_KEY:-}"
+  LENNY_SEED="${LENNY_SEED:-$(genpass 32)}"
 
-READER_PORT="${READER_PORT:-3000}"
-READIUM_PORT="${READIUM_PORT:-15080}"
+  READER_PORT="${READER_PORT:-3000}"
+  READIUM_PORT="${READIUM_PORT:-15080}"
 
-NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE="${NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE:-true}"
-NEXT_PUBLIC_MANIFEST_FORCE_ENABLE="${NEXT_PUBLIC_MANIFEST_FORCE_ENABLE:-true}"
-NODE_ENV="${NODE_ENV:-production}"
+  NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE="${NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE:-true}"
+  NEXT_PUBLIC_MANIFEST_FORCE_ENABLE="${NEXT_PUBLIC_MANIFEST_FORCE_ENABLE:-true}"
+  NODE_ENV="${NODE_ENV:-production}"
 
-DB_USER="${POSTGRES_USER:-librarian}"
-DB_HOST="${POSTGRES_HOST:-127.0.0.1}"
-DB_PORT="${POSTGRES_PORT:-5432}"
+  DB_USER="${POSTGRES_USER:-librarian}"
+  DB_HOST="${POSTGRES_HOST:-127.0.0.1}"
+  DB_PORT="${POSTGRES_PORT:-5432}"
 
-DB_PASSWORD="${POSTGRES_PASSWORD:-$(genpass 32)}"
-DB_NAME="${DB_NAME:-lenny}"
+  DB_PASSWORD="${POSTGRES_PASSWORD:-$(genpass 32)}"
+  DB_NAME="${DB_NAME:-lenny}"
 
-S3_ACCESS_KEY="${MINIO_ROOT_USER:-$(genpass 20)}"
-S3_SECRET_KEY="${MINIO_ROOT_PASSWORD:-$(genpass 40)}"
-S3_ENDPOINT="${S3_ENDPOINT:-http://s3:9000}"
+  S3_ACCESS_KEY="${MINIO_ROOT_USER:-$(genpass 20)}"
+  S3_SECRET_KEY="${MINIO_ROOT_PASSWORD:-$(genpass 40)}"
+  S3_ENDPOINT="${S3_ENDPOINT:-http://s3:9000}"
 
-# Write to lenny.env
-cat <<EOF > "$LENNY_ENV_FILE"
+  # Write to lenny.env
+  cat <<EOF > "$LENNY_ENV_FILE"
 # API
 LENNY_PROXY=
 LENNY_HOST=$LENNY_HOST
@@ -75,8 +75,14 @@ S3_PROVIDER=minio
 S3_SECURE=false
 
 EOF
+fi
 
-cat <<EOF > "$READER_ENV_FILE"
+# Exit if the file already exists
+if [ -f "$READER_ENV_FILE" ]; then
+  echo "Skipping configure: $READER_ENV_FILE already configured."
+else
+  echo "Creating $READER_ENV_FILE"
+  cat <<EOF > "$READER_ENV_FILE"
 # Reader
 NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE=$NEXT_PUBLIC_ENABLE_MANIFEST_ROUTE
 NEXT_PUBLIC_MANIFEST_FORCE_ENABLE=$NEXT_PUBLIC_MANIFEST_FORCE_ENABLE
@@ -84,3 +90,4 @@ NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS=127.0.0.1,localhost,*.trycloudflare.com
 NODE_ENV=$NODE_ENV
 
 EOF
+fi
