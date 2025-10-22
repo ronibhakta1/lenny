@@ -24,6 +24,7 @@ from lenny.core.opds import (
     OPDSFeed,
     Publication,
     Link,
+    Image,
     OPDS_REL_ACQUISITION
 )
 from lenny.configs import (
@@ -151,14 +152,14 @@ class LennyAPI:
                     rel=OPDS_REL_ACQUISITION
                 )
             ]
+            images = []
             if data.cover_url:
-                links.append(
-                    Link(
-                        href=data.cover_url,
-                        type="image/jpeg",
-                        rel="http://opds-spec.org/image"
-                    )
+                images = [
+                Image(
+                    href=data.cover_url,
+                    type="image/jpeg"
                 )
+            ]
             pub = Publication(
                 metadata={
                     "title": title,
@@ -166,6 +167,7 @@ class LennyAPI:
                     "modified": lenny.updated_at,
                     "author": [a.to_dict() for a in authors],
                 },
+                images=images,
                 links=links,
             )
 

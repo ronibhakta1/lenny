@@ -17,16 +17,22 @@ class Link:
     href: str
     type: str
     rel: Optional[str] = None
+    
+@dataclass
+class Image:
+    href: str
+    type: str
 
 @dataclass
 class Publication:
     metadata: dict
-    links: List[Link]
+    links: List[Link] = field(default_factory=list)
+    images: List[Image] = field(default_factory=list)
 
 @dataclass
 class OPDSFeed:
     metadata: dict
-    publications: List[Publication]
+    publications: List[Publication] = field(default_factory=list)
 
     def to_dict(self):
         return asdict(self)
