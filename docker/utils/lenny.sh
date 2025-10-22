@@ -21,7 +21,7 @@ if [[ -n "$URL" ]]; then
 
     if docker ps -q -f name=lenny_api >/dev/null; then
         echo "[+] Restarting lenny_api to pick up updated LENNY_PROXY"
-        docker compose -p lenny up -d --no-deps lenny_api
+        docker compose -p lenny up -d --no-deps api
     fi
 fi
 
@@ -34,7 +34,7 @@ fi
 if [[ "$1" == "--start" || "$1" == "--rebuild" ]]; then
     docker compose -p lenny up -d
 elif [[ "$1" == "--restart" ]]; then
-    docker compose -p lenny restart lenny_api
+    docker compose -p lenny restart api
 elif [[ "$1" == "--stop" ]]; then
     docker compose -p lenny stop
 else
