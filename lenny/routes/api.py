@@ -207,23 +207,39 @@ async def authenticate(request: Request, response: Response):
     otp = body.get("otp")
 
     if email and not otp:
-        auth.OTP.sendmail(email, client_ip, url="/authenticate")
-        return JSONResponse({
-            "success": True,
-            "message": "OTP sent successfully."
-        })
-    if session_cookie := auth.OTP.authenticate(email, otp, client_ip):
-        response.set_cookie(
-            key="session",
-            value=session_cookie,
-            max_age=auth.COOKIE_TTL,
-            httponly=True,   # Prevent JavaScript access
-            secure=True,     # Only over HTTPS in production
-            samesite="Lax",  # Helps mitigate CSRF
-            path="/"
-        )
-        return {"success": True}
-    return {"success": False}
+        try:
+            return JSONResponse(auth.OTP.issue(email, client_ip))
+        except:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "Failed to issue OTP. Please try again later."
+                }
+            )
+    else:
+        try: 
+            session_cookie = auth.OTP.authenticate(email, otp, client_ip)
+        except:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "Failed to verify OTP due to rate limited. Please try again later."
+                }
+            )
+        if session_cookie:
+            response.set_cookie(
+                key="session",
+                value=session_cookie,
+                max_age=auth.COOKIE_TTL,
+                httponly=True,   # Prevent JavaScript access
+                secure=True,     # Only over HTTPS in production                    samesite="Lax",  # Helps mitigate CSRF
+                path="/"
+            )
+            return {"Authentication successful": "OTP verified.","success": True}
+        else:
+            return {"Authentication failed": "Invalid OTP.", "success": False}
+
+    
         
     
 @router.post('/items/borrowed', status_code=status.HTTP_200_OK)
