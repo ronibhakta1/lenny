@@ -1,9 +1,8 @@
-import requests
-import datetime
 from pathlib import Path
 from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
+from pyopds2_lenny import LennyDataProvider
 from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email
 from lenny.core.models import Item, FormatEnum, Loan
@@ -19,13 +18,7 @@ from lenny.core.exceptions import (
     ItemNotFoundError,
     LoanNotFoundError
 )
-from lenny.core.opds import (
-    Author,
-    OPDSFeed,
-    Publication,
-    Link,
-    OPDS_REL_ACQUISITION
-)
+
 from lenny.configs import (
     SCHEME, HOST, PORT, PROXY,
     READER_PORT
@@ -125,52 +118,37 @@ class LennyAPI:
     @classmethod
     def opds_feed(cls, offset=None, limit=None):
         """
-        Convert combined Lenny+OL items to OPDS 2.0 JSON feed, including borrow and return URLs.
+        Generate a complete OPDS 2.0 feed using LennyDataProvider.
         """
-        read_uri = cls.make_url("/v1/api/items/")
-        feed = OPDSFeed(
-            metadata={"title": cls.OPDS_TITLE},
-            publications=[]
-        )
+        limit = limit or cls.DEFAULT_LIMIT
+        offset = offset or 0
         items = cls.get_enriched_items(offset=offset, limit=limit)
-        for edition_id, data in items.items():
-            lenny = data["lenny"]
-            edition = data.edition
-            title = edition.get("title", "Untitled")
-            authors = [Author(name=a) for a in edition.get("author_name", [])]
+        olids = [f"OL{olid}M" for olid in items.keys()]
+        query = f"edition_key:({' OR '.join(olids)})" if olids else ""
+        numfound = len(items)
+        is_encrypted = any(bool(getattr(rec.lenny, 'encrypted', False)) for rec in items.values())
+        base_url = cls.make_url("")
+        lenny_ids = []
+        for olid, rec in items.items():
+            try:
+                lenny_ids.append(int(rec.lenny.openlibrary_edition))
+            except Exception:
+                lenny_ids.append(None)
 
-            links = [
-                Link(
-                    href=f"{read_uri}{edition_id}/borrow",
-                    type="application/json",
-                    rel=OPDS_REL_ACQUISITION
-                ),
-                Link(
-                    href=f"{read_uri}{edition_id}/return",
-                    type="application/json",
-                    rel=OPDS_REL_ACQUISITION
-                )
-            ]
-            if data.cover_url:
-                links.append(
-                    Link(
-                        href=data.cover_url,
-                        type="image/jpeg",
-                        rel="http://opds-spec.org/image"
-                    )
-                )
-            pub = Publication(
-                metadata={
-                    "title": title,
-                    "identifier": f"OL{edition_id}M",
-                    "modified": lenny.updated_at,
-                    "author": [a.to_dict() for a in authors],
-                },
-                links=links,
-            )
-
-            feed.publications.append(pub)
-        return feed.to_dict()
+        records, total = LennyDataProvider.search(
+            query=query,
+            numfound=numfound,
+            offset=offset,
+            limit=limit,
+            lenny_ids=lenny_ids,
+            is_encrypted=is_encrypted,
+            base_url=base_url
+        )
+        feed = LennyDataProvider.create_opds_feed(
+            records=records, total=total, limit=limit, offset=offset
+        )
+        print(feed)
+        return feed
 
     @classmethod
     def encrypt_file(cls, f, method="lcp"):

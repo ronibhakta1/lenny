@@ -223,7 +223,7 @@ async def authenticate(request: Request, response: Response):
             return JSONResponse(
                 {
                     "success": False,
-                    "error": "Failed to verify OTP due to rate limited. Please try again later."
+                    "error": "Failed to verify OTP due to rate limiting. Please try again later."
                 }
             )
         if session_cookie:
@@ -232,7 +232,8 @@ async def authenticate(request: Request, response: Response):
                 value=session_cookie,
                 max_age=auth.COOKIE_TTL,
                 httponly=True,   # Prevent JavaScript access
-                secure=True,     # Only over HTTPS in production                    samesite="Lax",  # Helps mitigate CSRF
+                secure=True,     # Only over HTTPS in production
+                samesite="Lax",  # Helps mitigate CSRF
                 path="/"
             )
             return {"Authentication successful": "OTP verified.","success": True}
