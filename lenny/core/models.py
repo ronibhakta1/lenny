@@ -17,10 +17,12 @@ from lenny.core.utils import hash_email
 from lenny.core.db import session as db, Base
 from lenny.core.exceptions import (
     LoanNotRequiredError,
+    LoanNotFoundError,
     EmailNotFoundError,
     DatabaseInsertError
 )
 import enum
+import datetime
 
 class FormatEnum(enum.Enum):
     EPUB = 1
@@ -72,7 +74,7 @@ class Item(Base):
         return db.query(Item).filter(Item.openlibrary_edition == olid).first()
 
     def unborrow(self, email: str):
-        if not item.is_login_required:
+        if not self.is_login_required:
             raise LoanNotRequiredError
 
         if not email:
@@ -82,7 +84,9 @@ class Item(Base):
             return loan.finalize()
 
         raise LoanNotFoundError("Patron has no active loan for this book.")
-
+    
+    def is_encrypted_item(self):
+        return self.encrypted
 
     def borrow(self, email: str):
         """
@@ -132,13 +136,12 @@ class Loan(Base):
         except Exception as e:
             db.rollback()
             raise DatabaseInsertError(f"Failed to create loan record: {str(e)}.")
-    
     def finalize(self):
         try:
-            loan.returned_at = datetime.datetime.utcnow()
-            db.add(loan)
+            self.returned_at = datetime.datetime.utcnow()
+            db.add(self)
             db.commit()
-            return loan
+            return self
         except Exception as e:
             db.rollback()
             raise DatabaseInsertError(f"Failed to return loan: {str(e)}.")
