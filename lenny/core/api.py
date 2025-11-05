@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import Optional
 from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
 from pyopds2_lenny import LennyDataProvider
+from opds2 import Catalog, Metadata, SearchRequest, SearchResponse
 from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email
 from lenny.core.models import Item, FormatEnum, Loan
@@ -118,37 +120,120 @@ class LennyAPI:
     @classmethod
     def opds_feed(cls, offset=None, limit=None):
         """
-        Generate a complete OPDS 2.0 feed using LennyDataProvider.
+        Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
+        and the LennyDataProvider to transform Open Library metadata into
+        OPDS Publications with Lenny borrow/return links.
         """
         limit = limit or cls.DEFAULT_LIMIT
         offset = offset or 0
+        navigation = cls._navigation(limit)
         items = cls.get_enriched_items(offset=offset, limit=limit)
+        if not items:
+            return cls._build_empty_feed(offset=offset, limit=limit, navigation=navigation)
+        query, lenny_ids, total = cls._build_query_and_lenny_ids(items)
+        records, numfound = LennyDataProvider.search(
+            query=query,
+            numfound=total,
+            limit=limit,
+            offset=offset,
+            lenny_ids=lenny_ids,
+        )
+        return cls._build_feed(records, numfound, limit, offset, navigation)
+
+    @classmethod
+    def _navigation(cls, limit: Optional[int]):
+        """Return a minimal OPDS navigation array as list[dict].
+        Includes a Home link (HTML) and a Catalog link (OPDS JSON).
+        Using dicts keeps it compatible with both Catalog.create (Pydantic will
+        coerce to Navigation) and provider-returned dict feeds.
+        """
+        limit = limit or cls.DEFAULT_LIMIT
+        def _href(path: str) -> str:
+            return cls.make_url(path)
+        return [
+            {"href": _href("/v1/api/opds/"), "title": "Home", "type": "text/html"},
+            {
+                "href": _href(f"/v1/api/opds?offset=0&limit={limit}"),
+                "title": "Catalog",
+                "type": "application/opds+json",
+                "rel": "collection",
+            },
+        ]
+
+    @classmethod
+    def _catalog_links(cls, offset: int, limit: int):
+        """Return standard self/next links for this catalog page."""
+        def _href(path: str) -> str:
+            return cls.make_url(path)
+        return [
+            {"rel": "self", "href": _href(f"/v1/api/opds?offset={offset}&limit={limit}")},
+            {"rel": "next", "href": _href(f"/v1/api/opds?offset={offset + limit}&limit={limit}")},
+        ]
+
+    @classmethod
+    def _build_query_and_lenny_ids(cls, items):
+        """Create Open Library query and determine lenny_ids alignment."""
         olids = [f"OL{olid}M" for olid in items.keys()]
         query = f"edition_key:({' OR '.join(olids)})" if olids else ""
-        numfound = len(items)
-        is_encrypted = any(bool(getattr(rec.lenny, 'encrypted', False)) for rec in items.values())
-        base_url = cls.make_url("")
-        lenny_ids = []
+        lenny_ids: list[Optional[int]] = []
         for olid, rec in items.items():
             try:
-                lenny_ids.append(int(rec.lenny.openlibrary_edition))
+                lenny_ids.append(int(getattr(rec, "lenny").openlibrary_edition))
             except Exception:
-                lenny_ids.append(None)
+                lenny_ids.append(int(olid) if isinstance(olid, int) else None)
+        total = len(lenny_ids)
+        return query, lenny_ids, total
 
-        records, total = LennyDataProvider.search(
-            query=query,
-            numfound=numfound,
-            offset=offset,
-            limit=limit,
-            lenny_ids=lenny_ids,
-            is_encrypted=is_encrypted,
-            base_url=base_url
+    @classmethod
+    def _build_empty_feed(cls, offset: int, limit: int, navigation):
+        """Create an empty OPDS catalog via opds2 with local links + navigation."""
+        search = SearchResponse(
+            records=[],
+            total=0,
+            request=SearchRequest(query="", limit=limit, offset=offset),
         )
-        feed = LennyDataProvider.create_opds_feed(
-            records=records, total=total, limit=limit, offset=offset
+        catalog = Catalog.create(
+            provider=LennyDataProvider,
+            metadata=Metadata(title=cls.OPDS_TITLE),
+            search=search,
+            navigation=navigation,
         )
-        print(feed)
-        return feed
+        catalog.links = cls._catalog_links(offset, limit)
+        return catalog.model_dump()
+
+    @classmethod
+    def _build_feed(cls, records, total: int, limit: int, offset: int, navigation):
+        """Prefer provider's feed builder, with fallback to Catalog.create."""
+        try:
+            base_url = cls.make_url("")
+            feed = LennyDataProvider.create_opds_feed(
+                records=records,
+                total=total,
+                limit=limit,
+                offset=offset,
+                base_url=base_url,
+            )
+            feed.setdefault("metadata", {})
+            feed["metadata"].setdefault("title", cls.OPDS_TITLE)
+            feed["links"] = cls._catalog_links(offset, limit)
+            if navigation:
+                feed["navigation"] = navigation
+            return feed
+        except Exception:
+            # Fallback path: construct via opds2 models
+            search_resp = SearchResponse(
+                records=records,
+                total=total,
+                request=SearchRequest(query="", limit=limit, offset=offset),
+            )
+            catalog = Catalog.create(
+                provider=LennyDataProvider,
+                metadata=Metadata(title=cls.OPDS_TITLE),
+                search=search_resp,
+                navigation=navigation,
+            )
+            catalog.links = cls._catalog_links(offset, limit)
+            return catalog.model_dump()
 
     @classmethod
     def encrypt_file(cls, f, method="lcp"):
