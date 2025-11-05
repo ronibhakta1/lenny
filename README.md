@@ -31,6 +31,7 @@
 
 - [About the Project](#about-the-project)
 - [Features](#features)
+- [OPDS 2.0 Feed](opds-2.0-feed)
 - [Technologies](#technologies)
 - [Endpoints](#endpoints)
 - [Getting Started](#getting-started)
@@ -71,7 +72,10 @@ Lenny is a free, open source, Library-in-a-Box for libraries to preserve and len
 - **Database-backed**: Uses PostgreSQL and SQLAlchemy.
 
 ---
+## OPDS 2.0 Feed
+- Lenny is powered by [OPDS 2.0 Specs](https://opds.io).Lenny has its own OPDS 2.0 Package `pyopds2_lenny` more on [pyopds2_lenny](https://github.com/ArchiveLabs/pyopds2_lenny) repo.
 
+---
 ## Technologies
 
 - **Docker** for deployment and containerization  
