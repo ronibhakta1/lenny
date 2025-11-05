@@ -232,7 +232,8 @@ async def authenticate(request: Request, response: Response):
                 value=session_cookie,
                 max_age=auth.COOKIE_TTL,
                 httponly=True,   # Prevent JavaScript access
-                secure=True,     # Only over HTTPS in production                    samesite="Lax",  # Helps mitigate CSRF
+                secure=True,     # Only over HTTPS in production
+                samesite="Lax",  # Helps mitigate CSRF
                 path="/"
             )
             return {"Authentication successful": "OTP verified.","success": True}
