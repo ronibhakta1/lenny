@@ -2,7 +2,7 @@ from pathlib import Path
 from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
-from pyopds2_lenny import LennyDataRecord, LennyDataProvider
+from pyopds2_lenny import LennyDataProvider
 from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email
 from lenny.core.models import Item, FormatEnum, Loan
