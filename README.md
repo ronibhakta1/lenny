@@ -31,7 +31,7 @@
 
 - [About the Project](#about-the-project)
 - [Features](#features)
-- [OPDS 2.0 Feed](opds-2.0-feed)
+- [OPDS 2.0 Feed](#opds-20-feed)
 - [Technologies](#technologies)
 - [Endpoints](#endpoints)
 - [Getting Started](#getting-started)
