@@ -5,6 +5,7 @@ from botocore.exceptions import ClientError
 import socket
 from pyopds2_lenny import LennyDataProvider
 from pyopds2 import Catalog, Metadata
+from pyopds2.models import Link, Navigation
 from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email
 from lenny.core.models import Item, FormatEnum, Loan
@@ -149,13 +150,13 @@ class LennyAPI:
         def _href(path: str) -> str:
             return cls.make_url(path)
         return [
-            {"href": _href("/v1/api/opds/"), "title": "Home", "type": "text/html"},
-            {
-                "href": _href(f"/v1/api/opds?offset=0&limit={limit}"),
-                "title": "Catalog",
-                "type": "application/opds+json",
-                "rel": "collection",
-            },
+            Navigation(href=_href("/"), title="Home", type="text/html"),
+            Navigation(
+                href=_href(f"/v1/api/opds?offset=0&limit={limit}"),
+                title="Catalog",
+                type="application/opds+json",
+                rel="collection",
+            ),
         ]
 
     @classmethod
@@ -164,8 +165,8 @@ class LennyAPI:
         def _href(path: str) -> str:
             return cls.make_url(path)
         return [
-            {"rel": "self", "href": _href(f"/v1/api/opds?offset={offset}&limit={limit}")},
-            {"rel": "next", "href": _href(f"/v1/api/opds?offset={offset + limit}&limit={limit}")},
+            Link(rel="self", href=_href(f"/v1/api/opds?offset={offset}&limit={limit}")),
+            Link(rel="next", href=_href(f"/v1/api/opds?offset={offset + limit}&limit={limit}")),
         ]
 
     @classmethod
