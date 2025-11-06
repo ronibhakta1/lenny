@@ -4,7 +4,7 @@ from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
 from pyopds2_lenny import LennyDataProvider
-from opds2 import Catalog, Metadata, SearchRequest, SearchResponse
+from pyopds2 import Catalog, Metadata
 from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email
 from lenny.core.models import Item, FormatEnum, Loan
@@ -97,9 +97,7 @@ class LennyAPI:
         if olids:
             q = f"edition_key:({' OR '.join(olids)})"
             return dict((
-                # keyed by olid as int
                 int(book.olid),
-                # openlibrary book with item added as `lenny`
                 book + {"lenny": imap[int(book.olid)]}
             ) for book in OpenLibrary.search(query=q, fields=fields))
         return {}
@@ -187,15 +185,9 @@ class LennyAPI:
     @classmethod
     def _build_empty_feed(cls, offset: int, limit: int, navigation):
         """Create an empty OPDS catalog via opds2 with local links + navigation."""
-        search = SearchResponse(
-            records=[],
-            total=0,
-            request=SearchRequest(query="", limit=limit, offset=offset),
-        )
         catalog = Catalog.create(
-            provider=LennyDataProvider,
             metadata=Metadata(title=cls.OPDS_TITLE),
-            search=search,
+            publications=[],
             navigation=navigation,
         )
         catalog.links = cls._catalog_links(offset, limit)
@@ -204,36 +196,37 @@ class LennyAPI:
     @classmethod
     def _build_feed(cls, records, total: int, limit: int, offset: int, navigation):
         """Prefer provider's feed builder, with fallback to Catalog.create."""
-        try:
-            base_url = cls.make_url("")
-            feed = LennyDataProvider.create_opds_feed(
-                records=records,
-                total=total,
-                limit=limit,
-                offset=offset,
-                base_url=base_url,
-            )
-            feed.setdefault("metadata", {})
-            feed["metadata"].setdefault("title", cls.OPDS_TITLE)
-            feed["links"] = cls._catalog_links(offset, limit)
-            if navigation:
-                feed["navigation"] = navigation
-            return feed
-        except Exception:
-            # Fallback path: construct via opds2 models
-            search_resp = SearchResponse(
-                records=records,
-                total=total,
-                request=SearchRequest(query="", limit=limit, offset=offset),
-            )
-            catalog = Catalog.create(
-                provider=LennyDataProvider,
-                metadata=Metadata(title=cls.OPDS_TITLE),
-                search=search_resp,
-                navigation=navigation,
-            )
-            catalog.links = cls._catalog_links(offset, limit)
-            return catalog.model_dump()
+        # If provider exposes a helper, prefer it; otherwise build via Catalog.create
+        if hasattr(LennyDataProvider, "create_opds_feed"):
+            try:
+                base_url = cls.make_url("")
+                feed = LennyDataProvider.create_opds_feed(
+                    records=records,
+                    total=total,
+                    limit=limit,
+                    offset=offset,
+                    base_url=base_url,
+                )
+                feed.setdefault("metadata", {})
+                feed["metadata"].setdefault("title", cls.OPDS_TITLE)
+                feed["links"] = cls._catalog_links(offset, limit)
+                if navigation:
+                    feed["navigation"] = navigation
+                # Prune None values if any
+                return cls._prune_nulls(feed) if hasattr(cls, "_prune_nulls") else feed
+            except Exception:
+                # if provider helper fails, fall through to building via Catalog
+                pass
+
+        # Fallback path: construct via opds2 models using publications
+        publications = [r.to_publication() for r in records]
+        catalog = Catalog.create(
+            metadata=Metadata(title=cls.OPDS_TITLE , numberOfItems=total ),
+            publications=publications,
+            navigation=navigation,
+        )
+        catalog.links = cls._catalog_links(offset, limit)
+        return catalog.model_dump()
 
     @classmethod
     def encrypt_file(cls, f, method="lcp"):
