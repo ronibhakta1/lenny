@@ -11,7 +11,7 @@ class OpenLibrary:
     
     SEARCH_URL = "https://openlibrary.org/search.json"
     HTTP_HEADERS = LENNY_HTTP_HEADERS
-    HTTP_TIMEOUT = 5
+    HTTP_TIMEOUT = 10
     DEFAULT_FIELDS = [
         'key', 'title', 'author_key', 'author_name', 'editions', 'editions.*',
     ]

@@ -28,6 +28,16 @@ from lenny.configs import (
 )
 from urllib.parse import quote
 
+def _make_url(path):
+    if PROXY:
+        return f"{PROXY}{path}"
+    url = f"{SCHEME}://{HOST}"
+    if PORT and PORT not in {80, 443}:
+        url += f":{PORT}"
+    return f"{url}{path}"
+
+LennyDataProvider.BASE_URL = _make_url("/v1/api/")
+
 class LennyAPI:
 
     DEFAULT_LIMIT = 50
@@ -52,12 +62,8 @@ class LennyAPI:
     def make_url(cls, path):
         """Constructs a public Lenny URL that points to the public HOST and PORT
         """
-        if PROXY:
-            return f"{PROXY}{path}"
-        url = f"{SCHEME}://{HOST}"
-        if PORT and PORT not in {80, 443}:
-            url += f":{PORT}"
-        return f"{url}{path}"
+        
+        return _make_url(path)
 
     @classmethod
     def auth_check(cls, item, session: str=None, request: Request=None):
