@@ -252,7 +252,11 @@ class LennyAPI:
     def is_allowed_uploader(cls, client_ip: str) -> bool:
         if client_ip in ("127.0.0.1", "::1"):
             return True
-
+        # Allow Docker host gateway (when frontend runs on host machine)
+        # Docker typically uses 172.17.0.1 or similar for the host gateway
+        if client_ip.startswith("172.") or client_ip.startswith("192.168."):
+            return True
+        # Allow by hostname resolution
         if host := cls._resolve_ip_to_hostname(client_ip):
             for allowed_host in ["localhost", "openlibrary.press"]:
                 if host == allowed_host or host.endswith(allowed_host):
