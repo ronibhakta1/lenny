@@ -98,16 +98,64 @@ class LennyAPI:
         return None
 
     @classmethod
+    def _create_local_item_metadata(cls, item: Item, include_lenny: bool = True):
+        """
+        Creates fallback metadata for items without OpenLibrary data.
+        
+        Args:
+            item: The Item database model instance
+            include_lenny: Whether to include the lenny field (for enriched items)
+            
+        Returns:
+            dict: Minimal metadata structure compatible with OpenLibrary format
+        """
+        olid = item.openlibrary_edition
+        metadata = {
+            "olid": str(olid),
+            "title": f"Local Book {olid}",
+            "author_name": ["Unknown Author"],
+            "author_key": [],
+            "cover_i": None,
+            "key": f"/books/OL{olid}M",
+            "edition_key": [f"OL{olid}M"],
+        }
+        
+        if include_lenny:
+            metadata["lenny"] = item
+            
+        return metadata
+
+    @classmethod
+    def _is_local_item(cls, item_data: dict) -> bool:
+        """
+        Determines if an enriched item is a local item (without OpenLibrary metadata).
+        
+        Args:
+            item_data: Enriched item dictionary
+            
+        Returns:
+            bool: True if this is a local item, False otherwise
+        """
+        return item_data.get('title', '').startswith('Local Book ')
+
+    @classmethod
     def _enrich_items(cls, items, fields=None, limit=None):
         imap = dict((i.openlibrary_edition, i) for i in items)
         olids = [f"OL{i}M" for i in imap.keys()]
+        enriched = {}
+        
         if olids:
             q = f"edition_key:({' OR '.join(olids)})"
-            return dict((
-                int(book.olid),
-                book + {"lenny": imap[int(book.olid)]}
-            ) for book in OpenLibrary.search(query=q, fields=fields))
-        return {}
+            # Get items that have OpenLibrary metadata
+            for book in OpenLibrary.search(query=q, fields=fields):
+                enriched[int(book.olid)] = book + {"lenny": imap[int(book.olid)]}
+        
+        # Add items without OpenLibrary metadata with fallback values
+        for olid, item in imap.items():
+            if olid not in enriched:
+                enriched[olid] = cls._create_local_item_metadata(item, include_lenny=True)
+        
+        return enriched
     
     @classmethod
     def get_enriched_items(cls, fields=None, offset=None, limit=None):
@@ -123,6 +171,33 @@ class LennyAPI:
         )
 
     @classmethod
+    def _create_local_opds_record(cls, olid: int, item_data: dict):
+        """
+        Creates a LennyDataRecord for local items without OpenLibrary metadata.
+        
+        Args:
+            olid: The OpenLibrary edition ID (or local ID)
+            item_data: The enriched item data dictionary
+            
+        Returns:
+            LennyDataRecord: A minimal OPDS record for the local item
+        """
+        from pyopds2_lenny import LennyDataRecord
+        
+        lenny_item = item_data.get('lenny')
+        record_data = {
+            'title': item_data.get('title', f'Book {olid}'),
+            'author_name': item_data.get('author_name', ['Unknown']),
+            'author_key': item_data.get('author_key', []),
+            'lenny_id': olid,
+            'is_encrypted': bool(lenny_item.encrypted if lenny_item else False),
+            'base_url': cls.make_url("/v1/api/"),
+            'cover_i': item_data.get('cover_i'),
+            'key': item_data.get('key', f'/books/OL{olid}M'),
+        }
+        return LennyDataRecord.model_validate(record_data)
+
+    @classmethod
     def opds_feed(cls, offset=None, limit=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
@@ -135,15 +210,37 @@ class LennyAPI:
         items = cls.get_enriched_items(offset=offset, limit=limit)
         if not items:
             return cls._build_empty_feed(offset=offset, limit=limit, navigation=navigation)
-        query, lenny_ids, total = cls._build_query_and_lenny_ids(items)
-        records, numfound = LennyDataProvider.search(
-            query=query,
-            numfound=total,
-            limit=limit,
-            offset=offset,
-            lenny_ids=lenny_ids,
-        )
-        return cls._build_feed(records, numfound, limit, offset, navigation)
+        
+        # Separate items with and without OpenLibrary metadata
+        ol_items = {k: v for k, v in items.items() if not cls._is_local_item(v)}
+        local_items = {k: v for k, v in items.items() if cls._is_local_item(v)}
+        
+        # Get records for items with OpenLibrary metadata
+        records = []
+        total = len(items)
+        if ol_items:
+            query, lenny_ids, _ = cls._build_query_and_lenny_ids(ol_items)
+            ol_records, _ = LennyDataProvider.search(
+                query=query,
+                numfound=len(ol_items),
+                limit=limit,
+                offset=offset,
+                lenny_ids=lenny_ids,
+            )
+            records.extend(ol_records)
+        
+        # Create minimal records for local items without OpenLibrary metadata
+        if local_items:
+            import logging
+            logger = logging.getLogger(__name__)
+            for olid, item_data in local_items.items():
+                try:
+                    record = cls._create_local_opds_record(olid, item_data)
+                    records.append(record)
+                except Exception as e:
+                    logger.warning(f"Failed to create OPDS record for local item {olid}: {e}")
+        
+        return cls._build_feed(records, total, limit, offset, navigation)
 
     @classmethod
     def _navigation(cls, limit: Optional[int]):
