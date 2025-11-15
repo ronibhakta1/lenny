@@ -106,7 +106,7 @@ Lenny is a free, open source, Library-in-a-Box for libraries to preserve and len
 To install and run Lenny as a production application:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ArchiveLabs/lenny/refs/heads/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/ArchiveLabs/lenny/refs/heads/main/install.sh | sudo bash
 ```
 
 ---
