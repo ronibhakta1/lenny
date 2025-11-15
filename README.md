@@ -134,6 +134,53 @@ docker exec -it lenny_api python scripts/load_open_books.py
 
 ---
 
+## Adding Books
+
+To add a book to Lenny, you must provide an OpenLibrary Edition ID (OLID). Books without an OLID cannot be uploaded.
+
+### Adding Books Metadata
+
+Sign in to your Openlibrary.org account.
+
+```link
+https://openlibrary.org/books/add
+```
+
+navigate to the above link and add all the details.
+
+### Usage
+
+```sh
+make addbook olid=OL123456M filepath=/path/to/book.epub [encrypted=true]
+```
+
+### Examples
+
+```sh
+# Add an unencrypted book
+make addbook olid=OL60638966M filepath=./books/mybook.epub
+
+# Add an encrypted book
+make addbook olid=OL60638966M filepath=./books/mybook.epub encrypted=true
+
+# Using numeric OLID format (without OL prefix and M suffix)
+make addbook olid=60638966 filepath=./books/mybook.epub
+```
+
+### Important Notes
+
+- **File Location**: The EPUB file must be within the project directory (e.g., in `./books/` or project root)
+- **OLID Formats**: Accepts both `OL123456M` and `123456` formats
+- **Duplicates**: If a book with the same OLID already exists, the upload will fail with a conflict.
+
+### Troubleshooting
+
+If you get a "File not found" or permission error, make sure:
+1. The file is copied into your lenny project directory.
+2. You're using a relative path from the project root (e.g., `./books/mybook.epub`)
+
+---
+
 ## Testing Readium Server
 
 ```sh
