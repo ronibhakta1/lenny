@@ -11,6 +11,21 @@ else
     exit 1
 fi
 
+if [ "$OS" = "linux" ]; then
+  echo "[+] Updating package index (apt)..."
+  sudo apt update -y
+
+  if ! require make; then
+    echo "[+] Installing build-essential (make, gcc, etc.)..."
+    sudo apt install -y build-essential
+  fi
+
+  if ! require curl; then
+    echo "[+] Installing curl..."
+    sudo apt install -y curl
+  fi
+fi
+
 if [[ ! -d "lenny" ]]; then
   echo "[+] Downloading Lenny source code..."
   mkdir -p lenny
@@ -51,4 +66,11 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 cd lenny
-make start preload
+
+sudo make tunnel configure rebuild
+
+echo "[+] Starting preload step (with allocated TTY)..."
+sudo script -q -c "make preload" /dev/null
+
+
+echo "[✓] Lenny installation complete!"
