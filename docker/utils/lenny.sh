@@ -7,9 +7,16 @@ export $(grep -v '^#' .env | xargs)
 export $(grep -v '^#' reader.env | xargs)
 
 source "$(dirname "$0")/docker_helpers.sh"
-source "$(dirname "$0")/tunnel.sh"
 
-URL=$(get_tunnel)
+# If LENNY_PROXY is already set in .env, skip tunnel creation
+if [[ -n "$LENNY_PROXY" ]]; then
+    echo "[+] Using LENNY_PROXY from .env: $LENNY_PROXY"
+    URL="$LENNY_PROXY"
+else
+    source "$(dirname "$0")/tunnel.sh"
+    URL=$(get_tunnel)
+fi
+
 if [[ -n "$URL" ]]; then
     PROXY_HOST="${URL#https://}"
     echo "[+] LENNY_PROXY detected at $URL"
