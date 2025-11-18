@@ -110,20 +110,18 @@ class LennyAPI:
         return {}
     
     @classmethod
-    def get_enriched_items(cls, fields=None, offset=None, limit=None):
+    def get_enriched_items(cls, olid=None, fields=None, offset=None, limit=None):
         """Returns a dict whose keys are int `olid` Open Library
         edition IDs and whose values are OpenLibraryRecords wwith an
         additional `lenny` field containing Lenny's record for this
         item in the LennyDB
         """
         limit = limit or cls.DEFAULT_LIMIT
-        return cls._enrich_items(
-            Item.get_many(offset=offset, limit=limit),
-            fields=fields
-        )
+        items = [Item.exists(olid)] if olid else Item.get_many(offset=offset, limit=limit)
+        return cls._enrich_items(items, fields=fields)
 
     @classmethod
-    def opds_feed(cls, offset=None, limit=None):
+    def opds_feed(cls, olid=None, offset=None, limit=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
         and the LennyDataProvider to transform Open Library metadata into
@@ -132,7 +130,7 @@ class LennyAPI:
         limit = limit or cls.DEFAULT_LIMIT
         offset = offset or 0
         navigation = cls._navigation(limit)
-        items = cls.get_enriched_items(offset=offset, limit=limit)
+        items = cls.get_enriched_items(olid=olid, offset=offset, limit=limit)
         if not items:
             return cls._build_empty_feed(offset=offset, limit=limit, navigation=navigation)
         query, lenny_ids, total = cls._build_query_and_lenny_ids(items)
@@ -143,7 +141,15 @@ class LennyAPI:
             offset=offset,
             lenny_ids=lenny_ids,
         )
-        return cls._build_feed(records, numfound, limit, offset, navigation)
+        if olid:
+            return records[0].to_publication().model_dump()
+        catalog = Catalog.create(
+            metadata=Metadata(title=cls.OPDS_TITLE, numberOfItems=numfound),
+            publications=[r.to_publication() for r in records],
+            navigation=navigation,
+        )
+        catalog.links = cls._catalog_links(offset, limit)
+        return catalog.model_dump()
 
     @classmethod
     def _navigation(cls, limit: Optional[int]):
@@ -200,38 +206,6 @@ class LennyAPI:
         catalog.links = cls._catalog_links(offset, limit)
         return catalog.model_dump()
 
-    @classmethod
-    def _build_feed(cls, records, total: int, limit: int, offset: int, navigation):
-        """Prefer provider's feed builder, with fallback to Catalog.create."""
-        # If provider exposes a helper, prefer it; otherwise build via Catalog.create
-        if hasattr(LennyDataProvider, "create_opds_feed"):
-            try:
-                base_url = cls.make_url("")
-                feed = LennyDataProvider.create_opds_feed(
-                    records=records,
-                    total=total,
-                    limit=limit,
-                    offset=offset,
-                    base_url=base_url,
-                )
-                feed.setdefault("metadata", {})
-                feed["metadata"].setdefault("title", cls.OPDS_TITLE)
-                feed["links"] = cls._catalog_links(offset, limit)
-                if navigation:
-                    feed["navigation"] = navigation
-                # Prune None values if any
-                return cls._prune_nulls(feed) if hasattr(cls, "_prune_nulls") else feed
-            except Exception:
-                # if provider helper fails, fall through to building via Catalog
-                pass
-
-        # Fallback path: construct via opds2 models using publications
-        publications = [r.to_publication() for r in records]
-        catalog = Catalog.create(
-            metadata=Metadata(title=cls.OPDS_TITLE , numberOfItems=total ),
-            publications=publications,
-            navigation=navigation,
-        )
         catalog.links = cls._catalog_links(offset, limit)
         return catalog.model_dump()
 
