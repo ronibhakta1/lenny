@@ -8,6 +8,7 @@
     :license: see LICENSE for more details
 """
 
+import json
 import requests
 from functools import wraps
 from typing import Optional, Generator, List
@@ -91,7 +92,22 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
 
 @router.get("/opds")
 async def get_opds(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
-    return LennyAPI.opds_feed(offset=offset, limit=limit)
+    return Response(
+        content=json.dumps(
+            LennyAPI.opds_feed(offset=offset, limit=limit)
+        ),
+        media_type="application/opds+json"
+    )
+
+
+@router.get("/opds/{book_id}")
+async def get_opds(request: Request, book_id:int):
+    return Response(
+        content=json.dumps(
+            LennyAPI.opds_feed(olid=book_id)
+        ),
+        media_type="application/opds+json"
+    )
 
 # Redirect to the Thorium Web Reader
 @router.get("/items/{book_id}/read")
