@@ -17,7 +17,7 @@ if [ "$OS" = "linux" ]; then
 
   if ! require make; then
     echo "[+] Installing build-essential (make, gcc, etc.)..."
-    sudo apt install -y build-essential
+    sudo apt install -y build-essential bc
   fi
 
   if ! require curl; then
