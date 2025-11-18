@@ -299,17 +299,13 @@ class LennyAPI:
                 formats += cls.VALID_EXTS[ext].value
                 
                 if encrypt:
-                    # Read file content into memory once to use for both uploads
                     fp.file.seek(0)
                     file_content = fp.file.read()
                     
-                    # Upload original version
                     fp.file.seek(0)
                     cls.upload_file(fp, f"{filename}{ext}")
                     
-                    # Create a new file-like object for encrypted version
                     encrypted_fp = BytesIO(file_content)
-                    # Create a mock UploadFile-like object with necessary attributes
                     class TempFile:
                         def __init__(self, file, filename, content_type, size):
                             self.file = file
