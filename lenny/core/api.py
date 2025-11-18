@@ -287,6 +287,7 @@ class LennyAPI:
     
     @classmethod
     def upload_files(cls, files: list[UploadFile], filename, encrypt=False):
+        from io import BytesIO
         formats = 0
         for fp in files:
             if not fp.filename:
@@ -296,9 +297,31 @@ class LennyAPI:
 
             if ext in cls.VALID_EXTS:
                 formats += cls.VALID_EXTS[ext].value
-                cls.upload_file(fp, f"{filename}{ext}")
+                
                 if encrypt:
-                    cls.upload_file(cls.encrypt_file(fp), f"{filename}_encrypted{ext}")
+                    fp.file.seek(0)
+                    file_content = fp.file.read()
+                    
+                    fp.file.seek(0)
+                    cls.upload_file(fp, f"{filename}{ext}")
+                    
+                    encrypted_fp = BytesIO(file_content)
+                    class TempFile:
+                        def __init__(self, file, filename, content_type, size):
+                            self.file = file
+                            self.filename = filename
+                            self.content_type = content_type
+                            self.size = size
+                    
+                    temp_file = TempFile(
+                        cls.encrypt_file(encrypted_fp),
+                        fp.filename,
+                        fp.content_type,
+                        fp.size
+                    )
+                    cls.upload_file(temp_file, f"{filename}_encrypted{ext}")
+                else:
+                    cls.upload_file(fp, f"{filename}{ext}")
             else:
                 raise InvalidFileError("Invalid format {ext} for {fp.filename}")
         if not formats:
