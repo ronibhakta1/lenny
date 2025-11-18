@@ -83,6 +83,12 @@ class LennyAPI:
                     "message": "Not authenticated; POST to url to get a one-time-password"
                 }
             success['email'] = email
+            if not (loan := item.borrow(email)):
+                return {
+                    "error": "unauthorized",
+                    "url": f"/v1/api/items/{item.openlibrary_edition}/borrow",
+                    "message": "Book must be borrowed before being read"
+                }
         return success
     
     @classmethod
