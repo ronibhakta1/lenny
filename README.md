@@ -289,7 +289,21 @@ pytest
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or pull request if you have suggestions or improvements.
+There are many ways volunteers can contribute to the Lenny project, from development and design to data management and community engagement. 
+Here’s how you can get involved:
+
+### Developers
+- Getting Started: Check out our [Development Setup](#development-setup) for instructions on how to set up your development environment, find issues to work on, and submit your contributions.
+- Good First Issues: Browse our Good First Issues to find beginner-friendly tasks.
+
+### Community Engagement
+- Join our Community Calls: Open Library hosts weekly community [Zoom call for Open Library & Lenny](https://zoom.us/j/369477551#success) and design calls. Check the community call schedule for times and details.
+- Ask Questions: If you have any questions, request an invitation to our Slack channel on our volunteers page.
+
+### Lenny Slack Channel 
+- If you are a Developer or an library instrested in contributing or trying lenny feel free to join our lenny slack channel from [Here](https://forms.gle/b4HDcWVRhT3fvqcQ6)
+
+For more detailed information on community call. refer to Open Libraries page [Here](https://github.com/internetarchive/openlibrary/wiki/Community-Call)
 
 ---
 
