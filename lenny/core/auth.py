@@ -83,9 +83,6 @@ class OTP:
         Generate a simple OTP for testing purposes.
         This is a stub method - production OTP generation happens on the OTP server.
         """
-        import hashlib
-        from datetime import datetime
-        
         if issued_minute is None:
             issued_minute = datetime.now().minute
         
@@ -98,8 +95,8 @@ class OTP:
         """Verifies OTP for email and IP address, with rate limiting."""
         if cls.is_rate_limited(email):
             raise RateLimitError("Too many attempts. Please try again later.")
-        opt_redeemtion = cls.redeem(email, ip_address, otp)
-        if opt_redeemtion:
+        otp_redemption = cls.redeem(email, ip_address, otp)
+        if otp_redemption:
             return True
         return False 
     
