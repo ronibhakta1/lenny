@@ -99,7 +99,6 @@ async def get_opds(request: Request, offset: Optional[int]=None, limit: Optional
         media_type="application/opds+json"
     )
 
-
 @router.get("/opds/{book_id}")
 async def get_opds(request: Request, book_id:int):
     return Response(
