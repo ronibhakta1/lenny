@@ -127,7 +127,7 @@ class LennyAPI:
         return cls._enrich_items(items, fields=fields)
 
     @classmethod
-    def opds_feed(cls, olid=None, offset=None, limit=None):
+    def opds_feed(cls, olid=None, offset=None, limit=None, query=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
         and the LennyDataProvider to transform Open Library metadata into
@@ -163,7 +163,7 @@ class LennyAPI:
                 except Exception:
                     continue
 
-            search_response = LennyDataProvider.search(
+        search_response = LennyDataProvider.search(
             query=query,
             limit=limit,
             offset=offset,
@@ -177,15 +177,10 @@ class LennyAPI:
         
         catalog = Catalog.create(
             search_response,
+            metadata=Metadata(title=cls.OPDS_TITLE), # type: ignore
             navigation=cls._navigation(limit),
         )
-
-        catalog_dict = catalog.model_dump()
-        try:
-            catalog_dict = LennyDataProvider.postprocess_catalog(catalog_dict, title=cls.OPDS_TITLE)
-        except Exception:
-            pass
-        return catalog_dict
+        return catalog.model_dump()
 
     @classmethod
     def _navigation(cls, limit: Optional[int]):
@@ -225,6 +220,7 @@ class LennyAPI:
     def _build_empty_feed(cls, offset: int, limit: int, navigation):
         """Create an empty OPDS catalog via opds2 with local links + navigation."""
         from pyopds2.provider import DataProvider
+        from pyopds2.models import Metadata
         empty_response = DataProvider.SearchResponse(
             provider=LennyDataProvider,
             records=[],
@@ -240,7 +236,7 @@ class LennyAPI:
         )
         try:
             if hasattr(catalog, "metadata") and getattr(catalog.metadata, "title", None) is None:
-                catalog.metadata.title = cls.OPDS_TITLE
+                catalog.metadata.title = cls.cl
         except Exception:
             pass
         return catalog.model_dump()

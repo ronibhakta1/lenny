@@ -91,10 +91,10 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
     )
 
 @router.get("/opds")
-async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
+async def get_opds_catalog(request: Request, query: Optional[str]=None, offset: Optional[int]=None, limit: Optional[int]=None):
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(offset=offset, limit=limit)
+            LennyAPI.opds_feed(query=query, offset=offset, limit=limit)
         ),
         media_type="application/opds+json"
     )
