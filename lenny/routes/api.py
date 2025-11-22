@@ -90,17 +90,6 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
         fields=fields, offset=offset, limit=limit
     )
 
-@router.get("/opds/search")
-async def get_opds_search(request: Request, query: str, offset: Optional[int]=None, limit: Optional[int]=None):
-    """OPDS search endpoint - must be defined before /opds/{book_id} to avoid path conflicts"""
-    return Response(
-        content=json.dumps(
-            LennyAPI.opds_feed(offset=offset, limit=limit)
-        ),
-        media_type="application/opds+json"
-    )
-
-
 @router.get("/opds")
 async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
     return Response(
@@ -109,7 +98,6 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
         ),
         media_type="application/opds+json"
     )
-
 
 @router.get("/opds/{book_id}")
 async def get_opds_item(request: Request, book_id:int):
