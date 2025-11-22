@@ -91,10 +91,10 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
     )
 
 @router.get("/opds")
-async def get_opds_catalog(request: Request, query: Optional[str]=None, offset: Optional[int]=None, limit: Optional[int]=None):
+async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(query=query, offset=offset, limit=limit)
+            LennyAPI.opds_feed(offset=offset, limit=limit)
         ),
         media_type="application/opds+json"
     )
@@ -134,7 +134,6 @@ async def proxy_readium(request: Request, book_id: str, readium_path: str, forma
     content_type = r.headers.get("Content-Type", "application/octet-stream")
     return Response(content=r.content, media_type=content_type)
 
-@router.get('/items/{book_id}/borrow')
 @router.post('/items/{book_id}/borrow')
 @requires_item_auth()
 async def borrow_item(request: Request, book_id: int, format: str=".epub",  session: Optional[str] = Cookie(None), item=None, email: str=''):
