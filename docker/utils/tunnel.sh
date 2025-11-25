@@ -53,11 +53,12 @@ function create_tunnel() {
     fi
 }
 
-# Parse argument
-if [[ "$1" == "--start" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [[ "$1" == "--start" ]]; then
     create_tunnel
-elif [[ "$1" == "--stop" ]]; then
+  elif [[ "$1" == "--stop" ]]; then
     close_tunnel
-else    
+  else    
     echo "Usage: $0 --start or --stop"
+  fi
 fi
