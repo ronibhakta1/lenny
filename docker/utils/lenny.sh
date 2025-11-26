@@ -27,13 +27,13 @@ else
     exit 1
 fi
 
-if [[ "$1" == "--rebuild-reader" ]]; then
-    CURRENT_PROXY=$(docker exec lenny_reader printenv LENNY_PROXY || echo "")
-    if [[ "$CURRENT_PROXY" == "$LENNY_PROXY" ]]; then
+if [[ "$1" == "--rebuild-reader" ]] && [[ -n "$LENNY_PROXY" ]]; then
+    echo "[+] LENNY_PROXY detected at $LENNY_PROXY"
+    ALLOWED_HOSTS=$(docker exec lenny_reader printenv NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS || echo "")
+    PROXY_HOST="${LENNY_PROXY#https://}"
+    if [[ "$ALLOWED_HOSTS" == *"$PROXY_HOST"* ]]; then
         echo "[+] Reader already has correct proxy. Skipping rebuild."
     else
-        PROXY_HOST="${LENNY_PROXY#https://}"
-        echo "[+] LENNY_PROXY detected at $LENNY_PROXY"
         echo "[+] Updating NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS for reader and rebuilding"
         export NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS="${NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS:+$NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS,}$PROXY_HOST"
         docker compose -p lenny up -d --build reader
