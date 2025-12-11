@@ -65,6 +65,14 @@ class LennyAPI:
         return _make_url(path)
 
     @classmethod
+    def get_authentication_document(cls):
+        """
+        Returns the OPDS Authentication Document (JSON).
+        Delegates to LennyDataProvider to reuse shared logic.
+        """
+        return LennyDataProvider.get_authentication_document()
+
+    @classmethod
     def auth_check(cls, item, session: str=None, request: Request=None):
         """
         Checks if the user is allowed to access the book.
@@ -192,12 +200,18 @@ class LennyAPI:
         def _href(path: str) -> str:
             return cls.make_url(path)
         return [
-            Navigation(href=_href("/v1/api/opds"), title="Home", type="text/html", rel="alternate"),
+            Navigation(href=_href("/v1/api/opds"), title="Home", type="application/opds+json", rel="alternate"),
             Navigation(
                 href=_href(f"/v1/api/opds?offset=0&limit={limit}"),
                 title="Catalog",
                 type="application/opds+json",
                 rel="collection",
+            ),
+            Navigation(
+                href=_href("/v1/api/oauth/implicit"),
+                title="Authentication",
+                type="application/opds-authentication+json",
+                rel="http://opds-spec.org/auth/oauth/implicit",
             ),
         ]
 
