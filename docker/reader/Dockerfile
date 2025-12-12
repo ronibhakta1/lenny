@@ -15,8 +15,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y git
 
 RUN git clone https://github.com/edrlab/thorium-web.git && \
-    cd thorium-web && \
-    git checkout v1.0.4
+    cd thorium-web
     
 RUN corepack enable
 
