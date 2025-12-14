@@ -32,6 +32,7 @@ from fastapi.responses import (
 )
 from lenny.core import auth
 from lenny.core.api import LennyAPI
+from pyopds2_lenny import LennyDataProvider
 from lenny.core.exceptions import (
     INVALID_ITEM,
     InvalidFileError,
@@ -48,6 +49,47 @@ from lenny.core.models import Item
 from urllib.parse import quote
 
 COOKIES_MAX_AGE = 604800  # 1 week
+
+
+def _build_oauth_fragment(session_cookie: str, state: str = None) -> dict:
+    """Build OAuth token fragment for redirect URL or opds:// callback."""
+    auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
+    fragment = {
+        "id": auth_doc_id,
+        "access_token": session_cookie,
+        "token_type": "bearer",
+        "expires_in": auth.COOKIE_TTL
+    }
+    if state:
+        fragment["state"] = state
+    return fragment
+
+
+async def _parse_request_body(request: Request) -> dict:
+    """Parse request body from JSON or form data, with fallback to empty dict."""
+    try:
+        return await request.json()
+    except:
+        try:
+            form = await request.form()
+            return dict(form)
+        except:
+            return {}
+
+
+def _set_session_cookie(response, session_cookie: str):
+    """Set session cookie with standard security settings."""
+    response.set_cookie(
+        key="session",
+        value=session_cookie,
+        max_age=auth.COOKIE_TTL,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        path="/"
+    )
+    return response
+
 
 router = APIRouter()
 
@@ -77,7 +119,7 @@ def requires_item_auth(do_function=None):
                     # Return 401 with partial Auth Doc as per OPDS 2.0
                     return JSONResponse(
                         status_code=401, 
-                        content=LennyAPI.get_authentication_document(),
+                        content=LennyDataProvider.get_authentication_document(),
                         media_type="application/opds-authentication+json"
                     )
  
@@ -268,7 +310,7 @@ async def oauth_implicit(request: Request):
     Returns the OPDS Authentication Document (JSON) describing the implicit flow.
     """
     return Response(
-        content=json.dumps(LennyAPI.get_authentication_document()),
+        content=json.dumps(LennyDataProvider.get_authentication_document()),
         media_type="application/opds-authentication+json"
     )
 
@@ -278,99 +320,66 @@ async def oauth_authorize(
     response: Response,
     redirect_uri: Optional[str] = None,
     client_id: Optional[str] = None,
-    state: Optional[str] = None,
-    response_type: Optional[str] = "token"
+    state: Optional[str] = None
 ):
     """
     Handles the authorization request.
-    If logged in, redirects to redirect_uri with access_token (session cookie value) in fragment.
+    If logged in, redirects to redirect_uri with access_token in fragment.
     If not logged in, handles OTP flow directly.
     """
     session = request.cookies.get("session")
     email = auth.verify_session_cookie(session)
 
     if email:
-        if not redirect_uri:
-            try:
-                form = await request.form()
-                redirect_uri = form.get("redirect_uri")
-                state = form.get("state")
-            except: 
-                pass
+        body = await _parse_request_body(request)
+        redirect_uri = redirect_uri or body.get("redirect_uri") or "opds://authorize/"
+        state = state or body.get("state")
         
-        if not redirect_uri:
-            redirect_uri = "opds://authorize/"
-
-        access_token = session
-        auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
-        fragment = {
-            "id": auth_doc_id,
-            "access_token": access_token,
-            "token_type": "bearer",
-            "expires_in": auth.COOKIE_TTL
-        }
-        if state:
-            fragment["state"] = state
-            
-        final_url = f"{redirect_uri}#{urlencode(fragment)}"
-        return RedirectResponse(url=final_url, status_code=303)
+        fragment = _build_oauth_fragment(session, state)
+        return RedirectResponse(url=f"{redirect_uri}#{urlencode(fragment)}", status_code=303)
 
     client_ip = request.client.host
-    
-    try:
-        body = await request.json()
-    except:
-        try:
-             form = await request.form()
-             body = dict(form)
-        except:
-             body = {}
+    body = await _parse_request_body(request)
     req_params = dict(request.query_params)
+    
     post_email = body.get("email")
     post_otp = body.get("otp")
     
-    if request.method == "POST":
-        print(f"DEBUG: oauth_authorize POST received. Email: '{post_email}', OTP provided: {bool(post_otp)}")
-        print(f"DEBUG: Body keys: {list(body.keys())}")
-    
-    current_redirect_uri = body.get("redirect_uri") or req_params.get("redirect_uri")
+    current_redirect_uri = body.get("redirect_uri") or req_params.get("redirect_uri") or "opds://authorize/"
     current_state = body.get("state") or req_params.get("state")
     current_client_id = body.get("client_id") or req_params.get("client_id")
+
+    post_url = "/v1/api/oauth/authorize"
+    if current_redirect_uri != "opds://authorize/":
+        post_url += f"?redirect_uri={quote(current_redirect_uri, safe='')}"
+    if current_state:
+        post_url += f"&state={quote(current_state, safe='')}"
     
-    if not current_redirect_uri and request.method == "POST":
-         current_redirect_uri = req_params.get("redirect_uri")
-
-    if not current_redirect_uri:
-        current_redirect_uri = "opds://authorize/"
-
     context = {
         "request": request,
         "redirect_uri": current_redirect_uri,
         "state": current_state,
         "client_id": current_client_id,
-        "post_url": f"/v1/api/oauth/authorize" + (f"?redirect_uri={quote(current_redirect_uri, safe='')}" if current_redirect_uri != "opds://authorize/" else "") + (f"&state={quote(current_state or '', safe='')}" if current_state else ""),
+        "post_url": post_url,
         "next": current_redirect_uri,
         "book_id": "oauth",
         "action": "oauth"
     }
 
     if request.method == "POST" and post_email and post_otp:
-        if not (session_cookie := auth.OTP.authenticate(post_email, post_otp, client_ip)):
+        session_cookie = auth.OTP.authenticate(post_email, post_otp, client_ip)
+        if not session_cookie:
             context["error"] = "Authentication failed. Invalid OTP."
             context["email"] = post_email
             return request.app.templates.TemplateResponse("otp_redeem.html", context)
         
-        auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
-        auth_doc_id_raw = LennyAPI.make_url("/v1/api/oauth/implicit")
-        token_fragment = f"id={auth_doc_id}&access_token={session_cookie}&token_type=bearer&expires_in={auth.COOKIE_TTL}"
-        if current_state:
-            token_fragment += f"&state={current_state}"
+        fragment = _build_oauth_fragment(session_cookie, current_state)
         
         if current_redirect_uri.startswith("opds://"):
             success_context = {
                 "request": request,
                 "email": post_email,
-                "auth_doc_id": auth_doc_id_raw,
+                "auth_doc_id": LennyAPI.make_url("/v1/api/oauth/implicit"),
                 "access_token": session_cookie,
                 "expires_in": auth.COOKIE_TTL,
                 "state": current_state
@@ -378,29 +387,19 @@ async def oauth_authorize(
             response = request.app.templates.TemplateResponse("oauth_success.html", success_context)
         else:
             response = RedirectResponse(
-                url=f"{current_redirect_uri}#{token_fragment}",
+                url=f"{current_redirect_uri}#{urlencode(fragment)}",
                 status_code=303
             )
         
-        response.set_cookie(
-            key="session",
-            value=session_cookie,
-            max_age=auth.COOKIE_TTL,
-            httponly=True,
-            secure=True,
-            samesite="Lax",
-            path="/"
-        )
-        return response
+        return _set_session_cookie(response, session_cookie)
 
-    elif request.method == "POST" and post_email:
+    if request.method == "POST" and post_email:
         try:
             auth.OTP.issue(post_email, client_ip)
             context["email"] = post_email
             return request.app.templates.TemplateResponse("otp_redeem.html", context)
-        except Exception as e:
+        except Exception:
             context["error"] = "Failed to issue OTP. Please try again."
             return request.app.templates.TemplateResponse("otp_issue.html", context)
 
-    else:
-        return request.app.templates.TemplateResponse("otp_issue.html", context)
+    return request.app.templates.TemplateResponse("otp_issue.html", context)
