@@ -74,17 +74,7 @@ def requires_item_auth(do_function=None):
                 result = LennyAPI.auth_check(item, session=session, request=request)
                 email = result.get('email', '')
                 if 'error' in result:
-                    # If beta param is present, preserve old redirect behavior for web users
-                    if request.query_params.get('beta'):
-                        params ={
-                            "book_id": book_id,
-                            "email": email,
-                            "otp": request.query_params.get('otp', ''),
-                        }
-                        url = LennyAPI.make_url('/v1/api/authenticate') + f"?{urlencode(params)}"
-                        return RedirectResponse(url=url, status_code=307)
-                    
-                    # Otherwise return 401 with partial Auth Doc as per OPDS 2.0
+                    # Return 401 with partial Auth Doc as per OPDS 2.0
                     return JSONResponse(
                         status_code=401, 
                         content=LennyAPI.get_authentication_document(),
@@ -270,91 +260,7 @@ async def logout(response: Response, session: str = Cookie(None)):
     return {"success": True, "message": "Logged out successfully"}
 
 
-@router.get("/authenticate")
-async def authenticate_ui(request: Request, response: Response):
-    book_id = request.query_params.get("book_id")
-    email = request.query_params.get("email")
-    otp = request.query_params.get("otp")
-    action = request.query_params.get("action", "borrow")
-    next_url = request.query_params.get("next")
 
-    kwargs = {
-        "request": request, "email": email, "book_id": book_id, 
-        "action": action, "beta": True, "next": next_url,
-        "post_url": "/v1/api/authenticate"
-    }
-    if email:
-        return request.app.templates.TemplateResponse("otp_redeem.html", kwargs)
-    return request.app.templates.TemplateResponse("otp_issue.html", kwargs)
-
-
-@router.post("/authenticate")
-async def authenticate(request: Request, response: Response):
-    client_ip = request.client.host
-
-    try:
-        body = await request.json()
-    except json.decoder.JSONDecodeError:
-        form = await request.form()
-        body = dict(form)
-        
-    email = body.get("email")
-    otp = body.get("otp")
-
-    book_id = body.get("book_id")
-    action = body.get("action", "borrow")
-    beta = body.get("beta")
-
-    if email and not otp:
-        try:
-            r = auth.OTP.issue(email, client_ip)
-            if beta:
-                print("DEBUG: beta=True, rendering redeem page directly")
-                kwargs = {
-                    "request": request,
-                    "email": email,
-                    "book_id": book_id,
-                    "action": action,
-                    "next": body.get("next"),
-                    "beta": True,
-                    "post_url": "/v1/api/authenticate"
-                }
-                return request.app.templates.TemplateResponse("otp_redeem.html", kwargs)
-            return JSONResponse(r)
-        except:
-            return JSONResponse({
-                "success": False,
-                "error": "Failed to issue OTP. Please try again later."
-            })
-    elif email and otp:
-        if not (session_cookie := auth.OTP.authenticate(email, otp, client_ip)):
-            return JSONResponse(
-                {
-                    "success": False,
-                    "error": "Authentication failed",
-                }
-            )
-
-        if next_url := body.get("next"):
-             response = RedirectResponse(url=next_url, status_code=303)
-        elif beta and action and book_id and (item := Item.exists(book_id)):
-            loan = item.borrow(email)
-            response = RedirectResponse(
-                url=LennyAPI.make_url(f"/v1/api/items/{book_id}/read"),
-                status_code=303
-            )
-        else:
-            response = JSONResponse({"Authentication successful": "OTP verified.","success": True})
-        response.set_cookie(
-            key="session",
-            value=session_cookie,
-            max_age=auth.COOKIE_TTL,
-            httponly=True,   # Prevent JavaScript access
-            secure=True,     # Only over HTTPS in production
-            samesite="Lax",  # Helps mitigate CSRF
-            path="/"
-        )
-        return response
 
 @router.get("/oauth/implicit")
 async def oauth_implicit(request: Request):
@@ -380,30 +286,27 @@ async def oauth_authorize(
     If logged in, redirects to redirect_uri with access_token (session cookie value) in fragment.
     If not logged in, handles OTP flow directly.
     """
-    # 1. Check if user is already logged in
     session = request.cookies.get("session")
     email = auth.verify_session_cookie(session)
 
     if email:
-        # User is logged in. Redirect to callback.
         if not redirect_uri:
-            # Need to recover redirect_uri from form/params if missing (e.g. during POST)
-            # For simplicity, if POSTing, we expect it in body or query.
-            # If plain GET without redirect_uri... error?
             try:
                 form = await request.form()
                 redirect_uri = form.get("redirect_uri")
                 state = form.get("state")
             except: 
                 pass
-            
+        
         if not redirect_uri:
-             return Response("Missing redirect_uri", status_code=400)
+            redirect_uri = "opds://authorize/"
 
-        access_token = session 
+        access_token = session
+        auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
         fragment = {
+            "id": auth_doc_id,
             "access_token": access_token,
-            "token_type": "Bearer",
+            "token_type": "bearer",
             "expires_in": auth.COOKIE_TTL
         }
         if state:
@@ -412,10 +315,8 @@ async def oauth_authorize(
         final_url = f"{redirect_uri}#{urlencode(fragment)}"
         return RedirectResponse(url=final_url, status_code=303)
 
-    # 2. Not logged in. Handle OTP Flow.
     client_ip = request.client.host
     
-    # Try getting params from Query or Body/Form
     try:
         body = await request.json()
     except:
@@ -424,13 +325,7 @@ async def oauth_authorize(
              body = dict(form)
         except:
              body = {}
-    
-    # Merge Query params into body for easier lookup, prioritizing Body (POST)
-    # But redirect_uri might be in query for the initial GET
     req_params = dict(request.query_params)
-    # If POST, we might lose query params depending on client. 
-    # Use body first, fallback to req_params
-    
     post_email = body.get("email")
     post_otp = body.get("otp")
     
@@ -438,48 +333,55 @@ async def oauth_authorize(
         print(f"DEBUG: oauth_authorize POST received. Email: '{post_email}', OTP provided: {bool(post_otp)}")
         print(f"DEBUG: Body keys: {list(body.keys())}")
     
-    # Persist critical OAuth params
-    # If initial GET, use query. If POST, expect them in body (hidden inputs)
     current_redirect_uri = body.get("redirect_uri") or req_params.get("redirect_uri")
     current_state = body.get("state") or req_params.get("state")
     current_client_id = body.get("client_id") or req_params.get("client_id")
     
     if not current_redirect_uri and request.method == "POST":
-         # Fallback: maybe in query strings even on POST?
          current_redirect_uri = req_params.get("redirect_uri")
 
     if not current_redirect_uri:
-         return Response("Missing redirect_uri", status_code=400)
+        current_redirect_uri = "opds://authorize/"
 
-    # Context for templates
     context = {
         "request": request,
-        "redirect_uri": current_redirect_uri, # We can pass this to 'next' or custom field
+        "redirect_uri": current_redirect_uri,
         "state": current_state,
         "client_id": current_client_id,
-        "post_url": f"/v1/api/oauth/authorize?redirect_uri={quote(current_redirect_uri, safe='')}&state={quote(current_state or '', safe='')}",
-        # We also need these for the template hidden fields to map correctly if we use standard template vars
-        "next": current_redirect_uri, # Mapping redirect_uri to 'next' for consistency? 
-        # Actually templates use: book_id, action, next, email, beta
-        # We should adapt templates to just use hidden fields we provide?
-        # Or we inject what they expect.
+        "post_url": f"/v1/api/oauth/authorize" + (f"?redirect_uri={quote(current_redirect_uri, safe='')}" if current_redirect_uri != "opds://authorize/" else "") + (f"&state={quote(current_state or '', safe='')}" if current_state else ""),
+        "next": current_redirect_uri,
         "book_id": "oauth",
         "action": "oauth"
     }
-    
-    # CASE A: Submit OTP (Verification)
+
     if request.method == "POST" and post_email and post_otp:
         if not (session_cookie := auth.OTP.authenticate(post_email, post_otp, client_ip)):
-             # Failed
-             context["error"] = "Authentication failed. Invalid OTP."
-             context["email"] = post_email
-             return request.app.templates.TemplateResponse("otp_redeem.html", context)
+            context["error"] = "Authentication failed. Invalid OTP."
+            context["email"] = post_email
+            return request.app.templates.TemplateResponse("otp_redeem.html", context)
         
-        # Success
-        response = RedirectResponse(
-            url=f"{current_redirect_uri}#access_token={session_cookie}&token_type=Bearer&expires_in={auth.COOKIE_TTL}" + (f"&state={current_state}" if current_state else ""),
-            status_code=303
-        )
+        auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
+        auth_doc_id_raw = LennyAPI.make_url("/v1/api/oauth/implicit")
+        token_fragment = f"id={auth_doc_id}&access_token={session_cookie}&token_type=bearer&expires_in={auth.COOKIE_TTL}"
+        if current_state:
+            token_fragment += f"&state={current_state}"
+        
+        if current_redirect_uri.startswith("opds://"):
+            success_context = {
+                "request": request,
+                "email": post_email,
+                "auth_doc_id": auth_doc_id_raw,
+                "access_token": session_cookie,
+                "expires_in": auth.COOKIE_TTL,
+                "state": current_state
+            }
+            response = request.app.templates.TemplateResponse("oauth_success.html", success_context)
+        else:
+            response = RedirectResponse(
+                url=f"{current_redirect_uri}#{token_fragment}",
+                status_code=303
+            )
+        
         response.set_cookie(
             key="session",
             value=session_cookie,
@@ -491,17 +393,14 @@ async def oauth_authorize(
         )
         return response
 
-    # CASE B: Request OTP (Issue)
     elif request.method == "POST" and post_email:
         try:
-            r = auth.OTP.issue(post_email, client_ip)
-            # Render Redeem Page
+            auth.OTP.issue(post_email, client_ip)
             context["email"] = post_email
             return request.app.templates.TemplateResponse("otp_redeem.html", context)
         except Exception as e:
-            context["error"] = "Failed to issue OTP."
+            context["error"] = "Failed to issue OTP. Please try again."
             return request.app.templates.TemplateResponse("otp_issue.html", context)
 
-    # CASE C: Initial Page Load (Ask for Email)
     else:
         return request.app.templates.TemplateResponse("otp_issue.html", context)
