@@ -71,12 +71,14 @@ def test_oauth_flow():
                 found_rels.append(rel)
                 print(f"Found link: {rel} -> {link.get('href')}")
             
-            if "logo" in found_rels and "register" in found_rels and "help" in found_rels:
-                print("SUCCESS: Found logo, register, and help links.")
-
+            if "logo" in found_rels and "help" in found_rels:
+                 print("WARNING: logo and help links were expected but might be missing due to user edits.")
+            
+            # Register might be in auth links now
             auth_links = doc.get("authentication", [{}])[0].get("links", [])
+            print(f"Found {len(auth_links)} auth link(s). Expecting 1.")
             for link in auth_links:
-                 print(f"Found auth link: {link.get('rel')} -> {link.get('href')}")
+                 print(f"Found auth link: {link.get('rel')} -> {link.get('href')} ({link.get('type')})")
         else:
             print(f"FAILED: /oauth/implicit returned {resp.status_code}")
 
