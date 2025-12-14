@@ -64,13 +64,6 @@ class LennyAPI:
         """
         return _make_url(path)
 
-    @classmethod
-    def get_authentication_document(cls):
-        """
-        Returns the OPDS Authentication Document (JSON).
-        Delegates to LennyDataProvider to reuse shared logic.
-        """
-        return LennyDataProvider.get_authentication_document()
 
     @classmethod
     def auth_check(cls, item, session: str=None, request: Request=None):
