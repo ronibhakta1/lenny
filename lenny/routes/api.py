@@ -190,7 +190,7 @@ async def proxy_readium(request: Request, book_id: str, readium_path: str, forma
         return Response(content=r.content, media_type=content_type)
 
 
-@router.post('/items/{book_id}/borrow')
+@router.get('/items/{book_id}/borrow')
 @requires_item_auth()
 async def borrow_item(request: Request, book_id: int, format: str=".epub",  session: Optional[str] = Cookie(None), item=None, email: str=''):
     """
@@ -198,6 +198,7 @@ async def borrow_item(request: Request, book_id: int, format: str=".epub",  sess
     Redirects to the reader after successful borrow, similar to Internet Archive.
     """
     try:
+        print(f"Borrowing item {book_id} for {email}")
         loan = item.borrow(email)
         # Redirect to the reader after successful borrow
         manifest_uri = LennyAPI.make_manifest_url(book_id)
