@@ -66,10 +66,7 @@ stop:
 	@bash docker/utils/lenny.sh --stop
 	@$(MAKE) untunnel
 
-# Add a book with OpenLibrary Edition ID
-# Usage: make addbook olid=OL123456M filepath=/path/to/book.epub [encrypted=true]
-# Note: On macOS, if file is in ~/Downloads, you may need to grant Terminal "Full Disk Access"
-#       or copy the file to the project directory first
+
 .PHONY: addbook
 addbook:
 	@if [ -z "$(olid)" ] || [ -z "$(filepath)" ]; then \
@@ -79,8 +76,7 @@ addbook:
 	fi
 	@bash docker/utils/addbook.sh --olid $(olid) --filepath $(filepath) $(if $(filter true,$(encrypted)),--encrypted,)
 
-# Generate reader.archive.org URL with OPDS feed
-# Usage: make url
+
 .PHONY: url
 url:
 	@TUNNEL_URL=$$(grep -aEo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log 2>/dev/null | head -n1); \
