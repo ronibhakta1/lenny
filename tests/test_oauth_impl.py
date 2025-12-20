@@ -1,8 +1,10 @@
 import httpx
+import pytest
 from urllib.parse import urlparse, parse_qs
 
 BASE_URL = "http://127.0.0.1:8080/v1/api"
 
+@pytest.mark.skip(reason="Integration test requires running server - run manually with 'make up'")
 def test_oauth_flow():
     with httpx.Client(base_url=BASE_URL, follow_redirects=False) as client:
         # 1. Check Global OPDS Feed for Authentication Link
