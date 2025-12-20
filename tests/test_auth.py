@@ -1,5 +1,7 @@
 import pytest 
 
+# Skip tests if dependencies not installed (for local development)
+pytest.importorskip("itsdangerous")
 from itsdangerous import URLSafeTimedSerializer
 from lenny.core import auth
 

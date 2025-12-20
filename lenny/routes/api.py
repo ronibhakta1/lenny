@@ -98,11 +98,15 @@ def _build_post_borrow_publication(book_id: int) -> dict:
     
     Returns publication metadata with direct acquisition links:
     - self: points to /opds/{id}
-    - acquisition: points to manifest (for reading)
+    - acquisition: points to reader with manifest (for reading in browser)
     - return: points to /items/{id}/return
     """
     base_url = LennyAPI.make_url("/v1/api/")
     manifest_url = LennyAPI.make_manifest_url(book_id)
+    # Reader URL: /read/manifest/{encoded_manifest_url}
+    encoded_manifest = quote(manifest_url, safe='')
+    reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest}")
+    
     publication = LennyAPI.opds_feed(olid=book_id)
     
     publication["links"] = [
@@ -113,8 +117,8 @@ def _build_post_borrow_publication(book_id: int) -> dict:
         },
         {
             "rel": "http://opds-spec.org/acquisition",
-            "href": manifest_url,
-            "type": "application/webpub+json",
+            "href": reader_url,
+            "type": "text/html",
             "title": "Read"
         },
         {
@@ -287,23 +291,26 @@ async def borrow_item(request: Request, book_id: int, format: str=".epub",  sess
         media_type="application/opds-publication+json"
     )
 
-@router.post('/items/{book_id}/return', status_code=status.HTTP_200_OK)
+@router.api_route('/items/{book_id}/return', methods=['GET', 'POST'], status_code=status.HTTP_200_OK)
 @requires_item_auth()
 async def return_item(request: Request, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
     """
-    Handles the return process for a single borrowed book. Requires patron's email.
-    Calls return_items to mark the loan as returned.
+    Return a borrowed book.
+    
+    After successful return, returns OPDS publication with borrow link
+    (book is now available to borrow again).
     """
     try:
         loan = item.unborrow(email)
-        return JSONResponse(content={
-            "success": True,
-            "email": email,
-            "loan_id": loan.id,
-            "item_id": book_id
-        })        
-    except LoanNotRequiredError as e:
-        return JSONResponse({"error": "open_access","message": "open_access"})
+        return Response(
+            content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
+            media_type="application/opds-publication+json"
+        )
+    except LoanNotRequiredError:
+        return Response(
+            content=json.dumps({"error": "open_access", "message": "This book is open access and doesn't require return"}),
+            media_type="application/json"
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
