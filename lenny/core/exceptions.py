@@ -29,3 +29,7 @@ class ExistingLoanError(LennyAPIError): pass
 
 class LoanNotFoundError(LennyAPIError): pass
 
+class BookUnavailableError(LennyAPIError):
+    """Raised when no copies are available for borrowing."""
+    pass
+

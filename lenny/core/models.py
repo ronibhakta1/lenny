@@ -19,7 +19,8 @@ from lenny.core.exceptions import (
     LoanNotRequiredError,
     LoanNotFoundError,
     EmailNotFoundError,
-    DatabaseInsertError
+    DatabaseInsertError,
+    BookUnavailableError
 )
 import enum
 import datetime
@@ -118,7 +119,18 @@ class Item(Base):
 
     def borrow(self, email: str):
         """
-        Borrows a book for a patron. Returns the Loan object if successful.
+        Borrow a book for a patron.
+        
+        Args:
+            email: Patron's email address for loan tracking.
+            
+        Returns:
+            Loan object (existing if already borrowed, new otherwise).
+            
+        Raises:
+            LoanNotRequiredError: If item is open-access (no login needed).
+            EmailNotFoundError: If email is not provided.
+            BookUnavailableError: If no copies are available.
         """
         if not self.is_login_required:
             raise LoanNotRequiredError
@@ -127,8 +139,13 @@ class Item(Base):
             raise EmailNotFoundError("Email is required to borrow encrypted items.")
 
         hashed_email = hash_email(email)
+        
         if active_loan := Loan.exists(self.id, hashed_email, hashed=True):
             return active_loan
+        
+        if not self.is_borrowable:
+            raise BookUnavailableError("No copies available for borrowing.")
+        
         return Loan.create(self.id, hashed_email, hashed=True)
 
 

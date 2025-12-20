@@ -43,6 +43,7 @@ from lenny.core.exceptions import (
     FileTooLargeError,
     S3UploadError,
     UploaderNotAllowedError,
+    BookUnavailableError,
 )
 from lenny.core.readium import ReadiumAPI
 from lenny.core.models import Item
@@ -89,6 +90,41 @@ def _set_session_cookie(response, session_cookie: str):
         path="/"
     )
     return response
+
+
+def _build_post_borrow_publication(book_id: int) -> dict:
+    """
+    Build OPDS publication response after successful borrow.
+    
+    Returns publication metadata with direct acquisition links:
+    - self: points to /opds/{id}
+    - acquisition: points to manifest (for reading)
+    - return: points to /items/{id}/return
+    """
+    base_url = LennyAPI.make_url("/v1/api/")
+    manifest_url = LennyAPI.make_manifest_url(book_id)
+    publication = LennyAPI.opds_feed(olid=book_id)
+    
+    publication["links"] = [
+        {
+            "rel": "self",
+            "href": f"{base_url}opds/{book_id}",
+            "type": "application/opds-publication+json"
+        },
+        {
+            "rel": "http://opds-spec.org/acquisition",
+            "href": manifest_url,
+            "type": "application/webpub+json",
+            "title": "Read"
+        },
+        {
+            "rel": "http://opds-spec.org/acquisition/return",
+            "href": f"{base_url}items/{book_id}/return",
+            "type": "application/opds-publication+json",
+            "title": "Return"
+        }
+    ]
+    return publication
 
 
 router = APIRouter()
@@ -154,11 +190,49 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
     )
 
 @router.get("/opds/{book_id}")
-async def get_opds_item(request: Request, book_id:int):
+async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None)):
+    """
+    Returns OPDS publication info. If authenticated, also processes borrow
+    and returns webpub manifest with direct content links (Internet Archive pattern).
+    """
+    # Check for Bearer token in Authorization header
+    if not session:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            session = auth_header.split(" ")[1]
+    
+    # Check if user is authenticated
+    email = auth.verify_session_cookie(session) if session else None
+    
+    # Get the item to check if it exists and its properties
+    item = Item.exists(book_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    # If authenticated and item requires login, process borrow
+    if email and item.is_login_required:
+        try:
+            loan = item.borrow(email)
+        except LoanNotRequiredError:
+            pass  # Open access, continue
+        except BookUnavailableError:
+            # Book unavailable - return publication with borrow link (shows unavailable state)
+            return Response(
+                content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
+                media_type="application/opds-publication+json"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        # Return post-borrow publication with direct content links
+        return Response(
+            content=json.dumps(_build_post_borrow_publication(book_id)),
+            media_type="application/opds-publication+json"
+        )
+    
+    # Not authenticated or open-access: return publication info with borrow link
     return Response(
-        content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id)
-        ),
+        content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
         media_type="application/opds-publication+json"
     )
 
@@ -194,25 +268,24 @@ async def proxy_readium(request: Request, book_id: str, readium_path: str, forma
 @requires_item_auth()
 async def borrow_item(request: Request, book_id: int, format: str=".epub",  session: Optional[str] = Cookie(None), item=None, email: str=''):
     """
-    Handles the borrowing of a book for a patron.
-    Redirects to the reader after successful borrow, similar to Internet Archive.
+    Borrow endpoint for OPDS clients.
+    
+    Processes the borrow and returns an OPDS publication with direct content links
+    (manifest for reading, return link) instead of borrow links.
     """
     try:
-        print(f"Borrowing item {book_id} for {email}")
         loan = item.borrow(email)
-        # Redirect to the reader after successful borrow
-        manifest_uri = LennyAPI.make_manifest_url(book_id)
-        encoded_manifest_uri = quote(manifest_uri, safe='')
-        reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
-        return RedirectResponse(url=reader_url, status_code=303)
-    except LoanNotRequiredError as e:
-        # For open-access items, redirect to read
-        manifest_uri = LennyAPI.make_manifest_url(book_id)
-        encoded_manifest_uri = quote(manifest_uri, safe='')
-        reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
-        return RedirectResponse(url=reader_url, status_code=303)
+    except LoanNotRequiredError:
+        pass  # Open-access items continue without loan
+    except BookUnavailableError:
+        raise HTTPException(status_code=409, detail="No copies available for borrowing")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+    return Response(
+        content=json.dumps(_build_post_borrow_publication(book_id)),
+        media_type="application/opds-publication+json"
+    )
 
 @router.post('/items/{book_id}/return', status_code=status.HTTP_200_OK)
 @requires_item_auth()
