@@ -78,3 +78,18 @@ addbook:
 		exit 1; \
 	fi
 	@bash docker/utils/addbook.sh --olid $(olid) --filepath $(filepath) $(if $(filter true,$(encrypted)),--encrypted,)
+
+# Generate reader.archive.org URL with OPDS feed
+# Usage: make url
+.PHONY: url
+url:
+	@TUNNEL_URL=$$(grep -aEo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log 2>/dev/null | head -n1); \
+	if [ -z "$$TUNNEL_URL" ]; then \
+		echo "[!] No tunnel URL found. Run 'make tunnel' first."; \
+		exit 1; \
+	fi; \
+	OPDS_URL="$$TUNNEL_URL/v1/api/opds"; \
+	ENCODED_OPDS=$$(python3 -c "import urllib.parse; print(urllib.parse.quote('$$OPDS_URL', safe=''))"); \
+	READER_URL="https://reader.archive.org/?opds=$$ENCODED_OPDS"; \
+	echo "[+] OPDS Feed: $$OPDS_URL"; \
+	echo "[+] Reader URL: $$READER_URL"
