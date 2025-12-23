@@ -32,6 +32,7 @@ from fastapi.responses import (
 )
 from lenny.core import auth
 from lenny.core.api import LennyAPI
+from pyopds2_lenny import LennyDataProvider
 from lenny.core.exceptions import (
     INVALID_ITEM,
     InvalidFileError,
@@ -42,12 +43,93 @@ from lenny.core.exceptions import (
     FileTooLargeError,
     S3UploadError,
     UploaderNotAllowedError,
+    BookUnavailableError,
 )
 from lenny.core.readium import ReadiumAPI
 from lenny.core.models import Item
 from urllib.parse import quote
 
 COOKIES_MAX_AGE = 604800  # 1 week
+
+
+def _build_oauth_fragment(session_cookie: str, state: str = None) -> dict:
+    """Build OAuth token fragment for redirect URL or opds:// callback."""
+    auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
+    fragment = {
+        "id": auth_doc_id,
+        "access_token": session_cookie,
+        "token_type": "bearer",
+        "expires_in": auth.COOKIE_TTL
+    }
+    if state:
+        fragment["state"] = state
+    return fragment
+
+
+async def _parse_request_body(request: Request) -> dict:
+    """Parse request body from JSON or form data, with fallback to empty dict."""
+    try:
+        return await request.json()
+    except:
+        try:
+            form = await request.form()
+            return dict(form)
+        except:
+            return {}
+
+
+def _set_session_cookie(response, session_cookie: str):
+    """Set session cookie with standard security settings."""
+    response.set_cookie(
+        key="session",
+        value=session_cookie,
+        max_age=auth.COOKIE_TTL,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        path="/"
+    )
+    return response
+
+
+def _build_post_borrow_publication(book_id: int) -> dict:
+    """
+    Build OPDS publication response after successful borrow.
+    
+    Returns publication metadata with direct acquisition links:
+    - self: points to /opds/{id}
+    - acquisition: points to reader with manifest (for reading in browser)
+    - return: points to /items/{id}/return
+    """
+    base_url = LennyAPI.make_url("/v1/api/")
+    manifest_url = LennyAPI.make_manifest_url(book_id)
+    # Reader URL: /read/manifest/{encoded_manifest_url}
+    encoded_manifest = quote(manifest_url, safe='')
+    reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest}")
+    
+    publication = LennyAPI.opds_feed(olid=book_id)
+    
+    publication["links"] = [
+        {
+            "rel": "self",
+            "href": f"{base_url}opds/{book_id}",
+            "type": "application/opds-publication+json"
+        },
+        {
+            "rel": "http://opds-spec.org/acquisition",
+            "href": reader_url,
+            "type": "text/html",
+            "title": "Read"
+        },
+        {
+            "rel": "http://opds-spec.org/acquisition/return",
+            "href": f"{base_url}items/{book_id}/return",
+            "type": "application/opds-publication+json",
+            "title": "Return"
+        }
+    ]
+    return publication
+
 
 router = APIRouter()
 
@@ -64,20 +146,23 @@ def requires_item_auth(do_function=None):
                 # Email and Item will get magically injected by this decorator and
                 # passed in to the wrapped function
                 email=None, item=None, *args, **kwargs):
+            # Check for Bearer token
+            if not session:
+                auth_header = request.headers.get("Authorization")
+                if auth_header and auth_header.startswith("Bearer "):
+                    session = auth_header.split(" ")[1]
+
             if item := Item.exists(book_id):
                 result = LennyAPI.auth_check(item, session=session, request=request)
                 email = result.get('email', '')
                 if 'error' in result:
-                    if request.query_params.get('beta'):
-                        params ={
-                            "book_id": book_id,
-                            "email": email,
-                            "otp": request.query_params.get('otp', ''),
-                        }
-                        url = LennyAPI.make_url('/v1/api/authenticate') + f"?{urlencode(params)}"
-                        return RedirectResponse(url=url, status_code=307)
-                    return JSONResponse(status_code=401, content=result)
-
+                    # Return 401 with partial Auth Doc as per OPDS 2.0
+                    return JSONResponse(
+                        status_code=401, 
+                        content=LennyDataProvider.get_authentication_document(),
+                        media_type="application/opds-authentication+json"
+                    )
+ 
                 # NB: Email and Item will be passed into any function decorated by requires_item_auth
                 return await func(
                     request=request, book_id=book_id, format=format, session=session,
@@ -109,11 +194,49 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
     )
 
 @router.get("/opds/{book_id}")
-async def get_opds_item(request: Request, book_id:int):
+async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None)):
+    """
+    Returns OPDS publication info. If authenticated, also processes borrow
+    and returns webpub manifest with direct content links (Internet Archive pattern).
+    """
+    # Check for Bearer token in Authorization header
+    if not session:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            session = auth_header.split(" ")[1]
+    
+    # Check if user is authenticated
+    email = auth.verify_session_cookie(session) if session else None
+    
+    # Get the item to check if it exists and its properties
+    item = Item.exists(book_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    # If authenticated and item requires login, process borrow
+    if email and item.is_login_required:
+        try:
+            loan = item.borrow(email)
+        except LoanNotRequiredError:
+            pass  # Open access, continue
+        except BookUnavailableError:
+            # Book unavailable - return publication with borrow link (shows unavailable state)
+            return Response(
+                content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
+                media_type="application/opds-publication+json"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        # Return post-borrow publication with direct content links
+        return Response(
+            content=json.dumps(_build_post_borrow_publication(book_id)),
+            media_type="application/opds-publication+json"
+        )
+    
+    # Not authenticated or open-access: return publication info with borrow link
     return Response(
-        content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id)
-        ),
+        content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
         media_type="application/opds-publication+json"
     )
 
@@ -145,46 +268,49 @@ async def proxy_readium(request: Request, book_id: str, readium_path: str, forma
         return Response(content=r.content, media_type=content_type)
 
 
-@router.post('/items/{book_id}/borrow')
+@router.get('/items/{book_id}/borrow')
 @requires_item_auth()
 async def borrow_item(request: Request, book_id: int, format: str=".epub",  session: Optional[str] = Cookie(None), item=None, email: str=''):
     """
-    Handles the borrowing of a book for a patron.
-    Redirects to the reader after successful borrow, similar to Internet Archive.
+    Borrow endpoint for OPDS clients.
+    
+    Processes the borrow and returns an OPDS publication with direct content links
+    (manifest for reading, return link) instead of borrow links.
     """
     try:
         loan = item.borrow(email)
-        # Redirect to the reader after successful borrow
-        manifest_uri = LennyAPI.make_manifest_url(book_id)
-        encoded_manifest_uri = quote(manifest_uri, safe='')
-        reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
-        return RedirectResponse(url=reader_url, status_code=303)
-    except LoanNotRequiredError as e:
-        # For open-access items, redirect to read
-        manifest_uri = LennyAPI.make_manifest_url(book_id)
-        encoded_manifest_uri = quote(manifest_uri, safe='')
-        reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
-        return RedirectResponse(url=reader_url, status_code=303)
+    except LoanNotRequiredError:
+        pass  # Open-access items continue without loan
+    except BookUnavailableError:
+        raise HTTPException(status_code=409, detail="No copies available for borrowing")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+    return Response(
+        content=json.dumps(_build_post_borrow_publication(book_id)),
+        media_type="application/opds-publication+json"
+    )
 
-@router.post('/items/{book_id}/return', status_code=status.HTTP_200_OK)
+@router.api_route('/items/{book_id}/return', methods=['GET', 'POST'], status_code=status.HTTP_200_OK)
 @requires_item_auth()
 async def return_item(request: Request, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
     """
-    Handles the return process for a single borrowed book. Requires patron's email.
-    Calls return_items to mark the loan as returned.
+    Return a borrowed book.
+    
+    After successful return, returns OPDS publication with borrow link
+    (book is now available to borrow again).
     """
     try:
         loan = item.unborrow(email)
-        return JSONResponse(content={
-            "success": True,
-            "email": email,
-            "loan_id": loan.id,
-            "item_id": book_id
-        })        
-    except LoanNotRequiredError as e:
-        return JSONResponse({"error": "open_access","message": "open_access"})
+        return Response(
+            content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
+            media_type="application/opds-publication+json"
+        )
+    except LoanNotRequiredError:
+        return Response(
+            content=json.dumps({"error": "open_access", "message": "This book is open access and doesn't require return"}),
+            media_type="application/json"
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -257,77 +383,104 @@ async def logout(response: Response, session: str = Cookie(None)):
     return {"success": True, "message": "Logged out successfully"}
 
 
-@router.get("/authenticate")
-async def authenticate_ui(request: Request, response: Response):
-    book_id = request.query_params.get("book_id")
-    email = request.query_params.get("email")
-    otp = request.query_params.get("otp")
-    action = request.query_params.get("action", "borrow")
 
-    kwargs = {"request": request, "email": email, "book_id": book_id, "action": action, "beta": True}
+
+@router.get("/oauth/implicit")
+async def oauth_implicit(request: Request):
+    """
+    Returns the OPDS Authentication Document (JSON) describing the implicit flow.
+    """
+    return Response(
+        content=json.dumps(LennyDataProvider.get_authentication_document()),
+        media_type="application/opds-authentication+json"
+    )
+
+@router.api_route("/oauth/authorize", methods=["GET", "POST"])
+async def oauth_authorize(
+    request: Request, 
+    response: Response,
+    redirect_uri: Optional[str] = None,
+    client_id: Optional[str] = None,
+    state: Optional[str] = None
+):
+    """
+    Handles the authorization request.
+    If logged in, redirects to redirect_uri with access_token in fragment.
+    If not logged in, handles OTP flow directly.
+    """
+    session = request.cookies.get("session")
+    email = auth.verify_session_cookie(session)
+
     if email:
-        return request.app.templates.TemplateResponse("otp_redeem.html", kwargs)
-    return request.app.templates.TemplateResponse("otp_issue.html", kwargs)
-
-
-@router.post("/authenticate")
-async def authenticate(request: Request, response: Response):
-    client_ip = request.client.host
-
-    try:
-        body = await request.json()
-    except json.decoder.JSONDecodeError:
-        form = await request.form()
-        body = dict(form)
+        body = await _parse_request_body(request)
+        redirect_uri = redirect_uri or body.get("redirect_uri") or "opds://authorize/"
+        state = state or body.get("state")
         
-    email = body.get("email")
-    otp = body.get("otp")
+        fragment = _build_oauth_fragment(session, state)
+        return RedirectResponse(url=f"{redirect_uri}#{urlencode(fragment)}", status_code=303)
 
-    book_id = body.get("book_id")
-    action = body.get("action", "borrow")
-    beta = body.get("beta")
+    client_ip = request.client.host
+    body = await _parse_request_body(request)
+    req_params = dict(request.query_params)
+    
+    post_email = body.get("email")
+    post_otp = body.get("otp")
+    
+    current_redirect_uri = body.get("redirect_uri") or req_params.get("redirect_uri") or "opds://authorize/"
+    current_state = body.get("state") or req_params.get("state")
+    current_client_id = body.get("client_id") or req_params.get("client_id")
 
-    if email and not otp:
-        try:
-            r = auth.OTP.issue(email, client_ip)
-            if beta:
-                params = {
-                    "email": email,
-                    "book_id": book_id,
-                }
-                url = LennyAPI.make_url("/v1/api/authenticate") + f"?{urlencode(params)}"
-                return RedirectResponse(url=url, status_code=303)
-            return JSONResponse(r)
-        except:
-            return JSONResponse({
-                "success": False,
-                "error": "Failed to issue OTP. Please try again later."
-            })
-    elif email and otp:
-        if not (session_cookie := auth.OTP.authenticate(email, otp, client_ip)):
-            return JSONResponse(
-                {
-                    "success": False,
-                    "error": "Authentication failed",
-                }
-            )
+    post_url = "/v1/api/oauth/authorize"
+    if current_redirect_uri != "opds://authorize/":
+        post_url += f"?redirect_uri={quote(current_redirect_uri, safe='')}"
+    if current_state:
+        post_url += f"&state={quote(current_state, safe='')}"
+    
+    context = {
+        "request": request,
+        "redirect_uri": current_redirect_uri,
+        "state": current_state,
+        "client_id": current_client_id,
+        "post_url": post_url,
+        "next": current_redirect_uri,
+        "book_id": "oauth",
+        "action": "oauth"
+    }
 
-        if beta and action and book_id and (item := Item.exists(book_id)):
-            loan = item.borrow(email)
+    if request.method == "POST" and post_email and post_otp:
+        session_cookie = auth.OTP.authenticate(post_email, post_otp, client_ip)
+        if not session_cookie:
+            context["error"] = "Authentication failed. Invalid OTP."
+            context["email"] = post_email
+            return request.app.templates.TemplateResponse("otp_redeem.html", context)
+        
+        fragment = _build_oauth_fragment(session_cookie, current_state)
+        
+        if current_redirect_uri.startswith("opds://"):
+            success_context = {
+                "request": request,
+                "email": post_email,
+                "auth_doc_id": LennyAPI.make_url("/v1/api/oauth/implicit"),
+                "access_token": session_cookie,
+                "expires_in": auth.COOKIE_TTL,
+                "state": current_state
+            }
+            response = request.app.templates.TemplateResponse("oauth_success.html", success_context)
+        else:
             response = RedirectResponse(
-                url=LennyAPI.make_url(f"/v1/api/items/{book_id}/read"),
+                url=f"{current_redirect_uri}#{urlencode(fragment)}",
                 status_code=303
             )
-        else:
-            response = JSONResponse({"Authentication successful": "OTP verified.","success": True})
-        response.set_cookie(
-            key="session",
-            value=session_cookie,
-            max_age=auth.COOKIE_TTL,
-            httponly=True,   # Prevent JavaScript access
-            secure=True,     # Only over HTTPS in production
-            samesite="Lax",  # Helps mitigate CSRF
-            path="/"
-        )
-        return response
+        
+        return _set_session_cookie(response, session_cookie)
 
+    if request.method == "POST" and post_email:
+        try:
+            auth.OTP.issue(post_email, client_ip)
+            context["email"] = post_email
+            return request.app.templates.TemplateResponse("otp_redeem.html", context)
+        except Exception:
+            context["error"] = "Failed to issue OTP. Please try again."
+            return request.app.templates.TemplateResponse("otp_issue.html", context)
+
+    return request.app.templates.TemplateResponse("otp_issue.html", context)

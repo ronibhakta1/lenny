@@ -12,6 +12,9 @@
 """
 
 import pytest 
+
+# Skip tests if dependencies not installed (for local development)
+pytest.importorskip("boto3")
 from lenny.core.db import Base
 
 @pytest.fixture

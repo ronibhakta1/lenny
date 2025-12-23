@@ -64,6 +64,7 @@ class LennyAPI:
         """
         return _make_url(path)
 
+
     @classmethod
     def auth_check(cls, item, session: str=None, request: Request=None):
         """
@@ -141,26 +142,20 @@ class LennyAPI:
         lenny_ids_map = {k: v for k, v in zip(items.keys(), lenny_ids) if v is not None}
         lenny_ids_arg = lenny_ids_map if lenny_ids_map else None
         
-        encryption_map = {
-            int(getattr(rec, "lenny").openlibrary_edition): getattr(rec, "lenny").encrypted
-            for rec in items.values()
-            if hasattr(rec, "lenny") and getattr(rec, "lenny") is not None
-        }
-
+        # Build maps for each item's encryption and availability status
+        encryption_map = {}
         borrowable_map = {}
+        
         for rec in items.values():
-            if not hasattr(rec, "lenny") or getattr(rec, "lenny") is None:
+            lenny_item = getattr(rec, "lenny", None)
+            if lenny_item is None:
                 continue
-            local_item = getattr(rec, "lenny")
             try:
-                key = int(getattr(local_item, "openlibrary_edition"))
-                borrowable_map[key] = bool(getattr(local_item, "is_borrowable", False))
-            except Exception:
-                try:
-                    key = int(getattr(local_item, "openlibrary_edition", 0) or 0)
-                    borrowable_map[key] = True
-                except Exception:
-                    continue
+                edition_id = int(lenny_item.openlibrary_edition)
+                encryption_map[edition_id] = lenny_item.encrypted
+                borrowable_map[edition_id] = lenny_item.is_borrowable
+            except (AttributeError, TypeError, ValueError):
+                continue
 
         search_response = LennyDataProvider.search(
             query=query,
@@ -192,12 +187,18 @@ class LennyAPI:
         def _href(path: str) -> str:
             return cls.make_url(path)
         return [
-            Navigation(href=_href("/v1/api/opds"), title="Home", type="text/html", rel="alternate"),
+            Navigation(href=_href("/v1/api/opds"), title="Home", type="application/opds+json", rel="alternate"),
             Navigation(
                 href=_href(f"/v1/api/opds?offset=0&limit={limit}"),
                 title="Catalog",
                 type="application/opds+json",
                 rel="collection",
+            ),
+            Navigation(
+                href=_href("/v1/api/oauth/implicit"),
+                title="Authentication",
+                type="application/opds-authentication+json",
+                rel="http://opds-spec.org/auth/oauth/implicit",
             ),
         ]
 

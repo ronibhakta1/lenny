@@ -1,0 +1,18 @@
+{% extends "_base_auth.html" %}
+
+{% block title %}Authentication Success - Lenny{% endblock %}
+
+{% block content %}
+<div class="card card--wide">
+  <div class="success-icon">✓</div>
+  <h1>Authentication Successful</h1>
+  <p>You are now signed in as <span class="email email--success">{{ email }}</span></p>
+  
+  <div class="token-info">
+    <strong>OPDS Callback:</strong><br>
+    opds://authorize/?id={{ auth_doc_id }}&access_token={{ access_token }}&token_type=bearer&expires_in={{ expires_in }}{% if state %}&state={{ state }}{% endif %}
+  </div>
+  
+  <a href="/v1/api/opds" class="btn btn--primary">← Return to Catalog</a>
+</div>
+{% endblock %}

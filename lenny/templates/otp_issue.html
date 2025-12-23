@@ -1,16 +1,24 @@
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>Lenny API</title>
-  </head>
-  <body>
-    <h3>Please authenticate by providing your email to receive a one-time-password in order to access this item.</h3>
-    <form action="/v1/api/authenticate" method="POST">
-      <label>Email <input type="email" name="email"/></label>
-      <input type="hidden" name="book_id" value="{{book_id}}" />
-      <input type="hidden" name="action" value="borrow" />
-      <input type="hidden" name="beta" value="true"/>
-      <input type="submit"/>
-    </form>
-  </body>
-</html>
+{% extends "_base_auth.html" %}
+
+{% block title %}Sign In - Lenny{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1>Sign in to Lenny</h1>
+  <p class="subtitle">Enter your email to receive a one-time password.</p>
+  {% if error %}
+  <div class="error">{{ error }}</div>
+  {% endif %}
+  <form action="{{ post_url }}" method="POST">
+    <label for="email">Email address</label>
+    <input type="email" id="email" name="email" required placeholder="you@example.com"/>
+    <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}"/>
+    <input type="hidden" name="state" value="{{ state or '' }}"/>
+    <input type="hidden" name="client_id" value="{{ client_id or '' }}"/>
+    <input type="hidden" name="book_id" value="{{ book_id }}"/>
+    <input type="hidden" name="action" value="{{ action }}"/>
+    <input type="hidden" name="next" value="{{ next }}"/>
+    <button type="submit" class="btn btn--primary">Send OTP</button>
+  </form>
+</div>
+{% endblock %}
