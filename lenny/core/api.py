@@ -184,6 +184,20 @@ class LennyAPI:
             search_response,
             metadata=Metadata(title=cls.OPDS_TITLE), # type: ignore
             navigation=cls._navigation(limit),
+            links=[
+                Link(
+                    rel="http://opds-spec.org/shelf",
+                    href=cls.make_url("/v1/api/shelf"),
+                    type="application/opds+json",
+                    title="Bookshelf"
+                ),
+                Link(
+                    rel="profile",
+                    href=cls.make_url("/v1/api/profile"),
+                    type="application/opds-profile+json",
+                    title="User Profile"
+                )
+            ]
         )
         return catalog.model_dump()
 
@@ -204,18 +218,6 @@ class LennyAPI:
                 title="Catalog",
                 type="application/opds+json",
                 rel="collection",
-            ),
-            Navigation(
-                href=_href("/v1/api/shelf"),
-                title="Bookshelf",
-                type="application/opds+json",
-                rel="http://opds-spec.org/shelf",
-            ),
-            Navigation(
-                href=_href("/v1/api/profile"),
-                title="User Profile",
-                type="application/opds-profile+json",
-                rel="profile",
             ),
             Navigation(
                 href=_href("/v1/api/oauth/implicit"),
