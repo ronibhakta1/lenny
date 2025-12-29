@@ -32,7 +32,7 @@ from fastapi.responses import (
 )
 from lenny.core import auth
 from lenny.core.api import LennyAPI
-from pyopds2_lenny import LennyDataProvider
+from pyopds2_lenny import LennyDataProvider, build_post_borrow_publication
 from lenny.core.exceptions import (
     INVALID_ITEM,
     InvalidFileError,
@@ -50,86 +50,6 @@ from lenny.core.models import Item
 from urllib.parse import quote
 
 COOKIES_MAX_AGE = 604800  # 1 week
-
-
-def _build_oauth_fragment(session_cookie: str, state: str = None) -> dict:
-    """Build OAuth token fragment for redirect URL or opds:// callback."""
-    auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
-    fragment = {
-        "id": auth_doc_id,
-        "access_token": session_cookie,
-        "token_type": "bearer",
-        "expires_in": auth.COOKIE_TTL
-    }
-    if state:
-        fragment["state"] = state
-    return fragment
-
-
-async def _parse_request_body(request: Request) -> dict:
-    """Parse request body from JSON or form data, with fallback to empty dict."""
-    try:
-        return await request.json()
-    except:
-        try:
-            form = await request.form()
-            return dict(form)
-        except:
-            return {}
-
-
-def _set_session_cookie(response, session_cookie: str):
-    """Set session cookie with standard security settings."""
-    response.set_cookie(
-        key="session",
-        value=session_cookie,
-        max_age=auth.COOKIE_TTL,
-        httponly=True,
-        secure=True,
-        samesite="Lax",
-        path="/"
-    )
-    return response
-
-
-def _build_post_borrow_publication(book_id: int) -> dict:
-    """
-    Build OPDS publication response after successful borrow.
-    
-    Returns publication metadata with direct acquisition links:
-    - self: points to /opds/{id}
-    - acquisition: points to reader with manifest (for reading in browser)
-    - return: points to /items/{id}/return
-    """
-    base_url = LennyAPI.make_url("/v1/api/")
-    manifest_url = LennyAPI.make_manifest_url(book_id)
-    # Reader URL: /read/manifest/{encoded_manifest_url}
-    encoded_manifest = quote(manifest_url, safe='')
-    reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest}")
-    
-    publication = LennyAPI.opds_feed(olid=book_id)
-    
-    publication["links"] = [
-        {
-            "rel": "self",
-            "href": f"{base_url}opds/{book_id}",
-            "type": "application/opds-publication+json"
-        },
-        {
-            "rel": "http://opds-spec.org/acquisition",
-            "href": reader_url,
-            "type": "text/html",
-            "title": "Read"
-        },
-        {
-            "rel": "http://opds-spec.org/acquisition/return",
-            "href": f"{base_url}items/{book_id}/return",
-            "type": "application/opds-publication+json",
-            "title": "Return"
-        }
-    ]
-    return publication
-
 
 router = APIRouter()
 
@@ -230,7 +150,7 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
         
         # Return post-borrow publication with direct content links
         return Response(
-            content=json.dumps(_build_post_borrow_publication(book_id)),
+            content=json.dumps(build_post_borrow_publication(book_id)),
             media_type="application/opds-publication+json"
         )
     
@@ -287,7 +207,7 @@ async def borrow_item(request: Request, book_id: int, format: str=".epub",  sess
         raise HTTPException(status_code=400, detail=str(e))
     
     return Response(
-        content=json.dumps(_build_post_borrow_publication(book_id)),
+        content=json.dumps(build_post_borrow_publication(book_id)),
         media_type="application/opds-publication+json"
     )
 
@@ -412,15 +332,15 @@ async def oauth_authorize(
     email = auth.verify_session_cookie(session)
 
     if email:
-        body = await _parse_request_body(request)
+        body = await LennyAPI.parse_request_body(request)
         redirect_uri = redirect_uri or body.get("redirect_uri") or "opds://authorize/"
         state = state or body.get("state")
         
-        fragment = _build_oauth_fragment(session, state)
+        fragment = LennyAPI.build_oauth_fragment(session, state)
         return RedirectResponse(url=f"{redirect_uri}#{urlencode(fragment)}", status_code=303)
 
     client_ip = request.client.host
-    body = await _parse_request_body(request)
+    body = await LennyAPI.parse_request_body(request)
     req_params = dict(request.query_params)
     
     post_email = body.get("email")
@@ -454,7 +374,7 @@ async def oauth_authorize(
             context["email"] = post_email
             return request.app.templates.TemplateResponse("otp_redeem.html", context)
         
-        fragment = _build_oauth_fragment(session_cookie, current_state)
+        fragment = LennyAPI.build_oauth_fragment(session_cookie, current_state)
         
         if current_redirect_uri.startswith("opds://"):
             success_context = {
@@ -472,7 +392,16 @@ async def oauth_authorize(
                 status_code=303
             )
         
-        return _set_session_cookie(response, session_cookie)
+        response.set_cookie(
+            key="session",
+            value=session_cookie,
+            max_age=auth.COOKIE_TTL,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/"
+        )
+        return response
 
     if request.method == "POST" and post_email:
         try:
