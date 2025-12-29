@@ -375,3 +375,29 @@ class LennyAPI:
                 loan.openlibrary_edition = item.openlibrary_edition
                 enriched_loans.append(loan)
         return enriched_loans
+
+    @classmethod
+    def build_oauth_fragment(cls, session_cookie: str, state: str = None) -> dict:
+        """Build OAuth token fragment for redirect URL or opds:// callback."""
+        auth_doc_id = quote(LennyAPI.make_url("/v1/api/oauth/implicit"), safe='')
+        fragment = {
+            "id": auth_doc_id,
+            "access_token": session_cookie,
+            "token_type": "bearer",
+            "expires_in": auth.COOKIE_TTL
+        }
+        if state:
+            fragment["state"] = state
+        return fragment
+
+    @classmethod
+    async def parse_request_body(cls, request: Request) -> dict:
+        """Parse request body from JSON or form data, with fallback to empty dict."""
+        try:
+            return await request.json()
+        except:
+            try:
+                form = await request.form()
+                return dict(form)
+            except:
+                return {}
