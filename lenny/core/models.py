@@ -8,7 +8,7 @@
     :license: see LICENSE for more details
 """
 
-from sqlalchemy  import Column, String, Boolean, BigInteger, Integer, DateTime, Enum as SQLAlchemyEnum
+from sqlalchemy import Column, String, Boolean, BigInteger, Integer, DateTime, Enum as SQLAlchemyEnum, Index
 from sqlalchemy.sql import func
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import relationship
@@ -32,6 +32,9 @@ class FormatEnum(enum.Enum):
 
 class Item(Base):
     __tablename__ = 'items'
+    __table_args__ = (
+        Index('idx_items_openlibrary_edition', 'openlibrary_edition'),
+    )
     
     id = Column(BigInteger, primary_key=True)
     openlibrary_edition = Column(BigInteger, nullable=False)
@@ -151,6 +154,10 @@ class Item(Base):
 
 class Loan(Base):
     __tablename__ = 'loans'
+    __table_args__ = (
+        Index('idx_loans_item_patron_returned', 'item_id', 'patron_email_hash', 'returned_at'),
+        Index('idx_loans_item_returned', 'item_id', 'returned_at'),
+    )
 
     id = Column(BigInteger, primary_key=True)
     item_id = Column(BigInteger, ForeignKey('items.id'), nullable=False)
