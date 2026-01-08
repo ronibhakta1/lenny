@@ -17,7 +17,7 @@ function install_cloudflared() {
 }
 
 function get_tunnel() {
-    grep -aEo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log | head -n1
+    grep -aEo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log 2>/dev/null | head -n1
 }
 
 function close_tunnel() {
@@ -50,13 +50,12 @@ function create_tunnel() {
 
     # Check if we have an existing URL and if it's healthy
     if [[ -n "$url" ]]; then
-        echo "[*] Found existing tunnel: $url. Checking health..."
-        if verify_tunnel "$url"; then
-            echo "[+] Existing tunnel is active and working."
+        if verify_tunnel "$url" 2>/dev/null; then
+            echo "[+] Reusing existing tunnel: $url"
             return 0
         else
-            echo "[!] Existing tunnel is dead. Restarting..."
-            pkill -f 'cloudflared tunnel --url' || true
+            echo "[*] Stale tunnel detected, cleaning up..."
+            pkill -f 'cloudflared tunnel --url' 2>/dev/null || true
             rm -f cloudflared.log
             url=""
         fi
