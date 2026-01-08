@@ -11,6 +11,8 @@ source "$(dirname "$0")/tunnel.sh"
 
 LENNY_PROXY="${LENNY_PROXY:-$(get_tunnel)}"
 
+READER_WAS_RUNNING=$(docker ps -q -f name=lenny_reader 2>/dev/null)
+
 if [[ "$1" == "--rebuild" ]]; then
     docker compose down --volumes --remove-orphans
     docker compose build --no-cache
@@ -27,7 +29,7 @@ else
     exit 1
 fi
 
-if [[ "$1" == "--rebuild-reader" ]] && [[ -n "$LENNY_PROXY" ]]; then
+if [[ "$1" == "--rebuild-reader" ]] && [[ -n "$LENNY_PROXY" ]] && [[ -n "$READER_WAS_RUNNING" ]]; then
     echo "[+] LENNY_PROXY detected at $LENNY_PROXY"
     ALLOWED_HOSTS=$(docker exec lenny_reader printenv NEXT_PUBLIC_MANIFEST_ALLOWED_DOMAINS || echo "")
     PROXY_HOST="${LENNY_PROXY#https://}"
