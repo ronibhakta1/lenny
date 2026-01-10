@@ -24,6 +24,7 @@
   <a href="https://github.com/ArchiveLabs/lenny/pulls"><img src="https://img.shields.io/github/issues-pr/ArchiveLabs/lenny?color=purple" alt="Pull Requests"></a>
   <a href="https://github.com/ArchiveLabs/lenny/commits/main"><img src="https://img.shields.io/github/last-commit/ArchiveLabs/lenny/main" alt="Last Commit"></a>
   <a href="https://github.com/ArchiveLabs/lenny/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-purple" alt="License"></a>
+  <a href="https://deepwiki.com/ArchiveLabs/lenny"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </p>
 
 
