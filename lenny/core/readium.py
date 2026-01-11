@@ -41,7 +41,7 @@ class ReadiumAPI:
     @classmethod
     def make_url(cls, book_id, format, readium_path):
         ebp = encode_book_path(book_id, format=format)
-        readium_url = f"{READIUM_BASE_URL}/{ebp}/{readium_path}"
+        readium_url = f"{READIUM_BASE_URL}/webpub/{ebp}/{readium_path}"
         return readium_url
 
     @classmethod
