@@ -127,33 +127,7 @@ make all
 
 ---
 
-## Importing Test Books
-
-```sh
-docker exec -it lenny_api python scripts/load_open_books.py 
-```
-
-## Making a Book Borrowable
-
-If you'd like to change the encrypted state of an existing book (e.g. with `id=1`) to test borrowing, run the following:
-
-First, exec into the api docker container and start a python session:
-```sh
-docker compose exec -it api python
-```
-
-Second, fetch the db item and set its `encrypted` state to:
-```python
-from lenny.core.models import Item, db
-i = db.query(Item).filter(Item.id == 1).first()
-i.encrypted = True
-db.add(i)
-db.commit()
-```
-
----
-
-## Adding Books
+## Adding Books encrypted or unencrypted
 
 To add a book to Lenny, you must provide an OpenLibrary Edition ID (OLID). Books without an OLID cannot be uploaded.
 
@@ -251,6 +225,26 @@ make resetdb restart preload items=5
 ```sh
 make stop 
 ```
+</details>
+
+<details>
+<summary><b>The /v1/api/items/{id}/read endpoint redirects to Nginx default page</b></summary>
+
+This happens when using `docker compose up -d` directly instead of `make start` or `make build`.
+
+**Why it happens**: The Thorium Web reader requires `NEXT_PUBLIC_*` environment variables at build time. When running `docker compose up -d` directly, these variables may not be passed correctly.
+
+**Solution**: Use the Makefile commands which properly source the environment:
+
+```sh
+# Fast build (uses cache)
+make build
+
+# Full rebuild (no cache)
+make rebuild
+```
+
+Both commands source `reader.env` before building, ensuring the reader is configured correctly.
 </details>
 
 ---
