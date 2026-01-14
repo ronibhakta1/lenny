@@ -106,69 +106,47 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
     )
 
 @router.get("/opds")
-async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None):
+async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None, beta: bool = False):
+    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(offset=offset, limit=limit)
+            LennyAPI.opds_feed(offset=offset, limit=limit, auth_mode_direct=is_direct_mode)
         ),
         media_type="application/opds+json"
     )
 
 @router.get("/opds/{book_id}")
-async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None)):
+async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None), beta: bool = False):
     """
     Returns OPDS publication info. If authenticated, also processes borrow
-    and returns webpub manifest with direct content links (Internet Archive pattern).
+    link generation (showing read/return options).
     """
-    # Check for Bearer token in Authorization header
+    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+
     if not session:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
-            session = auth_header.split(" ")[1]
-    
-    # Check if user is authenticated
-    # Check if user is authenticated
+             session = auth_header.split(" ")[1]
+
     email_data = auth.verify_session_cookie(session) if session else None
     email = email_data.get("email") if isinstance(email_data, dict) else email_data
     
-    # Get the item to check if it exists and its properties
     item = Item.exists(book_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    
-    # If authenticated and item requires login, process borrow
-    if email and item.is_login_required:
-        try:
-            loan = item.borrow(email)
-        except LoanNotRequiredError:
-            pass  # Open access, continue
-        except BookUnavailableError:
-            # Book unavailable - return publication with borrow link (shows unavailable state)
-            return Response(
-                content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
-                media_type="application/opds-publication+json"
-            )
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        
-        # Return post-borrow publication with direct content links
-        return Response(
-            content=json.dumps(build_post_borrow_publication(book_id)),
-            media_type="application/opds-publication+json"
-        )
-    
-    # Not authenticated or open-access: return publication info with borrow link
+
     return Response(
-        content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
+        content=json.dumps(
+            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_mode)
+        ),
         media_type="application/opds-publication+json"
     )
 
-# Redirect to the Thorium Web Reader
+
 @router.get("/items/{book_id}/read")
 @requires_item_auth()
 async def redirect_reader(request: Request, book_id: str, format: str = "epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
     manifest_uri = LennyAPI.make_manifest_url(book_id)
-    # URL encode the manifest URI for use as a path parameter
     encoded_manifest_uri = quote(manifest_uri, safe='')
     reader_url = LennyAPI.make_url(f"/read/manifest/{encoded_manifest_uri}")
     return RedirectResponse(url=reader_url, status_code=307)
@@ -178,7 +156,6 @@ async def redirect_reader(request: Request, book_id: str, format: str = "epub", 
 async def get_manifest(request: Request, book_id: str, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
     return ReadiumAPI.get_manifest(book_id, format)
 
-# Proxy all other readium requests
 @router.get("/items/{book_id}/readium/{readium_path:path}")
 @requires_item_auth()
 async def proxy_readium(request: Request, book_id: str, readium_path: str, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
@@ -191,42 +168,125 @@ async def proxy_readium(request: Request, book_id: str, readium_path: str, forma
         return Response(content=r.content, media_type=content_type)
 
 
-@router.get('/items/{book_id}/borrow')
-@requires_item_auth()
-async def borrow_item(request: Request, book_id: int, format: str=".epub",  session: Optional[str] = Cookie(None), item=None, email: str=''):
+@router.api_route('/items/{book_id}/borrow', methods=["GET", "POST"])
+async def borrow_item(request: Request, response: Response, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), beta: bool = False):
     """
-    Borrow endpoint for OPDS clients.
+    Unified Borrow Endpoint.
     
-    Processes the borrow and returns an OPDS publication with direct content links
-    (manifest for reading, return link) instead of borrow links.
+    Decides between standard OPDS 401 response (OAuth mode) or interactive OTP flow (Direct mode)
+    based on configuration and authentication state.
     """
-    try:
-        loan = item.borrow(email)
-    except LoanNotRequiredError:
-        pass  # Open-access items continue without loan
-    except BookUnavailableError:
-        raise HTTPException(status_code=409, detail="No copies available for borrowing")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+
+    if not (item := Item.exists(book_id)):
+         raise HTTPException(status_code=404, detail="Item not found")
+
+    if not session:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            session = auth_header.split(" ")[1]
+
+    email_data = auth.verify_session_cookie(session) if session else None
+    email = email_data.get("email") if isinstance(email_data, dict) else email_data
     
-    return Response(
-        content=json.dumps(build_post_borrow_publication(book_id)),
-        media_type="application/opds-publication+json"
-    )
+    if email:
+        try:
+            loan = item.borrow(email)
+        except LoanNotRequiredError:
+            pass
+        except BookUnavailableError:
+             raise HTTPException(status_code=409, detail="No copies available for borrowing")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        if is_direct_mode:
+            return RedirectResponse(
+                url=f"/v1/api/items/{book_id}/read", 
+                status_code=303
+            )
+
+        return Response(
+            content=json.dumps(build_post_borrow_publication(book_id, auth_mode_direct=is_direct_mode)),
+            media_type="application/opds-publication+json"
+        )
+    
+    if not is_direct_mode:
+          return JSONResponse(
+                status_code=401, 
+                content=LennyDataProvider.get_authentication_document(),
+                media_type="application/opds-authentication+json"
+          )
+    
+    client_ip = request.client.host
+    body = await LennyAPI.parse_request_body(request)
+    req_params = dict(request.query_params)
+    
+    post_email = body.get("email")
+    post_otp = body.get("otp")
+    post_url = f"/v1/api/items/{book_id}/borrow"
+    if beta:
+        post_url += "?beta=true"
+    
+    context = {
+        "request": request,
+        "redirect_uri": post_url,
+        "state": "direct",
+        "client_id": "direct",
+        "post_url": post_url,
+        "next": post_url,
+        "book_id": book_id,
+        "action": "borrow",
+        "auth_mode": "direct"
+    }
+
+    if request.method == "POST":
+        if post_email and post_otp:
+            session_cookie = auth.OTP.authenticate(post_email, post_otp, client_ip)
+            if not session_cookie:
+                context["error"] = "Authentication failed. Invalid OTP."
+                context["email"] = post_email
+                return request.app.templates.TemplateResponse("otp_redeem.html", context)
+            
+            response = RedirectResponse(url=post_url, status_code=302)
+            response.set_cookie(
+                key="session", value=session_cookie, max_age=auth.COOKIE_TTL,
+                httponly=True, secure=True, samesite="Lax", path="/"
+            )
+            return response
+
+        if post_email:
+            try:
+                auth.OTP.issue(post_email, client_ip)
+                context["email"] = post_email
+                return request.app.templates.TemplateResponse("otp_redeem.html", context)
+            except Exception as e:
+                context["error"] = f"Failed to issue OTP: {str(e)}"
+                return request.app.templates.TemplateResponse("otp_issue.html", context)
+    
+    return request.app.templates.TemplateResponse("otp_issue.html", context)
 
 @router.api_route('/items/{book_id}/return', methods=['GET', 'POST'], status_code=status.HTTP_200_OK)
 @requires_item_auth()
-async def return_item(request: Request, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
+async def return_item(request: Request, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str='', beta: bool = False):
     """
     Return a borrowed book.
     
     After successful return, returns OPDS publication with borrow link
     (book is now available to borrow again).
     """
+    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+
     try:
         loan = item.unborrow(email)
+        
+        if is_direct_mode:
+             redirect_url = f"/v1/api/opds/{book_id}"
+             if beta:
+                 redirect_url += "?beta=true"
+             return RedirectResponse(url=redirect_url, status_code=303)
+
         return Response(
-            content=json.dumps(LennyAPI.opds_feed(olid=book_id)),
+            content=json.dumps(LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_mode)),
             media_type="application/opds-publication+json"
         )
     except LoanNotRequiredError:

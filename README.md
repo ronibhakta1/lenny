@@ -62,6 +62,22 @@ Lenny is a free, open source, Library-in-a-Box for libraries to preserve and len
 
 ---
 
+## 🔐 Authentication Modes
+
+Lenny supports two authentication modes for lending:
+
+1.  **OAuth Implicit (Default)**: Standard OPDS authentication flow. Clients like Thorium Reader use this to request a token via a popup/webview.
+2.  **Direct Token (Beta)**: A simpler, link-based authentication flow. Useful for environments where full OAuth support is tricky.
+    *   **Browser-Friendly**: Users authenticate via an OTP (One-Time Password) email directly in the browser.
+    *   **Configuration**: Set `LENNY_AUTH_MODE=direct` in `.env` to enable globally.
+    *   **Per-Request Override**: Append `?beta=true` to an OPDS borrow link to trigger this mode on demand.
+
+To switch the global mode:
+1.  Edit `.env` and set `LENNY_AUTH_MODE=direct`.
+2.  Run `make restart` to apply changes instantly.
+
+---
+
 ## Features
 
 - **Full Lending Workflow**: Borrow, return, and manage digital books.
