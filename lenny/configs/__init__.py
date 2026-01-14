@@ -27,6 +27,10 @@ SSL_KEY = os.environ.get('LENNY_SSL_KEY')
 LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0"}
 OTP_SERVER = os.environ.get('OTP_SERVER', 'https://staging.openlibrary.org')
 
+# Authentication mode: 'oauth' (default) or 'direct'
+AUTH_MODE = os.environ.get('LENNY_AUTH_MODE', 'oauth').lower()
+AUTH_MODE_DIRECT = AUTH_MODE == 'direct'
+
 READER_PORT = int(os.environ.get('READER_PORT', 3000))
 READIUM_PORT = int(os.environ.get('READIUM_PORT', 15080))
 READIUM_BASE_URL = f"http://lenny_readium:{READIUM_PORT}"
