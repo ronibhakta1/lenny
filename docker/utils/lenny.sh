@@ -18,14 +18,19 @@ if [[ "$1" == "--rebuild" ]]; then
     docker compose build --no-cache
 fi
 
-if [[ "$1" == "--start" || "$1" == "--rebuild" || "$1" == "--rebuild-reader" ]]; then
+if [[ "$1" == "--build" ]]; then
+    docker compose down --volumes --remove-orphans
+    docker compose build
+fi
+
+if [[ "$1" == "--start" || "$1" == "--rebuild" || "$1" == "--build" || "$1" == "--rebuild-reader" ]]; then
     docker compose -p lenny up -d
 elif [[ "$1" == "--restart" ]]; then
     docker compose -p lenny restart api
 elif [[ "$1" == "--stop" ]]; then
     docker compose -p lenny stop
 else
-    echo "Usage: $0 --start | --rebuild | --restart"
+    echo "Usage: $0 --start | --build | --rebuild | --restart | --stop"
     exit 1
 fi
 

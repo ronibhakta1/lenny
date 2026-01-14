@@ -56,7 +56,12 @@ start:
 restart:
 	@bash docker/utils/lenny.sh --restart
 
-# Rebuild and start containers (recreate with changes)
+# Build and start containers (uses cache)
+.PHONY: build
+build:
+	@bash docker/utils/lenny.sh --build
+
+# Rebuild and start containers (recreate with no cache)
 .PHONY: rebuild
 rebuild:
 	@bash docker/utils/lenny.sh --rebuild
