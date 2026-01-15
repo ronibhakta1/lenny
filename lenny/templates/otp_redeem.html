@@ -4,6 +4,11 @@
 
 {% block content %}
 <div class="card">
+  {% if auth_mode == 'direct' %}
+  <div style="text-align: center;"><span class="badge badge--direct">Direct Auth</span></div>
+  {% else %}
+  <div style="text-align: center;"><span class="badge badge--oauth">OAuth Mode</span></div>
+  {% endif %}
   <h1>Check your email</h1>
   <p class="subtitle">We sent a one-time password to <span class="email">{{ email }}</span></p>
   {% if error %}

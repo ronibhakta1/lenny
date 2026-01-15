@@ -26,7 +26,7 @@ fi
 if [[ "$1" == "--start" || "$1" == "--rebuild" || "$1" == "--build" || "$1" == "--rebuild-reader" ]]; then
     docker compose -p lenny up -d
 elif [[ "$1" == "--restart" ]]; then
-    docker compose -p lenny restart api
+    docker compose -p lenny up -d --force-recreate --no-deps api
 elif [[ "$1" == "--stop" ]]; then
     docker compose -p lenny stop
 else

@@ -24,7 +24,7 @@ from lenny.core.exceptions import (
 
 from lenny.configs import (
     SCHEME, HOST, PORT, PROXY,
-    READER_PORT, LOAN_LIMIT
+    READER_PORT, LOAN_LIMIT, AUTH_MODE_DIRECT
 )
 from urllib.parse import quote
 
@@ -130,7 +130,7 @@ class LennyAPI:
         return cls._enrich_items(items, fields=fields)
 
     @classmethod
-    def opds_feed(cls, olid=None, offset=None, limit=None, query=None):
+    def opds_feed(cls, olid=None, offset=None, limit=None, query=None, auth_mode_direct=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
         and the LennyDataProvider to transform Open Library metadata into
@@ -168,6 +168,12 @@ class LennyAPI:
             encryption_map=encryption_map,
             borrowable_map=borrowable_map,
         )
+
+        use_direct = auth_mode_direct if auth_mode_direct is not None else AUTH_MODE_DIRECT
+
+        for record in search_response.records:
+            if isinstance(record, LennyDataRecord):
+                record.auth_mode_direct = use_direct
         
         if olid:
             pub = search_response.records[0].to_publication().model_dump()
