@@ -215,7 +215,7 @@ class LennyAPI:
         coerce to Navigation) and provider-returned dict feeds.
         """
         limit = limit or cls.DEFAULT_LIMIT
-        qs = "?auth_mode=direct" if auth_mode_direct else ""
+
 
         def _href(path: str) -> str:
             separator = "&" if "?" in path else "?"

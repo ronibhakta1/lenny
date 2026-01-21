@@ -70,7 +70,7 @@ Lenny supports two authentication modes for lending:
 2.  **Direct Token**: A simpler, link-based authentication flow. Useful for environments where full OAuth support is tricky.
     *   **Browser-Friendly**: Users authenticate via an OTP (One-Time Password) email directly in the browser.
     *   **How to Enable**: This mode is **dynamic** and applies per-session.
-    *   **Trigger**: Append `?auth_mode=direct` (or `?beta=true`) to any OPDS feed URL (e.g. `/v1/api/opds?auth_mode=direct`).
+    *   **Trigger**: Append `?auth_mode=direct` (or legacy `?beta=true` for backward compatibility) to any OPDS feed URL (e.g. `/v1/api/opds?auth_mode=direct`).
     *   **Sticky Session**: Once entered, the session remembers the mode, and all generated links (navigation, shelf, profile) will automatically keep you in that mode.
 
 To switch back to OAuth mode, simply visit the root feed without the parameter (after clearing cookies/session if necessary).
