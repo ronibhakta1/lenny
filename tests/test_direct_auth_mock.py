@@ -212,7 +212,7 @@ def test_direct_return_redirect(mock_auth, mock_item_exists):
             follow_redirects=False
         )
          assert response.status_code == 303
-         assert "/v1/api/opds/123?beta=true" in response.headers["location"]
+         assert "/v1/api/opds/123?auth_mode=direct" in response.headers["location"]
 
 def test_direct_borrow_beta_trigger(mock_auth, mock_item_exists):
     # Test that ?beta=true triggers Direct Mode even if Config is False

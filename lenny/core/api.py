@@ -140,7 +140,7 @@ class LennyAPI:
         offset = offset or 0
         items = cls.get_enriched_items(olid=olid, offset=offset, limit=limit)
         if not items:
-            return cls._build_empty_feed(offset=offset, limit=limit, navigation=cls._navigation(limit))
+            return cls._build_empty_feed(offset=offset, limit=limit, navigation=cls._navigation(limit, auth_mode_direct=auth_mode_direct))
         query, lenny_ids, total = cls._build_query_and_lenny_ids(items)
         lenny_ids_map = {k: v for k, v in zip(items.keys(), lenny_ids) if v is not None}
         lenny_ids_arg = lenny_ids_map if lenny_ids_map else None
@@ -180,7 +180,7 @@ class LennyAPI:
             if "links" in pub:
                 pub["links"].append({
                     "rel": "profile",
-                    "href": f"{LennyDataProvider.BASE_URL}profile",
+                    "href": cls.make_url(f"/v1/api/profile{'?auth_mode=direct' if use_direct else ''}"),
                     "type": "application/opds-profile+json",
                     "title": "User Profile"
                 })
@@ -189,17 +189,17 @@ class LennyAPI:
         catalog = Catalog.create(
             search_response,
             metadata=Metadata(title=cls.OPDS_TITLE), # type: ignore
-            navigation=cls._navigation(limit),
+            navigation=cls._navigation(limit, auth_mode_direct=use_direct),
             links=[
                 Link(
                     rel="http://opds-spec.org/shelf",
-                    href=cls.make_url("/v1/api/shelf"),
+                    href=cls.make_url(f"/v1/api/shelf{'?auth_mode=direct' if use_direct else ''}"),
                     type="application/opds+json",
                     title="Bookshelf"
                 ),
                 Link(
                     rel="profile",
-                    href=cls.make_url("/v1/api/profile"),
+                    href=cls.make_url(f"/v1/api/profile{'?auth_mode=direct' if use_direct else ''}"),
                     type="application/opds-profile+json",
                     title="User Profile"
                 )
@@ -208,15 +208,19 @@ class LennyAPI:
         return catalog.model_dump()
 
     @classmethod
-    def _navigation(cls, limit: Optional[int]):
+    def _navigation(cls, limit: Optional[int], auth_mode_direct: bool = False):
         """Return a minimal OPDS navigation array as list[dict].
         Includes a Home link (HTML) and a Catalog link (OPDS JSON).
         Using dicts keeps it compatible with both Catalog.create (Pydantic will
         coerce to Navigation) and provider-returned dict feeds.
         """
         limit = limit or cls.DEFAULT_LIMIT
+
+
         def _href(path: str) -> str:
-            return cls.make_url(path)
+            separator = "&" if "?" in path else "?"
+            return cls.make_url(f"{path}{separator}auth_mode=direct") if auth_mode_direct else cls.make_url(path)
+        
         return [
             Navigation(href=_href("/v1/api/opds"), title="Home", type="application/opds+json", rel="alternate"),
             Navigation(
@@ -423,7 +427,7 @@ class LennyAPI:
         )
 
     @classmethod
-    def get_shelf_feed(cls, email: str) -> dict:
+    def get_shelf_feed(cls, email: str, auth_mode_direct: bool = False) -> dict:
         """
         Retrieves user loans, fetches their metadata, and generates the OPDS Shelf Feed.
         """
