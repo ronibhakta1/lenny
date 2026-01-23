@@ -106,8 +106,8 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
     )
 
 @router.get("/opds")
-async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None, beta: bool = False):
-    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None, beta: bool = False, auth_mode: Optional[str] = None):
+    is_direct_mode = (auth_mode == "direct") or beta or configs.AUTH_MODE_DIRECT
     return Response(
         content=json.dumps(
             LennyAPI.opds_feed(offset=offset, limit=limit, auth_mode_direct=is_direct_mode)
@@ -116,12 +116,12 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
     )
 
 @router.get("/opds/{book_id}")
-async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None), beta: bool = False):
+async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None), beta: bool = False, auth_mode: Optional[str] = None):
     """
     Returns OPDS publication info. If authenticated, also processes borrow
     link generation (showing read/return options).
     """
-    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+    is_direct_mode = (auth_mode == "direct") or beta or configs.AUTH_MODE_DIRECT
 
     if not session:
         auth_header = request.headers.get("Authorization")
@@ -169,14 +169,14 @@ async def proxy_readium(request: Request, book_id: str, readium_path: str, forma
 
 
 @router.api_route('/items/{book_id}/borrow', methods=["GET", "POST"])
-async def borrow_item(request: Request, response: Response, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), beta: bool = False):
+async def borrow_item(request: Request, response: Response, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), beta: bool = False, auth_mode: Optional[str] = None):
     """
     Unified Borrow Endpoint.
     
     Decides between standard OPDS 401 response (OAuth mode) or interactive OTP flow (Direct mode)
     based on configuration and authentication state.
     """
-    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+    is_direct_mode = (auth_mode == "direct") or beta or configs.AUTH_MODE_DIRECT
 
     if not (item := Item.exists(book_id)):
          raise HTTPException(status_code=404, detail="Item not found")
@@ -267,22 +267,22 @@ async def borrow_item(request: Request, response: Response, book_id: int, format
 
 @router.api_route('/items/{book_id}/return', methods=['GET', 'POST'], status_code=status.HTTP_200_OK)
 @requires_item_auth()
-async def return_item(request: Request, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str='', beta: bool = False):
+async def return_item(request: Request, book_id: int, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str='', beta: bool = False, auth_mode: Optional[str] = None):
     """
     Return a borrowed book.
     
     After successful return, returns OPDS publication with borrow link
     (book is now available to borrow again).
     """
-    is_direct_mode = configs.AUTH_MODE_DIRECT or beta
+    is_direct_mode = (auth_mode == "direct") or beta or configs.AUTH_MODE_DIRECT
 
     try:
         loan = item.unborrow(email)
         
         if is_direct_mode:
              redirect_url = f"/v1/api/opds/{book_id}"
-             if beta:
-                 redirect_url += "?beta=true"
+             if beta or auth_mode == "direct":
+                 redirect_url += "?auth_mode=direct"
              return RedirectResponse(url=redirect_url, status_code=303)
 
         return Response(
@@ -373,7 +373,7 @@ async def profile(request: Request, session: str = Cookie(None)):
 
 
 @router.get("/shelf")
-async def get_shelf(session: str = Cookie(None)):
+async def get_shelf(session: str = Cookie(None), auth_mode: Optional[str] = None):
     """
     Returns the user's bookshelf as an OPDS 2.0 Feed.
     Contains all currently borrowed items with return/read links.
@@ -387,8 +387,8 @@ async def get_shelf(session: str = Cookie(None)):
         )
     
     email = email_data.get("email") if isinstance(email_data, dict) else email_data
-
-    shelf_feed = LennyAPI.get_shelf_feed(email)
+    is_direct_mode = (auth_mode == "direct") or configs.AUTH_MODE_DIRECT
+    shelf_feed = LennyAPI.get_shelf_feed(email, auth_mode_direct=is_direct_mode)
     
     return Response(
         content=json.dumps(shelf_feed),
