@@ -115,7 +115,7 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
         media_type="application/opds+json"
     )
 
-@router.get("/opds/{book_id}")
+@router.api_route("/opds/{book_id}",  methods=["GET", "POST"])
 async def get_opds_item(request: Request, book_id: int, session: Optional[str] = Cookie(None), beta: bool = False, auth_mode: Optional[str] = None):
     """
     Returns OPDS publication info. If authenticated, also processes borrow
@@ -137,7 +137,7 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
 
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_mode)
+            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_mode, email=email)
         ),
         media_type="application/opds-publication+json"
     )
