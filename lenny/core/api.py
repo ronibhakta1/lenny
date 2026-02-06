@@ -136,7 +136,6 @@ class LennyAPI:
         and the LennyDataProvider to transform Open Library metadata into
         OPDS Publications with Lenny borrow/return links.
         """
-
         limit = limit or cls.DEFAULT_LIMIT
         offset = offset or 0
         items = cls.get_enriched_items(olid=olid, offset=offset, limit=limit)
