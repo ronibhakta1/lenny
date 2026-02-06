@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
-from pyopds2_lenny import LennyDataProvider, LennyDataRecord, build_post_borrow_publication
+from pyopds2_lenny import LennyDataProvider, LennyDataRecord
 from pyopds2 import Catalog, Metadata
 from pyopds2.models import Link, Navigation
 from lenny.core import db, s3, auth
@@ -130,18 +130,12 @@ class LennyAPI:
         return cls._enrich_items(items, fields=fields)
 
     @classmethod
-    def opds_feed(cls, olid=None, offset=None, limit=None, query=None, auth_mode_direct=None, email=None):
+    def opds_feed(cls, olid=None, offset=None, limit=None, query=None, auth_mode_direct=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
         and the LennyDataProvider to transform Open Library metadata into
         OPDS Publications with Lenny borrow/return links.
         """
-        use_direct = auth_mode_direct if auth_mode_direct is not None else AUTH_MODE_DIRECT
-
-        if olid and email:
-            if item := Item.exists(olid):
-                if item.is_login_required and Loan.exists(item.id, email):
-                    return build_post_borrow_publication(olid, auth_mode_direct=use_direct)
 
         limit = limit or cls.DEFAULT_LIMIT
         offset = offset or 0
