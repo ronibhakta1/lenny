@@ -133,7 +133,7 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
     
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(offset=offset, limit=limit, auth_mode_direct=is_direct_auth_mode(auth_mode, beta), email=email)
+            LennyAPI.opds_feed(offset=offset, limit=limit, auth_mode_direct=is_direct_auth_mode(auth_mode, beta))
         ),
         media_type="application/opds+json"
     )
