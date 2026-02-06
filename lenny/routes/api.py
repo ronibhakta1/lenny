@@ -153,7 +153,7 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
 
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta), email=email)
+            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta))
         ),
         media_type="application/opds-publication+json"
     )
