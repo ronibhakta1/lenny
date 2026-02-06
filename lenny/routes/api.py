@@ -133,7 +133,7 @@ async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: 
     
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(offset=offset, limit=limit, auth_mode_direct=is_direct_auth_mode(auth_mode, beta))
+            LennyAPI.opds_feed(offset=offset, limit=limit, auth_mode_direct=is_direct_auth_mode(auth_mode, beta), email=email)
         ),
         media_type="application/opds+json"
     )
@@ -153,7 +153,7 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
 
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta))
+            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta), email=email)
         ),
         media_type="application/opds-publication+json"
     )
