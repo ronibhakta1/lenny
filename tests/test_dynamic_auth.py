@@ -87,8 +87,80 @@ def test_beta_flag_backward_compatibility(mock_get_items, test_client):
     for nav in navs:
         assert "auth_mode=direct" in nav["href"]
 
+@patch("lenny.routes.api.get_authenticated_email")
+@patch("lenny.core.api.build_post_borrow_publication")
+@patch("lenny.core.api.Loan.exists")
+@patch("lenny.core.api.Item.exists")
 @patch("lenny.core.api.LennyAPI.get_enriched_items")
-def test_single_item_sticky_profile_link(mock_get_items, test_client):
-    """Test that single book view gets sticky profile link."""
-    # Placeholder for single item test logic
-    pass
+def test_single_item_returns_post_borrow_when_authenticated_with_loan(
+    mock_get_items, mock_item_exists, mock_loan_exists, mock_build_post_borrow, mock_get_email, test_client
+):
+    """Test that /opds/{book_id} returns post-borrow publication when user has an active loan."""
+    # Setup mocks
+    mock_item = MagicMock()
+    mock_item.is_login_required = True
+    mock_item.id = 1
+    mock_item_exists.return_value = mock_item
+    mock_loan_exists.return_value = True  # User has an active loan
+    mock_get_email.return_value = "test@example.com"  # Mock authenticated user
+    
+    mock_build_post_borrow.return_value = {
+        "@context": "https://readium.org/webpub-manifest/context.jsonld",
+        "metadata": {"title": "Test Book"},
+        "links": [
+            {"rel": "http://opds-spec.org/acquisition/return", "href": "/v1/api/items/123/return"},
+            {"rel": "http://opds-spec.org/acquisition/open-access", "href": "/v1/api/items/123/read", "title": "Read"}
+        ]
+    }
+    
+    response = test_client.get("/v1/api/opds/123")
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Verify that build_post_borrow_publication was called (indicating loan was detected)
+    mock_build_post_borrow.assert_called_once()
+    call_args = mock_build_post_borrow.call_args
+    assert call_args[0][0] == 123  # book_id
+    
+    # Verify the response contains return/read links
+    links = data.get("links", [])
+    rels = [link.get("rel") for link in links]
+    assert "http://opds-spec.org/acquisition/return" in rels or any("return" in str(r) for r in rels)
+
+
+@patch("lenny.core.api.Item.exists")
+@patch("lenny.core.api.LennyAPI.get_enriched_items")
+def test_single_item_no_loan_returns_standard_publication(
+    mock_get_items, mock_item_exists, test_client
+):
+    """Test that /opds/{book_id} returns standard publication when user is not authenticated."""
+    # Mock item exists but no loan (unauthenticated request)
+    mock_item = MagicMock()
+    mock_item.is_login_required = True
+    mock_item.id = 1
+    mock_item.lenny = MagicMock()
+    mock_item.lenny.openlibrary_edition = 123
+    mock_item.lenny.encrypted = False
+    mock_item_exists.return_value = mock_item
+    
+    mock_get_items.return_value = {123: mock_item}
+    
+    with patch("lenny.core.api.LennyDataProvider.search") as mock_search:
+        mock_record = MagicMock()
+        mock_record.to_publication.return_value.model_dump.return_value = {
+            "metadata": {"title": "Test Book"},
+            "links": [{"rel": "http://opds-spec.org/acquisition/borrow", "href": "/v1/api/items/123/borrow"}]
+        }
+        mock_resp = MagicMock()
+        mock_resp.records = [mock_record]
+        mock_search.return_value = mock_resp
+        
+        response = test_client.get("/v1/api/opds/123")
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should have borrow link, not return link (unauthenticated)
+        links = data.get("links", [])
+        rels = [link.get("rel") for link in links]
+        # Borrow link should be present for unauthenticated users
+        assert any("borrow" in str(r) for r in rels) or "profile" in rels
