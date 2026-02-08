@@ -177,8 +177,6 @@ class LennyAPI:
             borrowable_map=borrowable_map,
         )
 
-        use_direct = auth_mode_direct if auth_mode_direct is not None else AUTH_MODE_DIRECT
-
         for record in search_response.records:
             if isinstance(record, LennyDataRecord):
                 record.auth_mode_direct = use_direct

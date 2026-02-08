@@ -57,16 +57,30 @@ def extract_session(request: Request, session: Optional[str] = None) -> Optional
     if session:
         return session
     auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        return auth_header.split(" ")[1]
-    return None
+    if not auth_header:
+        return None
+    parts = auth_header.strip().split(None, 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts[0], parts[1].strip()
+    if scheme != "Bearer" or not token:
+        return None
+    return token
 
 
-def get_authenticated_email(session: Optional[str]) -> Optional[str]:
-    """Verify session and extract email. Returns None if unauthenticated."""
+def get_authenticated_email(
+    request: Optional[Request] = None,
+    session: Optional[str] = None
+) -> Optional[str]:
+    """Verify session (optionally IP-bound) and extract email. Returns None if unauthenticated."""
+    if request is not None and not session:
+        session = extract_session(request, session)
     if not session:
         return None
-    email_data = auth.verify_session_cookie(session)
+    client_ip: Optional[str] = None
+    if request is not None and getattr(request, "client", None) is not None:
+        client_ip = request.client.host
+    email_data = auth.verify_session_cookie(session, client_ip=client_ip)
     if not email_data:
         return None
     return email_data.get("email") if isinstance(email_data, dict) else email_data
@@ -89,8 +103,6 @@ def requires_item_auth(do_function=None):
         async def wrapper(
                 request: Request, book_id: str, format: str = "epub",
                 session: Optional[str] = Cookie(None),
-                # Email and Item will get magically injected by this decorator and
-                # passed in to the wrapped function
                 email=None, item=None, *args, **kwargs):
             session = extract_session(request, session)
 
@@ -98,14 +110,12 @@ def requires_item_auth(do_function=None):
                 result = LennyAPI.auth_check(item, session=session, request=request)
                 email = result.get('email', '')
                 if 'error' in result:
-                    # Return 401 with partial Auth Doc as per OPDS 2.0
                     return JSONResponse(
                         status_code=401, 
                         content=LennyDataProvider.get_authentication_document(),
                         media_type="application/opds-authentication+json"
                     )
  
-                # NB: Email and Item will be passed into any function decorated by requires_item_auth
                 return await func(
                     request=request, book_id=book_id, format=format, session=session,
                     email=email, item=item, *args, **kwargs
@@ -129,7 +139,7 @@ async def get_items(fields: Optional[str]=None, offset: Optional[int]=None, limi
 @router.get("/opds")
 async def get_opds_catalog(request: Request, offset: Optional[int]=None, limit: Optional[int]=None, beta: bool = False, auth_mode: Optional[str] = None, session: Optional[str] = Cookie(None)):
     session = extract_session(request, session)
-    email = get_authenticated_email(session)
+    email = get_authenticated_email(request, session)
     
     return Response(
         content=json.dumps(
@@ -145,7 +155,7 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
     link generation (showing read/return options).
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(session)
+    email = get_authenticated_email(request, session)
     
     item = Item.exists(book_id)
     if not item:
@@ -198,7 +208,7 @@ async def borrow_item(request: Request, response: Response, book_id: int, format
          raise HTTPException(status_code=404, detail="Item not found")
 
     session = extract_session(request, session)
-    email = get_authenticated_email(session)
+    email = get_authenticated_email(request, session)
     
     if email:
         try:
@@ -353,13 +363,13 @@ async def profile(request: Request, session: Optional[str] = Cookie(None)):
     Returns the OPDS 2.0 User Profile.
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(session)
+    email = get_authenticated_email(request, session)
     
     if not email:
-        raise HTTPException(
+        return JSONResponse(
             status_code=401,
-            detail="Authentication required to view profile",
-            headers={"WWW-Authenticate": "Bearer"}
+            content=LennyDataProvider.get_authentication_document(),
+            media_type="application/opds-authentication+json"
         )
     
     name = email.split("@")[0]
@@ -378,13 +388,13 @@ async def get_shelf(request: Request, session: Optional[str] = Cookie(None), aut
     Contains all currently borrowed items with return/read links.
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(session)
+    email = get_authenticated_email(request, session)
     
     if not email:
-        raise HTTPException(
-            status_code=401, 
-            detail="Authentication required to view shelf",
-            headers={"WWW-Authenticate": "Bearer"}
+        return JSONResponse(
+            status_code=401,
+            content=LennyDataProvider.get_authentication_document(),
+            media_type="application/opds-authentication+json"
         )
     
     shelf_feed = LennyAPI.get_shelf_feed(email, auth_mode_direct=is_direct_auth_mode(auth_mode))
@@ -429,7 +439,7 @@ async def oauth_authorize(
     If not logged in, handles OTP flow directly.
     """
     session = request.cookies.get("session")
-    email = get_authenticated_email(session)
+    email = get_authenticated_email(request, session)
 
     if email:
         body = await LennyAPI.parse_request_body(request)
