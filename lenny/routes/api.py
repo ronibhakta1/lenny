@@ -447,7 +447,7 @@ async def oauth_authorize(
         state = state or body.get("state")
         
         fragment = LennyAPI.build_oauth_fragment(session, state)
-        return RedirectResponse(url=f"{redirect_uri}?{urlencode(fragment)}", status_code=303)
+        return RedirectResponse(url=f"{redirect_uri}#{urlencode(fragment)}", status_code=303)
 
     client_ip = request.client.host
     body = await LennyAPI.parse_request_body(request)
@@ -498,7 +498,7 @@ async def oauth_authorize(
             response = request.app.templates.TemplateResponse("oauth_success.html", success_context)
         else:
             response = RedirectResponse(
-                url=f"{current_redirect_uri}?{urlencode(fragment)}",
+                url=f"{current_redirect_uri}#{urlencode(fragment)}",
                 status_code=303
             )
         
