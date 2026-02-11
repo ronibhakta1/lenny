@@ -15,6 +15,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("hpack").setLevel(logging.WARNING)
+logging.getLogger("multipart").setLevel(logging.WARNING)
+
 ATTEMPT_LIMIT = 5
 ATTEMPT_WINDOW_SECONDS = 60
 SERIALIZER = None  # Will be initialized lazily
