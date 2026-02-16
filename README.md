@@ -33,11 +33,11 @@
 - [About the Project](#about-the-project)
 - [Features](#features)
 - [OPDS 2.0 Feed](#opds-20-feed)
+- [Internet Archive Bookserver app + Lenny OPDS sync](#bookserver-app-sync)
 - [Technologies](#technologies)
 - [Endpoints](#endpoints)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
-- [Importing Test Books](#importing-test-books)
 - [Testing Readium Server](#testing-readium-server)
 - [Rebuilding](#rebuilding)
 - [FAQs](#faqs)
@@ -139,6 +139,20 @@ make all
 - Navigate to `localhost:8080` (or your `$LENNY_PORT`).
 - Enter the API container with:  
   `docker exec -it lenny_api bash`
+
+---
+
+## Bookserver app sync
+
+Sync your Lenny OPDS feed with Archive.org's [Bookserver app](https://reader.archive.org). To have a personalized Lenny catalog with a great user interface.
+> [!IMPORTANT]
+> Bookserver app is Internet Archive's closed product, it doesn't come with lenny instance which you can own
+
+```sh
+make url 
+```
+
+- Gernerates URl ODPS link & Lenny server + Archive's Book server app sync URL Link.
 
 ---
 
