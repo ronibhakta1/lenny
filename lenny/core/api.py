@@ -148,7 +148,7 @@ class LennyAPI:
         offset = offset or 0
         items = cls.get_enriched_items(olid=olid, offset=offset, limit=limit)
         if not items:
-            return cls._build_empty_feed(offset=offset, limit=limit, navigation=cls._navigation(limit, auth_mode_direct=auth_mode_direct))
+            return LennyDataProvider.empty_catalog(offset=offset, limit=limit, auth_mode_direct=use_direct)
         query, lenny_ids, total = cls._build_query_and_lenny_ids(items)
         lenny_ids_map = {k: v for k, v in zip(items.keys(), lenny_ids) if v is not None}
         lenny_ids_arg = lenny_ids_map if lenny_ids_map else None
@@ -182,66 +182,9 @@ class LennyAPI:
                 record.auth_mode_direct = use_direct
         
         if olid:
-            pub = search_response.records[0].to_publication().model_dump()
-            if "links" in pub:
-                pub["links"].append({
-                    "rel": "profile",
-                    "href": cls.make_url(f"/v1/api/profile{'?auth_mode=direct' if use_direct else ''}"),
-                    "type": "application/opds-profile+json",
-                    "title": "User Profile"
-                })
-            return pub
+            return LennyDataProvider.build_publication(search_response.records[0], auth_mode_direct=use_direct)
         
-        catalog = Catalog.create(
-            search_response,
-            metadata=Metadata(title=cls.OPDS_TITLE), # type: ignore
-            navigation=cls._navigation(limit, auth_mode_direct=use_direct),
-            links=[
-                Link(
-                    rel="http://opds-spec.org/shelf",
-                    href=cls.make_url(f"/v1/api/shelf{'?auth_mode=direct' if use_direct else ''}"),
-                    type="application/opds+json",
-                    title="Bookshelf"
-                ),
-                Link(
-                    rel="profile",
-                    href=cls.make_url(f"/v1/api/profile{'?auth_mode=direct' if use_direct else ''}"),
-                    type="application/opds-profile+json",
-                    title="User Profile"
-                )
-            ]
-        )
-        return catalog.model_dump()
-
-    @classmethod
-    def _navigation(cls, limit: Optional[int], auth_mode_direct: bool = False):
-        """Return a minimal OPDS navigation array as list[dict].
-        Includes a Home link (HTML) and a Catalog link (OPDS JSON).
-        Using dicts keeps it compatible with both Catalog.create (Pydantic will
-        coerce to Navigation) and provider-returned dict feeds.
-        """
-        limit = limit or cls.DEFAULT_LIMIT
-
-
-        def _href(path: str) -> str:
-            separator = "&" if "?" in path else "?"
-            return cls.make_url(f"{path}{separator}auth_mode=direct") if auth_mode_direct else cls.make_url(path)
-        
-        return [
-            Navigation(href=_href("/v1/api/opds"), title="Home", type="application/opds+json", rel="alternate"),
-            Navigation(
-                href=_href(f"/v1/api/opds?offset=0&limit={limit}"),
-                title="Catalog",
-                type="application/opds+json",
-                rel="collection",
-            ),
-            Navigation(
-                href=_href("/v1/api/oauth/implicit"),
-                title="Authentication",
-                type="application/opds-authentication+json",
-                rel="http://opds-spec.org/auth/oauth/implicit",
-            ),
-        ]
+        return LennyDataProvider.build_catalog(search_response, limit=limit, auth_mode_direct=use_direct)
 
     @classmethod
     def _build_query_and_lenny_ids(cls, items):
@@ -256,31 +199,6 @@ class LennyAPI:
                 lenny_ids.append(int(olid) if isinstance(olid, int) else None)
         total = len(lenny_ids)
         return query, lenny_ids, total
-
-    @classmethod
-    def _build_empty_feed(cls, offset: int, limit: int, navigation):
-        """Create an empty OPDS catalog via opds2 with local links + navigation."""
-        from pyopds2.provider import DataProvider
-        from pyopds2.models import Metadata
-        empty_response = DataProvider.SearchResponse(
-            provider=LennyDataProvider,
-            records=[],
-            total=0,
-            query="",
-            limit=limit,
-            offset=offset,
-            sort=None,
-        )
-        catalog = Catalog.create(
-            empty_response,
-            navigation=navigation,
-        )
-        try:
-            if hasattr(catalog, "metadata") and getattr(catalog.metadata, "title", None) is None:
-                catalog.metadata.title = cls.cl
-        except Exception:
-            pass
-        return catalog.model_dump()
 
     @classmethod
     def encrypt_file(cls, f, method="lcp"):
