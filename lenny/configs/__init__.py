@@ -69,4 +69,4 @@ S3_CONFIG = {
     'secure': os.environ.get('S3_SECURE', 'false').lower() == 'true',
 }
 
-__all__ = ['SCHEME', 'HOST', 'PORT', 'DEBUG', 'OPTIONS', 'DB_URI', 'DB_CONFIG','S3_CONFIG', 'TESTING', 'LENNY_SEED', 'SEED', 'LENNY_EMAIL_ENCRYPTION_SALT']
+__all__ = ['SCHEME', 'HOST', 'PORT', 'DEBUG', 'OPTIONS', 'DB_URI', 'DB_CONFIG','S3_CONFIG', 'TESTING', 'LENNY_SEED', 'LENNY_EMAIL_ENCRYPTION_SALT']

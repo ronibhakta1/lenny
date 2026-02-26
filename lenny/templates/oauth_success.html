@@ -10,7 +10,11 @@
   
   <div class="token-info">
     <strong>OPDS Callback:</strong><br>
-    opds://authorize/?id={{ auth_doc_id }}&access_token={{ access_token }}&token_type=bearer&expires_in={{ expires_in }}{% if state %}&state={{ state }}{% endif %}
+    {% if code %}
+    opds://authorize/?code={{ code|urlencode }}{% if state %}&state={{ state|urlencode }}{% endif %}
+    {% else %}
+    opds://authorize/?id={{ auth_doc_id|urlencode }}&access_token={{ access_token|urlencode }}&token_type=bearer&expires_in={{ expires_in|urlencode }}{% if state %}&state={{ state|urlencode }}{% endif %}
+    {% endif %}
   </div>
   
   <a href="/v1/api/opds" class="btn btn--primary">← Return to Catalog</a>

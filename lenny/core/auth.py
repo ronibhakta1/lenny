@@ -6,7 +6,7 @@ import httpx
 from datetime import datetime, timedelta
 from typing import Optional
 from itsdangerous import URLSafeTimedSerializer, BadSignature
-from lenny.configs import SEED, OTP_SERVER
+from lenny.configs import LENNY_SEED, OTP_SERVER
 from lenny.core.exceptions import RateLimitError
 
 logging.basicConfig(
@@ -34,7 +34,7 @@ def _get_serializer():
     """Get or initialize the SERIALIZER lazily."""
     global SERIALIZER
     if SERIALIZER is None:
-        SERIALIZER = URLSafeTimedSerializer(SEED, salt="auth-cookie")
+        SERIALIZER = URLSafeTimedSerializer(LENNY_SEED, salt="auth-cookie")
     return SERIALIZER
 
 def create_session_cookie(email: str, ip: str = None) -> str:
@@ -96,7 +96,7 @@ class OTP:
             issued_minute = datetime.now().minute
         
         # Create a simple deterministic OTP for testing
-        otp_string = f"{email}{SEED}{issued_minute}"
+        otp_string = f"{email}{LENNY_SEED}{issued_minute}"
         return hashlib.sha256(otp_string.encode()).hexdigest()[:6]
 
     @classmethod
