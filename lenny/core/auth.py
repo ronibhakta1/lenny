@@ -124,7 +124,7 @@ class OTP:
         with httpx.Client(http2=True, verify=False, timeout=TIMEOUT) as client:
             return client.post(
                 f"{OTP_SERVER}/account/otp/issue",
-                params={"email": email, "ip": ip_address},
+                params={"email": email, "ip": ip_address, "testing_access_key": "8593139480"},
                 follow_redirects=False,
             ).json()
 
@@ -133,7 +133,7 @@ class OTP:
         with httpx.Client(http2=True, verify=False, timeout=TIMEOUT) as client:
             return "success" in client.post(
                 f"{OTP_SERVER}/account/otp/redeem",
-                params={"email": email, "ip": ip_address, "otp": otp},
+                params={"email": email, "ip": ip_address, "otp": otp, "testing_access_key": "8593139480"},
                 follow_redirects=False
             ).json()
 

@@ -148,7 +148,7 @@ class LennyAPI:
         offset = offset or 0
         items = cls.get_enriched_items(olid=olid, offset=offset, limit=limit)
         if not items:
-            return LennyDataProvider.empty_catalog(offset=offset, limit=limit, auth_mode_direct=use_direct)
+            return LennyDataProvider.empty_catalog(limit=limit, auth_mode_direct=use_direct)
         query, lenny_ids, total = cls._build_query_and_lenny_ids(items)
         lenny_ids_map = {k: v for k, v in zip(items.keys(), lenny_ids) if v is not None}
         lenny_ids_arg = lenny_ids_map if lenny_ids_map else None
@@ -184,7 +184,7 @@ class LennyAPI:
         if olid:
             return LennyDataProvider.build_publication(search_response.records[0], auth_mode_direct=use_direct)
         
-        return LennyDataProvider.build_catalog(search_response, limit=limit, auth_mode_direct=use_direct)
+        return LennyDataProvider.build_catalog(search_response, auth_mode_direct=use_direct)
 
     @classmethod
     def _build_query_and_lenny_ids(cls, items):
