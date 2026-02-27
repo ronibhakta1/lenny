@@ -217,7 +217,7 @@ make oauth-register
 
 This prompts you for a **Client ID** (auto-generates one if left blank) and **Redirect URIs** (comma-separated).
 
-### Register a Client (Non-Interactive)
+### Register a Client (Non-Interactive) Example
 
 ```sh
 docker compose exec api python3 scripts/register_client.py \
