@@ -318,7 +318,7 @@ def test_opds_auth_document():
     """
     Verify that the OPDS Authentication Document is returned correctly.
     """
-    response = client.get("/v1/oauth/opds-config")
+    response = client.get("/v1/oauth/implicit")
     assert response.status_code == 200
     assert response.headers.get('content-type') == 'application/opds-authentication+json'
 

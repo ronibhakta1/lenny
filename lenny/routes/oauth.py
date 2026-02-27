@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 from urllib.parse import urlencode
 from fastapi import APIRouter, Request, Form, HTTPException, Response
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 
 from lenny.core.limiter import limiter
 from lenny.core import auth
@@ -95,8 +95,8 @@ def _complete_authorization(
 
 
 
-@router.get("/opds-config")
-async def oauth_opds_config(request: Request):
+@router.get("/implicit")
+async def oauth_implicit(request: Request):
     """Returns the OPDS Authentication Document (JSON)."""
     doc = LennyDataProvider.get_authentication_document()
     return JSONResponse(content=doc, media_type="application/opds-authentication+json")
@@ -106,20 +106,46 @@ async def oauth_opds_config(request: Request):
 async def oauth_authorize(
     request: Request,
     response: Response,
-    redirect_uri: str,
-    client_id: str,
-    state: str,
+    redirect_uri: Optional[str] = None,
+    client_id: Optional[str] = None,
+    state: Optional[str] = None,
     code_challenge: Optional[str] = None,
     code_challenge_method: str = 'S256',
     scope: str = "openid"
 ):
-    """OAuth 2.0 Authorize Endpoint with PKCE."""
+    """OAuth 2.0 Authorize Endpoint with PKCE.
+    
+    Requires client_id, redirect_uri, state, and code_challenge.
+    Returns a friendly error page listing missing params if any are absent.
+    The OPDS Authentication Document is served at /implicit.
+    """
+    # 0. Check required params — show friendly error if missing
+    missing = []
+    if not client_id:
+        missing.append("client_id")
+    if not redirect_uri:
+        missing.append("redirect_uri")
+    if not state:
+        missing.append("state")
+    if not code_challenge:
+        missing.append("code_challenge")
+    
+    if missing:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_request",
+                "error_description": f"Missing required parameters: {', '.join(missing)}",
+                "missing_parameters": missing,
+            }
+        )
+
     # 1. Validate Client & Redirect URI
     if not OAuthService.validate_client(client_id, redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid client_id or redirect_uri")
 
     # 2. Enforce PKCE (S256) + reject fragments (RFC 6749 §3.1.2)
-    if not code_challenge or code_challenge_method != 'S256':
+    if code_challenge_method != 'S256':
         raise HTTPException(status_code=400, detail="PKCE required. code_challenge_method must be S256")
     if '#' in redirect_uri:
         raise HTTPException(status_code=400, detail="redirect_uri must not contain a fragment")
