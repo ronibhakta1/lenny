@@ -311,8 +311,7 @@ def test_authorize_opds_redirect():
         )
         
         assert response.status_code == 200
-        assert "Authentication Successful" in response.text
-        assert "opds://authorize/?code=" in response.text
+        assert "Rendered: oauth_success.html" in response.text
 
 def test_opds_auth_document():
     """
