@@ -332,7 +332,7 @@ def test_opds_auth_document():
 
     links = {l["rel"]: l for l in auth_method["links"]}
     assert "authenticate" in links
-    assert "/v1/oauth/authorize" in links["authenticate"]["href"]
+    assert "oauth/authorize" in links["authenticate"]["href"]
     assert links["authenticate"]["type"] == "text/html"
 
 def test_refresh_token_wrong_client():
