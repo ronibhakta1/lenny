@@ -301,6 +301,20 @@ class AuthCode(Base):
             db.rollback()
             return False
 
+    @classmethod
+    def cleanup_expired(cls):
+        """Delete auth codes that are expired or used."""
+        try:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            deleted = db.query(cls).filter(
+                (cls.expires_at < now) | (cls.used.is_(True))
+            ).delete(synchronize_session=False)
+            db.commit()
+            return deleted
+        except Exception:
+            db.rollback()
+            return 0
+
 class RefreshToken(Base):
     __tablename__ = 'refresh_tokens'
     __table_args__ = (
@@ -345,5 +359,19 @@ class RefreshToken(Base):
         except Exception:
             db.rollback()
             return False
+
+    @classmethod
+    def cleanup_expired(cls):
+        """Delete refresh tokens that are expired or revoked."""
+        try:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            deleted = db.query(cls).filter(
+                (cls.expires_at < now) | (cls.revoked.is_(True))
+            ).delete(synchronize_session=False)
+            db.commit()
+            return deleted
+        except Exception:
+            db.rollback()
+            return 0
 
 Item.loans = relationship('Loan', back_populates='item', cascade='all, delete-orphan')

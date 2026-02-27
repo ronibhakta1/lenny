@@ -1,27 +1,20 @@
 
-import json
 import logging
 from typing import Optional
-from urllib.parse import urlencode, quote, urlparse
-from fastapi import APIRouter, Request, Form, Depends, HTTPException, status, Response, Cookie
+from urllib.parse import urlencode
+from fastapi import APIRouter, Request, Form, HTTPException, Response
 from fastapi.responses import RedirectResponse, JSONResponse
-from slowapi import Limiter
 
 from lenny.core.limiter import limiter
 from lenny.core import auth
 from lenny.core.oauth import OAuthService
 from lenny.routes.api import extract_session, get_authenticated_email
-from lenny.core.api import LennyAPI
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 from pyopds2_lenny import LennyDataProvider
 
-
-# ---------------------------------------------------------------------------
-# Helpers (DRY: shared across authenticated + OTP paths)
-# ---------------------------------------------------------------------------
 
 def _get_client_ip(request: Request) -> str:
     """Extract client IP from proxy headers, falling back to direct connection."""
@@ -101,9 +94,6 @@ def _complete_authorization(
     return resp
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 @router.get("/opds-config")
 async def oauth_opds_config(request: Request):
@@ -148,7 +138,7 @@ async def oauth_authorize(
     email = get_authenticated_email(request, session)
 
     if email:
-        session_cookie = auth.create_session_cookie(email)
+        session_cookie = auth.create_session_cookie(email, ip=_get_client_ip(request))
         return _complete_authorization(request, email, session_cookie, **oauth_params)
 
     # 4. Not authenticated → handle OTP flow

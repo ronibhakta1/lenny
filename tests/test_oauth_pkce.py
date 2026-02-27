@@ -321,26 +321,26 @@ def test_opds_auth_document():
     response = client.get("/v1/oauth/opds-config")
     assert response.status_code == 200
     assert response.headers.get('content-type') == 'application/opds-authentication+json'
-    
+
     data = response.json()
-    
+
     # OPDS 2.0 Authentication Document structure puts these inside 'authentication' array
     assert "authentication" in data
     auth_method = data["authentication"][0]
     assert auth_method["type"] == "http://opds-spec.org/auth/oauth/implicit"
-    
+
     links = {l["rel"]: l for l in auth_method["links"]}
     assert "authenticate" in links
     assert "code" in links
     assert "refresh" in links
-    
-    assert "/v1/api/oauth/authorize" in links["authenticate"]["href"]
+
+    assert "/v1/oauth/authorize" in links["authenticate"]["href"]
     assert links["authenticate"]["type"] == "text/html"
-    
-    assert "/v1/api/oauth/token" in links["code"]["href"]
+
+    assert "/v1/oauth/token" in links["code"]["href"]
     assert links["code"]["type"] == "application/json"
-    
-    assert "/v1/api/oauth/token" in links["refresh"]["href"]
+
+    assert "/v1/oauth/token" in links["refresh"]["href"]
     assert links["refresh"]["type"] == "application/json"
 
 def test_refresh_token_wrong_client():
