@@ -110,7 +110,11 @@ class Item(Base):
 
     @classmethod
     def exists(cls, olid):
-        return db.query(Item).filter(Item.openlibrary_edition == olid).first()
+        try:
+            olid_int = int(olid)
+        except (ValueError, TypeError):
+            return None
+        return db.query(Item).filter(Item.openlibrary_edition == olid_int).first()
 
     def unborrow(self, email: str):
         if not self.is_login_required:
