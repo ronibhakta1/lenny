@@ -65,7 +65,7 @@ def get_authenticated_email(session) -> Optional[str]:
 def _extract_email_from_jwt(token: str) -> Optional[str]:
     """Try decoding a JWT access token (from PKCE flow) and extract the email."""
     try:
-        payload = pyjwt.decode(token, LENNY_SEED, algorithms=["HS256"], options={"require": ["sub", "exp"], "verify_aud": False})
+        payload = pyjwt.decode(token, LENNY_SEED, algorithms=["HS256"], audience="lenny-api", options={"require": ["sub", "exp"]})
         return payload.get("sub")
     except (pyjwt.InvalidTokenError, Exception):
         return None

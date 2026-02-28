@@ -157,7 +157,8 @@ class OAuthService:
         payload = {
             "iss": "lenny-auth-server",
             "sub": email,
-            "aud": client_id,
+            "aud": "lenny-api",
+            "azp": client_id,
             "exp": now + timedelta(minutes=ttl_minutes),
             "iat": now,
             "scope": scope
