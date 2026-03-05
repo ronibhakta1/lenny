@@ -47,7 +47,7 @@ class LennyAPI:
         ".pdf": FormatEnum.PDF,
         ".epub": FormatEnum.EPUB
     }
-    SEARCH_BATCH_SIZE = 100
+    SEARCH_BATCH_SIZE = 250
     SEARCH_MAX_RESULTS = 100
     Item = Item
     
