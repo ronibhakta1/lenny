@@ -30,7 +30,7 @@ CMD ["sh", "-c", "\
   python -m uvicorn lenny.app:app \
     --host 0.0.0.0 \
     --port 1337 \
-    --workers=${LENNY_WORKERS:-1} \
+    --workers=${LENNY_WORKERS:-3} \
     --log-level=${LENNY_LOG_LEVEL:-info} \
     ${LENNY_RELOAD:+--reload} & \
   exec nginx \
