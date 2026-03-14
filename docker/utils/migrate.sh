@@ -1,6 +1,6 @@
 #!/bin/sh
-# Lenny API entrypoint
-# Runs database migrations, then starts uvicorn + nginx.
+# Lenny database migration runner
+# Checks and applies pending Alembic migrations.
 
 set -e
 
@@ -24,13 +24,3 @@ else
     NEW=$(alembic current 2>/dev/null | grep -oE '[a-f0-9]+' | head -1 || echo "unknown")
     echo "[lenny] Migrations complete. Database now at revision: $NEW"
 fi
-
-# Start uvicorn in background, nginx in foreground
-python -m uvicorn lenny.app:app \
-    --host 0.0.0.0 \
-    --port 1337 \
-    --workers="${LENNY_WORKERS:-1}" \
-    --log-level="${LENNY_LOG_LEVEL:-info}" \
-    ${LENNY_RELOAD:+--reload} &
-
-exec nginx
