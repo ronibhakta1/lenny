@@ -617,16 +617,34 @@ async def delete_items_bulk(request: Request, body: dict = Body(...)):
 @router.patch("/admin/items/{book_id}")
 async def update_item(request: Request, book_id: int, body: dict = Body(...)):
     """
-    Update an item's encrypted/DRM flag and/or per-item loan duration.
+    Update an item: encrypted/DRM flag, per-item loan duration, and/or its
+    OpenLibrary edition key (fixes a wrong-edition import).
 
-    Both fields optional, at least one required. `loan_duration_days: null`
-    clears a per-item override back to the global setting; omitting the key
+    All fields optional, at least one required. `loan_duration_days: null`
+    clears a per-item override back to the global setting; omitting a key
     entirely leaves it untouched. No file changes needed for `encrypted` to
     take effect: the read path always serves the same underlying file
     regardless of this flag — it's the entire access-control decision, not a
-    storage format.
+    storage format. `openlibrary_edition` is different: it's baked into the
+    S3 object key names, so that one does move files (see LennyAPI.rename_item).
     """
     _require_admin(request)
+
+    current_id = book_id
+    if "openlibrary_edition" in body:
+        new_olid = body["openlibrary_edition"]
+        if not isinstance(new_olid, int) or new_olid <= 0:
+            raise HTTPException(status_code=400, detail="'openlibrary_edition' must be a positive integer")
+        try:
+            LennyAPI.rename_item(book_id, new_olid)
+        except ItemNotFoundError:
+            raise HTTPException(status_code=404, detail="Item not found")
+        except ItemExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except (S3UploadError, DatabaseUpdateError):
+            logger.exception("Item rename error")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        current_id = new_olid
 
     kwargs = {}
     if "encrypted" in body:
@@ -639,22 +657,57 @@ async def update_item(request: Request, book_id: int, body: dict = Body(...)):
         if duration is not None and not isinstance(duration, int):
             raise HTTPException(status_code=400, detail="'loan_duration_days' must be an integer or null")
         kwargs["loan_duration_days"] = duration
-    if not kwargs:
-        raise HTTPException(status_code=400, detail="At least one of 'encrypted', 'loan_duration_days' is required")
+    if not kwargs and "openlibrary_edition" not in body:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of 'encrypted', 'loan_duration_days', 'openlibrary_edition' is required",
+        )
 
-    try:
-        item = LennyAPI.update_item(book_id, **kwargs)
-    except ItemNotFoundError:
-        raise HTTPException(status_code=404, detail="Item not found")
-    except DatabaseUpdateError:
-        logger.exception("Item update DB error")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    item = None
+    if kwargs:
+        try:
+            item = LennyAPI.update_item(current_id, **kwargs)
+        except ItemNotFoundError:
+            raise HTTPException(status_code=404, detail="Item not found")
+        except DatabaseUpdateError:
+            logger.exception("Item update DB error")
+            raise HTTPException(status_code=500, detail="Internal server error")
+    else:
+        item = Item.exists(current_id)
 
     return {
         "openlibrary_edition": item.openlibrary_edition,
         "encrypted": item.encrypted,
         "loan_duration_days": item.loan_duration_days,
     }
+
+
+@router.post("/admin/items/{book_id}/reupload", status_code=status.HTTP_200_OK)
+async def reupload_item(
+    request: Request,
+    book_id: int,
+    encrypted: bool = Form(False, description="Set to true if the file is encrypted"),
+    file: UploadFile = File(..., description="The PDF or EPUB file to upload (max 50MB)"),
+):
+    """
+    Replace an existing item's file (fixes a wrong-file import). Item id and
+    every loan on it are untouched — only the S3 object(s) and the
+    encrypted/formats flags change. Under /admin/, so admin-token gated,
+    unlike the IP-allowlisted /upload (which is for creating new items).
+    """
+    _require_admin(request)
+    try:
+        LennyAPI.reupload(book_id, files=[file], encrypt=encrypted)
+        return HTMLResponse(status_code=status.HTTP_200_OK, content="File replaced successfully.")
+    except ItemNotFoundError:
+        raise HTTPException(status_code=404, detail="Item not found")
+    except InvalidFileError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except (S3UploadError, DatabaseUpdateError):
+        logger.exception("Reupload error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/admin/imports")

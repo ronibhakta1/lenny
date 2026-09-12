@@ -729,6 +729,106 @@ class LennyAPI:
         ]
 
     @classmethod
+    def rename_item(cls, old_olid: int, new_olid: int) -> Item:
+        """Repoint an item at a different OpenLibrary edition (e.g. the
+        wrong edition got matched on import), moving its S3 files to match —
+        openlibrary_edition is baked into the object key names, so a bare
+        DB update would leave every file 404ing under the old key.
+
+        S3 has no atomic rename: copies to the new keys first, commits the DB
+        change, and only then deletes the old keys. A mid-failure leaves (at
+        worst) duplicate storage under both OLIDs, never a dangling item
+        pointing at a key that doesn't exist — copy failures roll back their
+        own partial copies, DB failures roll back the copies too.
+        """
+        if old_olid == new_olid:
+            item = Item.exists(old_olid)
+            if not item:
+                raise ItemNotFoundError(f"Item '{old_olid}' not found.")
+            return item
+
+        item = Item.exists(old_olid)
+        if not item:
+            raise ItemNotFoundError(f"Item '{old_olid}' not found.")
+        if Item.exists(new_olid):
+            raise ItemExistsError(f"Item '{new_olid}' already exists.")
+
+        old_keys = cls._item_s3_keys(old_olid)
+        old_prefix, new_prefix = str(old_olid), str(new_olid)
+        copied = []
+        try:
+            for key in old_keys:
+                new_key = new_prefix + key[len(old_prefix):]
+                s3.copy_object(
+                    Bucket=s3.BOOKSHELF_BUCKET,
+                    CopySource={'Bucket': s3.BOOKSHELF_BUCKET, 'Key': key},
+                    Key=new_key,
+                )
+                copied.append(new_key)
+        except ClientError as e:
+            for key in copied:
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                except ClientError:
+                    pass
+            raise S3UploadError(f"Failed to copy S3 objects to new OLID {new_olid}: {e}")
+
+        try:
+            item.openlibrary_edition = new_olid
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            for key in copied:
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                except ClientError:
+                    pass
+            raise DatabaseUpdateError(f"Failed to rename item {old_olid} -> {new_olid}: {str(e)}.")
+
+        for key in old_keys:
+            try:
+                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+            except ClientError as e:
+                logger.warning(f"Could not delete old S3 object '{key}' after rename: {e}")
+
+        return item
+
+    @classmethod
+    def reupload(cls, openlibrary_edition: int, files: list, encrypt: bool = False) -> Item:
+        """Replace an existing item's file(s) in place.
+
+        Opposite guard from `add`: requires the item to already exist rather
+        than rejecting if it does. Item.id and every Loan row are untouched —
+        only the S3 objects and the encrypted/formats flags change, so
+        history/loans survive a wrong-file correction.
+
+        ponytail: deletes the old file(s) before uploading the new one(s)
+        rather than a zero-downtime swap — correct and simple beats a brief
+        (millisecond-scale) availability gap on a rare, human-triggered admin
+        action. Upgrade to copy-then-delete (like rename_item) if this ever
+        needs to be online-safe.
+        """
+        item = Item.exists(openlibrary_edition)
+        if not item:
+            raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
+
+        for key in cls._item_s3_keys(openlibrary_edition):
+            try:
+                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+            except ClientError as e:
+                logger.warning(f"Could not delete old S3 object '{key}' before reupload: {e}")
+
+        formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
+        try:
+            item.encrypted = encrypt
+            item.formats = FormatEnum(formats)
+            db.commit()
+            return item
+        except Exception as e:
+            db.rollback()
+            raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition} after reupload: {str(e)}.")
+
+    @classmethod
     def delete(cls, openlibrary_edition: int) -> None:
         """Remove an item from S3 and the database (cascades to loans)."""
         item = Item.exists(openlibrary_edition)
