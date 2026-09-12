@@ -278,6 +278,18 @@ class Loan(Base):
         Index('idx_loans_item_patron_returned', 'item_id', 'patron_email_hash', 'returned_at'),
         Index('idx_loans_item_returned', 'item_id', 'returned_at'),
         Index('idx_loans_due_date', 'due_date'),
+        # The three below serve the admin listing (core/admin_loans.py)'s
+        # unfiltered default view, status filter, and patron-search filter —
+        # none of the indexes above have those columns as a leading column,
+        # so without these the admin loans page does a full sequential scan
+        # + full sort on every request regardless of table size.
+        Index('idx_loans_created_at', 'created_at', 'id'),
+        Index('idx_loans_returned_due', 'returned_at', 'due_date'),
+        # varchar_pattern_ops: a plain btree index can't serve the admin
+        # search's LIKE 'prefix%' scan under a non-C locale (confirmed via
+        # EXPLAIN — without it, this silently falls back to a sequential scan).
+        Index('idx_loans_patron_email_hash', 'patron_email_hash',
+              postgresql_ops={'patron_email_hash': 'varchar_pattern_ops'}),
     )
 
     id = Column(BigInteger, primary_key=True)
