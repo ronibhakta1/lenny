@@ -287,7 +287,7 @@ def test_status_transition_leaves_exactly_one_row(db):
     rows = db.query(CacheEntry).filter(CacheEntry.scope == SCOPE).all()
     assert len(rows) == 1
     assert ImportJob.list() == [
-        {"source": "briet", "olid": 111, "status": DONE, "error": None,
+        {"source": "briet", "olid": 111, "status": DONE, "error": None, "title": None,
          "updated_at": rows[0].created_at.isoformat()}
     ]
 

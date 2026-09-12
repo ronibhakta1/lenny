@@ -255,7 +255,7 @@ else
   # Reuse existing values if present (e.g. exported from a legacy .env during
   # `make update` bootstrap); otherwise fall back to defaults.
   LENNY_LOAN_LIMIT="${LENNY_LOAN_LIMIT:-10}"
-  LENNY_LOAN_DURATION_DAYS="${LENNY_LOAN_DURATION_DAYS:-0}"
+  LENNY_LOAN_DURATION_DAYS="${LENNY_LOAN_DURATION_DAYS:-7}"
 
   cat <<EOF > "$LOAN_ENV_FILE"
 # Loan policy — runtime-editable from the admin UI (/admin/loan/settings).

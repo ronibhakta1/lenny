@@ -22,6 +22,7 @@ from lenny.core.exceptions import (
     InvalidFileError,
     DatabaseInsertError,
     DatabaseDeleteError,
+    DatabaseUpdateError,
     FileTooLargeError,
     S3UploadError,
     UploaderNotAllowedError,
@@ -677,6 +678,56 @@ class LennyAPI:
                 db.rollback()
                 raise DatabaseInsertError(f"Failed to add item to db: {str(e)}.")
 
+    UNSET = object()  # sentinel: "field not provided", distinct from JSON null
+
+    @classmethod
+    def update_item(cls, openlibrary_edition: int, encrypted=UNSET, loan_duration_days=UNSET) -> Item:
+        """Update an item's encrypted/DRM flag and/or per-item loan duration.
+
+        Callers must pass `cls.UNSET` (the default) for a field that wasn't
+        part of the request — plain `None` for `loan_duration_days` means
+        "clear the override, fall back to the global setting" (Loan.create
+        treats a NULL column the same way), so it can't double as "unchanged".
+
+        `encrypted`: no S3 file swap needed — `encode_book_path` (readium.py)
+        always serves the plain `{id}.epub` key regardless of this flag; the
+        `_encrypted` twin written at upload time is never read by anything.
+        This flag is the entire access-control mechanism (gates
+        `is_readable`/`is_lendable`, checked by `@requires_item_auth()` on the
+        read routes), not a different file.
+        """
+        item = Item.exists(openlibrary_edition)
+        if not item:
+            raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
+
+        try:
+            if encrypted is not cls.UNSET:
+                item.encrypted = encrypted
+            if loan_duration_days is not cls.UNSET:
+                item.loan_duration_days = loan_duration_days
+            db.commit()
+            return item
+        except Exception as e:
+            db.rollback()
+            raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition}: {str(e)}.")
+
+    @classmethod
+    def _item_s3_keys(cls, openlibrary_edition: int) -> list:
+        """S3 keys belonging to exactly this item: `{olid}{ext}` and
+        `{olid}_encrypted{ext}`, never a different OLID.
+
+        `s3.get_keys(prefix=str(olid))` alone is not safe: OLID 5100863 is a
+        string-prefix of 51008637, so deleting the shorter one would also
+        delete the longer one's files. The character right after the numeric
+        OLID is always '.' or '_' for a real match — never another digit —
+        so that's the boundary check.
+        """
+        olid_str = str(openlibrary_edition)
+        return [
+            key for key in s3.get_keys(prefix=olid_str)
+            if key == olid_str or key[len(olid_str):len(olid_str) + 1] in (".", "_")
+        ]
+
     @classmethod
     def delete(cls, openlibrary_edition: int) -> None:
         """Remove an item from S3 and the database (cascades to loans)."""
@@ -684,7 +735,7 @@ class LennyAPI:
         if not item:
             raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
 
-        for key in s3.get_keys(prefix=str(openlibrary_edition)):
+        for key in cls._item_s3_keys(openlibrary_edition):
             try:
                 s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
             except ClientError as e:
@@ -696,6 +747,31 @@ class LennyAPI:
         except Exception as e:
             db.rollback()
             raise DatabaseDeleteError(f"Failed to delete item from db: {str(e)}.")
+
+    # A bulk request is admin-typed/pasted, not machine-generated — this cap
+    # exists so a malformed request (e.g. an accidental huge paste) can't tie
+    # up a worker looping over an unbounded list.
+    MAX_BULK_DELETE = 200
+
+    @classmethod
+    def delete_many(cls, openlibrary_editions: list) -> dict:
+        """Delete multiple items. One bad ID never aborts the rest.
+
+        Returns {"deleted": [...], "not_found": [...], "failed": {olid: error}}
+        so the caller (CLI or admin UI) can report a precise per-item outcome
+        instead of a single pass/fail for the whole batch.
+        """
+        result = {"deleted": [], "not_found": [], "failed": {}}
+        for olid in openlibrary_editions[:cls.MAX_BULK_DELETE]:
+            try:
+                cls.delete(olid)
+                result["deleted"].append(olid)
+            except ItemNotFoundError:
+                result["not_found"].append(olid)
+            except Exception as e:
+                logger.error(f"Bulk delete failed for OLID {olid}: {e}")
+                result["failed"][olid] = str(e)
+        return result
 
     @classmethod
     def get_borrowed_items(cls, email: str):

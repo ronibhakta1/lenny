@@ -38,18 +38,24 @@ FAILED = "failed"
 
 # CacheEntry.value is String(1024); leave headroom for the rest of the blob.
 _MAX_ERROR = 400
+_MAX_TITLE = 200
 
 
 class ImportJob:
     """Per-book import state, keyed by ``{source}:{olid}``."""
 
     @classmethod
-    def record(cls, source: str, olid: int, status: str, error: str = None) -> None:
+    def record(cls, source: str, olid: int, status: str, error: str = None, title: str = None) -> None:
         """Set the current state of one book. Last write wins.
 
         Cache._record only ever INSERTs, so the prior row for this key is
         deleted first — otherwise every status transition leaves a duplicate
         behind and `list()` reports the same book twice.
+
+        `title` is optional (not every source has one) and must be passed on
+        every call for a given book — each record() replaces the prior row
+        rather than merging into it, so a later status update made without
+        the title would blank it back out.
         """
         key = f"{source}:{olid}"
         value = json.dumps({
@@ -57,6 +63,7 @@ class ImportJob:
             "olid": olid,
             "status": status,
             "error": (error or "")[:_MAX_ERROR] or None,
+            "title": (title or "")[:_MAX_TITLE] or None,
         })
         try:
             db.query(CacheEntry).filter(

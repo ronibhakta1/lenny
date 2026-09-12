@@ -34,6 +34,13 @@ RUN corepack enable
 
 WORKDIR /app/thorium-web
 
+# pnpm now blocks build scripts for any command — even an explicit `pnpm
+# rebuild <pkg>` below — unless the package is allow-listed via `allowBuilds`
+# in pnpm-workspace.yaml (package.json's old `pnpm.onlyBuiltDependencies`
+# field is no longer read). thorium-web ships no such list, and there's no
+# TTY here for the interactive `pnpm approve-builds`, so write it directly.
+RUN printf 'allowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n' > pnpm-workspace.yaml
+
 RUN --mount=type=cache,id=pnpm_store,target=/pnpm/store pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm rebuild esbuild sharp unrs-resolver
 

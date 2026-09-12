@@ -50,7 +50,7 @@ from lenny.core import auth
 from lenny.core.api import LennyAPI
 from lenny.core import ol_bootstrap
 from lenny.core.cache import Cache
-from lenny.core.briet import BRIET, import_briet_books
+from lenny.core.briet import BRIET, import_briet_books, parse_olid
 from lenny.core.imports import ImportJob, PENDING as IMPORT_PENDING
 from lenny.core.standardebooks import import_standardebooks
 from lenny.core.openlibrary import ol_auth_status
@@ -65,11 +65,13 @@ from lenny.core.exceptions import (
     LoanNotRequiredError,
     DatabaseInsertError,
     DatabaseDeleteError,
+    DatabaseUpdateError,
     FileTooLargeError,
     S3UploadError,
     UploaderNotAllowedError,
     BookUnavailableError,
     PatronLoanLimitError,
+    EmailNotFoundError,
     LendingNotConfiguredError,
     LoanNotFoundError,
     OTPGenerationError,
@@ -77,8 +79,9 @@ from lenny.core.exceptions import (
 )
 from lenny.schemas.ol import OLLoginRequest
 from lenny.core.readium import ReadiumAPI
-from lenny.core.models import Item
-from lenny.core.utils import parse_modified_since
+from lenny.core.models import Item, Loan
+from lenny.core.utils import parse_modified_since, to_iso_utc
+from lenny.core.db import session as db
 from urllib.parse import quote
 COOKIES_MAX_AGE = 604800  # 1 week
 
@@ -557,19 +560,101 @@ async def admin_get_items(
 
 
 @router.delete("/admin/items/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_item(request: Request, book_id: int):
+async def delete_item(request: Request, book_id: str):
     """
     Delete an item from the catalog (S3 files + DB record, loans cascade).
-    Requires admin authentication.
+    Requires admin authentication. `book_id` accepts either a bare OLID
+    (51008637) or an OpenLibrary edition key (OL51008637M).
     """
     _require_admin(request)
+    olid = parse_olid(book_id)
+    if olid is None:
+        raise HTTPException(status_code=400, detail="Invalid OLID or edition key")
     try:
-        LennyAPI.delete(book_id)
+        LennyAPI.delete(olid)
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     except DatabaseDeleteError as e:
         logger.exception("Delete DB error")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/items/delete", status_code=status.HTTP_200_OK)
+async def delete_items_bulk(request: Request, body: dict = Body(...)):
+    """
+    Delete multiple items in one call. Body: {"book_ids": [...]} — each entry
+    a bare OLID or an OpenLibrary edition key (OL51008637M), mixed is fine.
+
+    Partial-failure tolerant: one bad/missing ID never blocks the rest.
+    Response reports each outcome separately so the caller can render an
+    accurate per-item summary rather than a single pass/fail for the batch.
+    """
+    _require_admin(request)
+
+    raw_ids = body.get("book_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="'book_ids' (non-empty list) is required")
+    if len(raw_ids) > LennyAPI.MAX_BULK_DELETE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many items: max {LennyAPI.MAX_BULK_DELETE} per request",
+        )
+
+    olids = []
+    invalid = []
+    for raw in raw_ids:
+        olid = parse_olid(raw)
+        if olid is None:
+            invalid.append(raw)
+        else:
+            olids.append(olid)
+
+    result = LennyAPI.delete_many(olids)
+    result["invalid"] = invalid
+    return result
+
+
+@router.patch("/admin/items/{book_id}")
+async def update_item(request: Request, book_id: int, body: dict = Body(...)):
+    """
+    Update an item's encrypted/DRM flag and/or per-item loan duration.
+
+    Both fields optional, at least one required. `loan_duration_days: null`
+    clears a per-item override back to the global setting; omitting the key
+    entirely leaves it untouched. No file changes needed for `encrypted` to
+    take effect: the read path always serves the same underlying file
+    regardless of this flag — it's the entire access-control decision, not a
+    storage format.
+    """
+    _require_admin(request)
+
+    kwargs = {}
+    if "encrypted" in body:
+        encrypted = body["encrypted"]
+        if not isinstance(encrypted, bool):
+            raise HTTPException(status_code=400, detail="'encrypted' must be a boolean")
+        kwargs["encrypted"] = encrypted
+    if "loan_duration_days" in body:
+        duration = body["loan_duration_days"]
+        if duration is not None and not isinstance(duration, int):
+            raise HTTPException(status_code=400, detail="'loan_duration_days' must be an integer or null")
+        kwargs["loan_duration_days"] = duration
+    if not kwargs:
+        raise HTTPException(status_code=400, detail="At least one of 'encrypted', 'loan_duration_days' is required")
+
+    try:
+        item = LennyAPI.update_item(book_id, **kwargs)
+    except ItemNotFoundError:
+        raise HTTPException(status_code=404, detail="Item not found")
+    except DatabaseUpdateError:
+        logger.exception("Item update DB error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {
+        "openlibrary_edition": item.openlibrary_edition,
+        "encrypted": item.encrypted,
+        "loan_duration_days": item.loan_duration_days,
+    }
 
 
 @router.get("/admin/imports")
@@ -656,7 +741,7 @@ def admin_briet_redeem(request: Request, background_tasks: BackgroundTasks, body
         raise HTTPException(status_code=404, detail="No books found for this code")
 
     for book in books:
-        ImportJob.record(BRIET.SOURCE, book["olid"], IMPORT_PENDING)
+        ImportJob.record(BRIET.SOURCE, book["olid"], IMPORT_PENDING, title=book.get("title"))
 
     background_tasks.add_task(import_briet_books, books)
 
@@ -1354,6 +1439,77 @@ async def admin_list_loans(
     )
     eff_limit = max(1, min(int(limit or 500), 5000))
     return JSONResponse({"items": items, "total": total, "limit": eff_limit, "offset": off})
+
+
+@router.post("/admin/loans", status_code=status.HTTP_201_CREATED)
+async def admin_create_loan(request: Request, body: dict = Body(...)):
+    """
+    Manually grant a loan for a book to a patron's email.
+
+    Reuses `Item.borrow()` as-is — same row-level lock, same idempotency
+    (existing active loan for this email just comes back unchanged), same
+    per-item copy-availability check. Only open-access items are rejected
+    (LoanNotRequiredError): they don't need a loan record at all. Deliberately
+    does NOT bypass the per-patron loan limit — an admin wanting to override
+    that is a distinct, not-yet-requested feature, not a side effect of this one.
+    """
+    _require_admin(request)
+
+    olid = body.get("openlibrary_edition")
+    email = body.get("email")
+    if not isinstance(olid, int):
+        raise HTTPException(status_code=400, detail="'openlibrary_edition' (int) is required")
+    if not email or not isinstance(email, str) or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid 'email' is required")
+
+    item = Item.exists(olid)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    try:
+        loan = item.borrow(email)
+    except LoanNotRequiredError:
+        raise HTTPException(status_code=400, detail="Item is open-access, no loan needed")
+    except EmailNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except BookUnavailableError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except PatronLoanLimitError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception:
+        logger.exception("Admin create-loan error item=%s", olid)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {
+        "id": loan.id,
+        "item_id": loan.item_id,
+        "openlibrary_edition": olid,
+        "due_date": to_iso_utc(loan.due_date) if loan.due_date else None,
+    }
+
+
+@router.post("/admin/loans/{loan_id}/return", status_code=status.HTTP_200_OK)
+async def admin_return_loan(request: Request, loan_id: int):
+    """
+    Force-return a loan by id, bypassing the patron-email lookup the
+    self-service `unborrow` path needs (the admin only has the loan record,
+    identified by `patron_email_hash`, not the patron's actual email).
+    """
+    _require_admin(request)
+
+    loan = db.query(Loan).filter(Loan.id == loan_id).first()
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    if loan.returned_at is not None:
+        raise HTTPException(status_code=409, detail="Loan is already returned")
+
+    try:
+        loan.finalize()
+    except DatabaseInsertError:
+        logger.exception("Admin return DB error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {"id": loan.id, "item_id": loan.item_id, "returned_at": to_iso_utc(loan.returned_at)}
 
 
 @router.get("/admin/settings/loan-limits", status_code=status.HTTP_200_OK)

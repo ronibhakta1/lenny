@@ -35,6 +35,18 @@ briet-redeem: ifup
 	fi
 	@docker exec -i $(container) python scripts/briet_redeem.py $(code)
 
+# Delete one or more books (S3 files + DB record). Space-separate multiple.
+# e.g. make delete-book olid=OL51008637M
+#      make delete-book olid="OL51008637M 37044623"
+.PHONY: delete-book
+delete-book: ifup
+	@if [ -z "$(olid)" ]; then \
+		echo "Error: Missing required argument."; \
+		echo "Usage: make delete-book olid=OL51008637M"; \
+		exit 1; \
+	fi
+	@docker exec -i $(container) python scripts/delete_book.py $(olid)
+
 # Start a public tunnel (e.g., via cloudflared)
 .PHONY: tunnel
 tunnel:

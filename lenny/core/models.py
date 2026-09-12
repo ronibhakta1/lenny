@@ -44,6 +44,8 @@ class Item(Base):
     openlibrary_edition = Column(BigInteger, nullable=False)
     encrypted = Column(Boolean, default= False, nullable=False)
     formats = Column(SQLAlchemyEnum(FormatEnum), nullable=False)
+    # NULL = use the global LENNY_LOAN_DURATION_DAYS setting (configs.get_loan_duration_days()).
+    loan_duration_days = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
 
@@ -223,7 +225,7 @@ class Item(Base):
         if item_active >= self.num_lendable_total:
             raise BookUnavailableError("No copies available for borrowing.")
 
-        return Loan.create(self.id, hashed_email, hashed=True)
+        return Loan.create(self.id, hashed_email, hashed=True, duration_days=self.loan_duration_days)
 
 
 class Loan(Base):
@@ -275,11 +277,14 @@ class Loan(Base):
         ).first()
 
     @classmethod
-    def create(cls, item_id, email, hashed=False):
+    def create(cls, item_id, email, hashed=False, duration_days=None):
+        """`duration_days`: per-item override (Item.loan_duration_days). None
+        falls back to the global LENNY_LOAN_DURATION_DAYS setting."""
         from lenny import configs
         hashed_email = email if hashed else hash_email(email)
         due = None
-        duration_days = configs.get_loan_duration_days()
+        if duration_days is None:
+            duration_days = configs.get_loan_duration_days()
         if duration_days > 0:
             due = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=duration_days)
         try:

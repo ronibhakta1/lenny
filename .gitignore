@@ -178,3 +178,6 @@ cython_debug/
 pyopds2_lenny
 .lenny-version
 backups/
+
+# Local-only compose tweaks (e.g. publishing the API port for a host dev server)
+compose.override.yaml

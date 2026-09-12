@@ -184,8 +184,9 @@ def import_briet_books(books: list, encrypted: bool = True) -> dict:
 
     for book in books:
         olid = book["olid"]
+        title = book.get("title")
         try:
-            ImportJob.record(BRIET.SOURCE, olid, DOWNLOADING)
+            ImportJob.record(BRIET.SOURCE, olid, DOWNLOADING, title=title)
             epub = download_epub(
                 book["url"],
                 timeout=BRIET.DOWNLOAD_TIMEOUT,
@@ -193,20 +194,20 @@ def import_briet_books(books: list, encrypted: bool = True) -> dict:
             )
             if not verify_epub(epub):
                 stats["failed"] += 1
-                ImportJob.record(BRIET.SOURCE, olid, FAILED, "Download failed or not a valid EPUB")
+                ImportJob.record(BRIET.SOURCE, olid, FAILED, "Download failed or not a valid EPUB", title=title)
                 continue
 
             if LennyClient.upload(olid, epub, encrypted=encrypted):
                 stats["uploaded"] += 1
-                ImportJob.record(BRIET.SOURCE, olid, DONE)
+                ImportJob.record(BRIET.SOURCE, olid, DONE, title=title)
             else:
                 stats["failed"] += 1
-                ImportJob.record(BRIET.SOURCE, olid, FAILED, "Upload to Lenny failed")
+                ImportJob.record(BRIET.SOURCE, olid, FAILED, "Upload to Lenny failed", title=title)
         except Exception as e:
             # One bad book must never abort the rest of the bundle.
             logger.error(f"Unexpected error importing OLID {olid} from BRIET: {e}")
             stats["failed"] += 1
-            ImportJob.record(BRIET.SOURCE, olid, FAILED, str(e))
+            ImportJob.record(BRIET.SOURCE, olid, FAILED, str(e), title=title)
 
     logger.info(
         f"[BRIET] Done — uploaded: {stats['uploaded']}, failed: {stats['failed']}"
