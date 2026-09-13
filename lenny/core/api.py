@@ -312,7 +312,65 @@ class LennyAPI:
             cls._enrich_cache[cache_key] = (now + cls._ENRICH_CACHE_TTL_S, ol_by_olid)
 
         return {olid: book + {"lenny": imap[olid]} for olid, book in ol_by_olid.items()}
-    
+
+    # Deliberately no local title/author storage and no caching here (unlike
+    # _enrich_items above) — an earlier version denormalized title/author
+    # onto Item for this, which turned out more machinery than wanted for
+    # what's a live catalog anyway. Same batched-query pattern as
+    # search_feed (patron-facing /opds/search): every call re-asks Open
+    # Library, scoped to editions Lenny actually holds. Plain listing
+    # (no search term) is GET /admin/items' job, already cached there —
+    # this only answers an actual `q`.
+    @classmethod
+    def admin_search_items(cls, q: str, encrypted: Optional[bool] = None, limit: Optional[int] = None) -> list[dict]:
+        limit = max(1, min(int(limit or 50), 200))
+        all_items = Item.get_all()
+        if encrypted is not None:
+            all_items = {k: v for k, v in all_items.items() if v.encrypted == encrypted}
+        if not all_items:
+            return []
+
+        olid_list = list(all_items.keys())
+        batches = [
+            olid_list[i:i + cls.SEARCH_BATCH_SIZE]
+            for i in range(0, len(olid_list), cls.SEARCH_BATCH_SIZE)
+        ]
+
+        collected: list[dict] = []
+        seen: set[int] = set()
+        try:
+            for batch in batches:
+                search_query = f"{q} AND {cls._edition_key_query(batch)}"
+                for book in OpenLibrary.search(
+                    query=search_query, fields=["title", "author_name", "edition_key"], limit=limit
+                ):
+                    try:
+                        eid = int(book.olid)
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                    if eid not in all_items or eid in seen:
+                        continue
+                    seen.add(eid)
+                    item = all_items[eid]
+                    authors = getattr(book, "author_name", None) or []
+                    collected.append({
+                        "id": item.id,
+                        "edition_key": f"OL{eid}M",
+                        "title": getattr(book, "title", None),
+                        "author": ", ".join(authors) if authors else None,
+                        "encrypted": item.encrypted,
+                        "formats": item.formats.name if item.formats else None,
+                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                    })
+                    if len(collected) >= limit:
+                        break
+                if len(collected) >= limit:
+                    break
+        except (_requests.exceptions.RequestException, _httpx.HTTPError) as e:
+            logger.warning(f"Open Library unreachable during admin item search: {e}")
+
+        return collected
+
     @classmethod
     def get_enriched_items(cls, olid=None, fields=None, offset=None, limit=None, encrypted=None,
                            modified_since=None):

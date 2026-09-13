@@ -599,50 +599,24 @@ async def admin_get_items(
     )
 
 
-# Local-only search for the admin UI's Create Loan picker and Library search
-# (title/author denormalized onto Item at add-time — see core/admin_items.py).
-# Separate from GET /admin/items above, which enriches every row with a live
-# OL call and shouldn't have its response shape or cost profile changed.
+# Live-only admin search — no local title/author storage, no cache. See
+# LennyAPI.admin_search_items for why (reuses search_feed's batched
+# 'q AND edition_key:(...)' pattern instead of denormalizing onto Item).
 @router.get("/admin/items/search", status_code=status.HTTP_200_OK)
 async def admin_search_items(
     request: Request,
-    q: Optional[str] = None,
+    q: str,
     encrypted: Optional[bool] = None,
     limit: Optional[int] = None,
-    offset: Optional[int] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
 ):
-    """Filtered, paginated item search for the admin UI. Logic in
-    core/admin_items.py. Always returns the wrapped shape::
-
-        {"items": [...], "total": <int>, "limit": <int>, "offset": <int>}
-
-    ``q`` matches a leading prefix of title or author. ``sort`` ∈
-    {title,author,created_at}; ``order`` ∈ {asc,desc}.
-    """
     _require_admin(request)
-    from lenny.core.admin_items import query_items_for_admin, VALID_SORTS
-
-    srt = (sort or "title").lower()
-    if srt not in VALID_SORTS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid sort '{srt}'. Must be one of: {', '.join(VALID_SORTS)}.",
-        )
-    ordr = (order or "asc").lower()
-    if ordr not in ("asc", "desc"):
-        raise HTTPException(status_code=400, detail="Invalid order. Must be 'asc' or 'desc'.")
-
-    off = offset or 0
-    if off < 0:
-        raise HTTPException(status_code=400, detail="'offset' must be >= 0.")
-
-    items, total = query_items_for_admin(
-        q=q, encrypted=encrypted, limit=limit, offset=off, sort=srt, order=ordr
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="'q' is required")
+    eff_limit = max(1, min(int(limit or 50), 200))
+    items = await run_in_threadpool(
+        LennyAPI.admin_search_items, q=q.strip(), encrypted=encrypted, limit=eff_limit,
     )
-    eff_limit = max(1, min(int(limit or 50), 5000))
-    return JSONResponse({"items": items, "total": total, "limit": eff_limit, "offset": off})
+    return JSONResponse({"items": items, "total": len(items), "limit": eff_limit})
 
 
 @router.delete("/admin/items/{book_id}", status_code=status.HTTP_204_NO_CONTENT)

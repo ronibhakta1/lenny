@@ -167,25 +167,6 @@ All `/admin/*` routes require two headers: `X-Admin-Internal-Secret` and
 nginx layer — only reachable from the admin UI calling the API directly on
 the internal Docker network.
 
-### Item Search
-
-- **GET /admin/items/search**
-  - Filtered, paginated item listing for the Library page and the Create
-    Loan book-picker. Local-only — no Open Library call per request, unlike
-    `GET /admin/items`. `title`/`author` are denormalized onto `Item` at
-    add-time (migration `e2a5c8f1d3b7`); existing rows are populated by
-    `make backfill-item-titles`.
-  - **Query Parameters:**
-    - `q` (optional, str): matches a leading prefix of title OR author
-      (case-insensitive), e.g. `q=harry` matches "Harry Potter" but not "The
-      Harry"
-    - `encrypted` (optional, bool)
-    - `limit` (optional, int, default 50, max 5000)
-    - `offset` (optional, int, default 0)
-    - `sort` (optional, str): `title` | `author` | `created_at`, default `title`
-    - `order` (optional, str): `asc` | `desc`, default `asc`
-  - Response: `{"items": [...], "total": <int>, "limit": <int>, "offset": <int>}`
-
 ### Item Management
 
 - **PATCH /admin/items/{book_id}**

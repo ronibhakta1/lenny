@@ -47,12 +47,6 @@ delete-book: ifup
 	fi
 	@docker exec -i $(container) python scripts/delete_book.py $(olid)
 
-# One-off: populate Item.title/author for rows added before those columns
-# existed (migration e2a5c8f1d3b7). Safe to re-run.
-.PHONY: backfill-item-titles
-backfill-item-titles: ifup
-	@docker exec -i $(container) python scripts/backfill_item_titles.py
-
 # Start a public tunnel (e.g., via cloudflared)
 .PHONY: tunnel
 tunnel:
