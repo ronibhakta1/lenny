@@ -66,7 +66,12 @@ class Item(Base):
         Index('idx_items_author', 'author', postgresql_ops={'author': 'varchar_pattern_ops'}),
     )
 
-    id = Column(BigInteger, primary_key=True)
+    # BigInteger PKs don't autoincrement on SQLite (only an INTEGER PRIMARY
+    # KEY aliases the rowid) — same fix as CacheEntry.id (core/cache.py) and
+    # oauth2.py's `_PK`. Only bit under TESTING via a multi-row add_all() +
+    # one commit(), which uses SQLAlchemy's batched INSERT...RETURNING path;
+    # single-row inserts happened to work by accident. Postgres is unaffected.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     openlibrary_edition = Column(BigInteger, nullable=False)
     encrypted = Column(Boolean, default= False, nullable=False)
     formats = Column(SQLAlchemyEnum(FormatEnum), nullable=False)
@@ -305,7 +310,8 @@ class Loan(Base):
               postgresql_ops={'patron_email_hash': 'varchar_pattern_ops'}),
     )
 
-    id = Column(BigInteger, primary_key=True)
+    # Same SQLite autoincrement fix as Item.id above.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     item_id = Column(BigInteger, ForeignKey('items.id'), nullable=False)
     patron_email_hash = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
