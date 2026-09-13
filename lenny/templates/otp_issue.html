@@ -14,7 +14,7 @@
   {% if error %}
   <div class="error">{{ error }}</div>
   {% endif %}
-  <form action="{{ post_url }}" method="POST">
+  <form action="{{ post_url }}" method="POST" id="otpIssueForm">
     <label for="email">Email address</label>
     <input type="email" id="email" name="email" required placeholder="you@example.com"/>
     <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}"/>
@@ -26,4 +26,14 @@
     <button type="submit" class="btn btn--primary">Send OTP</button>
   </form>
 </div>
+<script>
+  // A plain form POST navigates away rather than resolving a promise, so
+  // there's no "request finished" hook to re-enable this on — the disable
+  // only needs to survive until the page unloads, which it does for free.
+  document.getElementById('otpIssueForm').addEventListener('submit', function () {
+    var btn = this.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+  });
+</script>
 {% endblock %}

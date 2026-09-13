@@ -14,7 +14,7 @@
   {% if error %}
   <div class="error">{{ error }}</div>
   {% endif %}
-  <form action="{{ post_url }}" method="POST">
+  <form action="{{ post_url }}" method="POST" id="otpForm">
     <label for="otp">One-Time Password</label>
     <input type="text" id="otp" name="otp" class="otp-input" required placeholder="Enter OTP" maxlength="6" autocomplete="one-time-code"/>
     <input type="hidden" name="email" value="{{ email }}"/>
@@ -25,5 +25,99 @@
     <input type="hidden" name="next" value="{{ next }}"/>
     <button type="submit" class="btn btn--success">Verify &amp; Sign In</button>
   </form>
+  <button type="button" id="resendBtn" class="btn btn--link">Resend code</button>
+  <p id="resendStatus" class="resend-status" aria-live="polite"></p>
 </div>
+<script>
+  (function () {
+    var RESEND_COOLDOWN_S = 30;
+    var postUrl = {{ post_url | tojson }};
+    var email = {{ email | tojson }};
+    var redirectUri = {{ redirect_uri | tojson }};
+    var state = {{ (state or '') | tojson }};
+    var bookId = {{ book_id | tojson }};
+    var action = {{ action | tojson }};
+    var nextUrl = {{ next | tojson }};
+
+    var btn = document.getElementById('resendBtn');
+    var status = document.getElementById('resendStatus');
+    var timer = null;
+
+    // Same double-submit guard as otp_issue.html's Send OTP button, for the
+    // same reason: an impatient double-click fires two POSTs before the page
+    // navigates, and the second one is what actually trips nginx's rate limit.
+    document.getElementById('otpForm').addEventListener('submit', function () {
+      var verifyBtn = this.querySelector('button[type="submit"]');
+      verifyBtn.disabled = true;
+      verifyBtn.textContent = 'Verifying…';
+    });
+
+    function startCooldown(seconds) {
+      var remaining = seconds;
+      btn.disabled = true;
+      function tick() {
+        btn.textContent = 'Resend code (' + remaining + 's)';
+        if (remaining <= 0) {
+          clearInterval(timer);
+          btn.disabled = false;
+          btn.textContent = 'Resend code';
+          return;
+        }
+        remaining -= 1;
+      }
+      tick();
+      timer = setInterval(tick, 1000);
+    }
+
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      status.textContent = '';
+      status.className = 'resend-status';
+
+      var body = new URLSearchParams();
+      body.set('email', email);
+      body.set('redirect_uri', redirectUri);
+      body.set('state', state);
+      body.set('book_id', bookId);
+      body.set('action', action);
+      body.set('next', nextUrl);
+      // Deliberately no 'otp' field: the backend treats email-without-otp as
+      // a (re)issue request and email-with-otp as a verify attempt — sending
+      // a stale/blank otp value here would risk tripping the wrong branch.
+
+      fetch(postUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error('Request failed (' + resp.status + ')');
+          return resp.text();
+        })
+        .then(function (html) {
+          // A rejected reissue (e.g. Open Library's own send-rate-limit) still
+          // comes back as HTTP 200 — it's the otp_issue.html page with an
+          // .error message, not otp_redeem.html. Status alone can't tell
+          // "sent" from "silently bounced back to the email form", so check
+          // which page actually came back.
+          var doc = new DOMParser().parseFromString(html, 'text/html');
+          var stillOnRedeemPage = !!doc.getElementById('otpForm');
+          if (!stillOnRedeemPage) {
+            var errEl = doc.querySelector('.error');
+            throw new Error(errEl ? errEl.textContent.trim() : 'Could not resend the code.');
+          }
+          status.textContent = 'A new code was sent to ' + email + '.';
+          status.className = 'resend-status resend-status--ok';
+          startCooldown(RESEND_COOLDOWN_S);
+        })
+        .catch(function (err) {
+          status.textContent = (err && err.message) || 'Could not resend the code. Please try again.';
+          status.className = 'resend-status resend-status--error';
+          btn.disabled = false;
+          btn.textContent = 'Resend code';
+        });
+    });
+  })();
+</script>
 {% endblock %}

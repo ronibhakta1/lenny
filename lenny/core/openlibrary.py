@@ -129,7 +129,31 @@ class OpenLibrary:
         logger.error(f"Error searching Open Library after retry: {last_exc}")
         raise last_exc  # type: ignore[misc]
 
-    
+    @classmethod
+    def get_title_author(cls, edition_id: int) -> "tuple[Optional[str], Optional[str]]":
+        """One-off (title, author) lookup for a single edition, used when
+        adding an Item to the catalog so admin search has something local to
+        filter on. Never raises — OL being slow/down must not block an
+        upload; caller gets (None, None) and the item is backfillable later.
+        """
+        try:
+            records = list(cls.search(
+                query=f"edition_key:(OL{edition_id}M)",
+                fields=["title", "author_name"],
+                limit=1,
+            ))
+        except Exception as exc:
+            logger.warning("OL title/author lookup failed for edition %s: %s", edition_id, exc)
+            return None, None
+        if not records:
+            return None, None
+        rec = records[0]
+        title = getattr(rec, "title", None) or None
+        authors = getattr(rec, "author_name", None) or []
+        author = ", ".join(authors) if authors else None
+        return title, author
+
+
 class OpenLibraryRecord(dict):
     def __init__(self, data=None, **kwargs):
         data = data or {}

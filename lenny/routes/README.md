@@ -160,6 +160,94 @@ Base URL: `http://localhost:8080/v1/api`
 
 ---
 
+## Admin Endpoints
+
+All `/admin/*` routes require two headers: `X-Admin-Internal-Secret` and
+`Authorization: Bearer <admin token>`. Blocked from external access at the
+nginx layer — only reachable from the admin UI calling the API directly on
+the internal Docker network.
+
+### Item Search
+
+- **GET /admin/items/search**
+  - Filtered, paginated item listing for the Library page and the Create
+    Loan book-picker. Local-only — no Open Library call per request, unlike
+    `GET /admin/items`. `title`/`author` are denormalized onto `Item` at
+    add-time (migration `e2a5c8f1d3b7`); existing rows are populated by
+    `make backfill-item-titles`.
+  - **Query Parameters:**
+    - `q` (optional, str): matches a leading prefix of title OR author
+      (case-insensitive), e.g. `q=harry` matches "Harry Potter" but not "The
+      Harry"
+    - `encrypted` (optional, bool)
+    - `limit` (optional, int, default 50, max 5000)
+    - `offset` (optional, int, default 0)
+    - `sort` (optional, str): `title` | `author` | `created_at`, default `title`
+    - `order` (optional, str): `asc` | `desc`, default `asc`
+  - Response: `{"items": [...], "total": <int>, "limit": <int>, "offset": <int>}`
+
+### Item Management
+
+- **PATCH /admin/items/{book_id}**
+  - Updates DRM/loan-duration flags and/or renames an item's OpenLibrary
+    edition (fixes a wrong-edition import — moves the underlying S3 files to
+    the new key). All fields optional; at least one required.
+  - **Body (JSON):**
+    - `encrypted` (optional, bool)
+    - `loan_duration_days` (optional, int ≥ 0, or `null` to clear the
+      override back to the global default). `0` means never expire, same as
+      the global setting. A positive value greater than the global max
+      (`GET /admin/settings/loan-limits`) is rejected with `400`.
+    - `openlibrary_edition` (optional, positive int): renames the item
+  - Errors: `400` invalid field, `404` not found, `409` target edition
+    already exists, `500` S3/DB error during rename
+
+- **POST /admin/items/{book_id}/reupload**
+  - Replaces an item's file (fixes a wrong-file import). Item id and loan
+    history are untouched — only the S3 object(s) and `encrypted`/`formats`
+    change.
+  - **Form Data:** `file` (required, PDF/EPUB, max 50MB), `encrypted`
+    (optional bool, default false)
+  - Response: plain text `"File replaced successfully."`, not JSON.
+
+- **DELETE /admin/items/{book_id}**
+  - Removes an item from S3 and the database (loans cascade). `book_id`
+    accepts a bare OLID or an edition key (`OL51008637M`).
+  - `204` on success, `404` if not found.
+
+- **POST /admin/items/delete**
+  - Bulk delete, up to 200 per request.
+  - **Body:** `{"book_ids": [...]}` — bare OLIDs or edition keys, mixed OK.
+  - Always `200`, with a per-item breakdown so one bad id never masks the
+    rest: `{"deleted": [...], "not_found": [...], "failed": {...}, "invalid": [...]}`
+
+### Loan Management
+
+- **GET /admin/loans**
+  - Filtered, paginated, sorted loan listing.
+  - **Query Parameters:** `limit`, `offset`, `status` (`all` | `active` |
+    `returned` | `overdue`), `user` (hex prefix of the patron email hash),
+    `sort` (`borrowed_at` | `due_at` | `returned_at`), `order` (`asc` | `desc`)
+  - Response: `{"items": [...], "total": <int>, "limit": <int>, "offset": <int>}`
+
+- **POST /admin/loans**
+  - Manually grants a loan, reusing the same row-locking/availability/
+    idempotency as self-serve borrow. No email is sent — the intended flow is
+    to copy the public borrow link
+    (`{apiBase}/v1/api/items/{olid}/borrow`) to the patron, who signs in with
+    the existing OTP flow, which already grants access to a loan that exists
+    for their email.
+  - **Body (JSON):** `openlibrary_edition` (int, required), `email` (str, required)
+  - `201`: `{"id", "item_id", "openlibrary_edition", "due_date"}`
+  - Errors: `400` invalid input / open-access item, `404` item not found,
+    `409` no copies available, `403` patron loan limit reached
+
+- **POST /admin/loans/{loan_id}/return**
+  - Force-returns a loan by id, no body. `200` on success, `404` if the loan
+    doesn't exist.
+
+---
+
 ## Authentication
 Most endpoints require a valid session cookie. Use `/authenticate` to obtain one via email and OTP.
 

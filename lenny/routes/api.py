@@ -40,6 +40,7 @@ from fastapi import (
     Cookie,
     Query,
 )
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
@@ -79,6 +80,7 @@ from lenny.core.exceptions import (
 )
 from lenny.schemas.ol import OLLoginRequest
 from lenny.core.readium import ReadiumAPI
+from lenny.core.oauth2 import AccessToken
 from lenny.core.models import Item, Loan
 from lenny.core.utils import parse_modified_since, to_iso_utc
 from lenny.core.db import session as db
@@ -117,6 +119,34 @@ def get_authenticated_email(
     if not email_data:
         return None
     return email_data.get("email") if isinstance(email_data, dict) else email_data
+
+
+def get_authenticated_identity(
+    request: Optional[Request] = None,
+    session: Optional[str] = None
+) -> tuple[Optional[str], bool]:
+    """Like `get_authenticated_email`, but also recognizes an OAuth2 bearer
+    token — the credential an `ol`-mode consumer (e.g. Open Library) presents
+    on every call after the initial browser login (see oauth2.py's
+    `_authenticated_patron` docstring). `verify_session_cookie` only knows the
+    direct-login cookie format, so a consumer's bearer token always looked
+    unauthenticated to it, and personalized borrow state (the read/return
+    links) silently never appeared for `ol`-mode patrons.
+
+    Returns `(identity, is_hashed)`. `is_hashed` is True when `identity` is
+    already a `patron_email_hash` (from the token) rather than a plaintext
+    email (from the cookie) — callers that check loan ownership need to know
+    which one they got, since `Loan.exists(..., hashed=...)` compares them
+    differently.
+    """
+    email = get_authenticated_email(request, session)
+    if email:
+        return email, False
+    if session:
+        tok = AccessToken.authenticate(session)
+        if tok and tok.has_scope("loans:read"):
+            return tok.patron_email_hash, True
+    return None, False
 
 
 def is_direct_auth_mode(auth_mode: Optional[str] = None, beta: bool = False) -> bool:
@@ -259,15 +289,18 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
     link generation (showing read/return options).
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(request, session)
-    
+    email, email_hashed = get_authenticated_identity(request, session)
+
     item = Item.exists(book_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta), email=email)
+            LennyAPI.opds_feed(
+                olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta),
+                email=email, email_hashed=email_hashed,
+            )
         ),
         media_type="application/opds-publication+json"
     )
@@ -554,9 +587,62 @@ async def admin_get_items(
         limit = max(0, min(limit, _MAX_LIMIT))
     if offset is not None:
         offset = max(0, min(offset, _MAX_OFFSET))
-    return LennyAPI.get_enriched_items(
-        fields=fields, offset=offset, limit=limit, encrypted=encrypted
+    # get_enriched_items makes a synchronous (blocking) OL search call — on a
+    # cache miss this can run 5-10s+. This route is `async def`, so calling
+    # it inline blocks this worker's entire event loop for that whole time,
+    # stalling every other concurrent request on the worker, not just this
+    # one — measured as the intermittent multi-second spikes on unrelated
+    # admin routes. run_in_threadpool moves the blocking work off the loop.
+    return await run_in_threadpool(
+        LennyAPI.get_enriched_items,
+        fields=fields, offset=offset, limit=limit, encrypted=encrypted,
     )
+
+
+# Local-only search for the admin UI's Create Loan picker and Library search
+# (title/author denormalized onto Item at add-time — see core/admin_items.py).
+# Separate from GET /admin/items above, which enriches every row with a live
+# OL call and shouldn't have its response shape or cost profile changed.
+@router.get("/admin/items/search", status_code=status.HTTP_200_OK)
+async def admin_search_items(
+    request: Request,
+    q: Optional[str] = None,
+    encrypted: Optional[bool] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+):
+    """Filtered, paginated item search for the admin UI. Logic in
+    core/admin_items.py. Always returns the wrapped shape::
+
+        {"items": [...], "total": <int>, "limit": <int>, "offset": <int>}
+
+    ``q`` matches a leading prefix of title or author. ``sort`` ∈
+    {title,author,created_at}; ``order`` ∈ {asc,desc}.
+    """
+    _require_admin(request)
+    from lenny.core.admin_items import query_items_for_admin, VALID_SORTS
+
+    srt = (sort or "title").lower()
+    if srt not in VALID_SORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid sort '{srt}'. Must be one of: {', '.join(VALID_SORTS)}.",
+        )
+    ordr = (order or "asc").lower()
+    if ordr not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="Invalid order. Must be 'asc' or 'desc'.")
+
+    off = offset or 0
+    if off < 0:
+        raise HTTPException(status_code=400, detail="'offset' must be >= 0.")
+
+    items, total = query_items_for_admin(
+        q=q, encrypted=encrypted, limit=limit, offset=off, sort=srt, order=ordr
+    )
+    eff_limit = max(1, min(int(limit or 50), 5000))
+    return JSONResponse({"items": items, "total": total, "limit": eff_limit, "offset": off})
 
 
 @router.delete("/admin/items/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -656,6 +742,20 @@ async def update_item(request: Request, book_id: int, body: dict = Body(...)):
         duration = body["loan_duration_days"]
         if duration is not None and not isinstance(duration, int):
             raise HTTPException(status_code=400, detail="'loan_duration_days' must be an integer or null")
+        if duration is not None and duration < 0:
+            raise HTTPException(status_code=400, detail="'loan_duration_days' must be >= 0 (0 = never expire)")
+        # Matches /admin/settings/loan-limits' own semantics: 0 means "never
+        # expire" at both the global and per-item level, so 0 always passes
+        # regardless of the cap — it isn't a value the cap constrains, it's
+        # the same "unlimited" escape hatch the global setting already has.
+        # Only a POSITIVE override above the global max is what the frontend
+        # blocks, so only that case is rejected here.
+        max_duration = configs.get_loan_duration_days()
+        if duration is not None and duration > 0 and max_duration > 0 and duration > max_duration:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'loan_duration_days' cannot exceed the global max of {max_duration} days",
+            )
         kwargs["loan_duration_days"] = duration
     if not kwargs and "openlibrary_edition" not in body:
         raise HTTPException(
@@ -1487,8 +1587,15 @@ async def admin_list_loans(
     if off < 0:
         raise HTTPException(status_code=400, detail="'offset' must be >= 0.")
 
-    items, total = query_loans_for_admin(
-        status=st, user=usr, limit=limit, offset=off, sort=srt, order=ordr
+    # query_loans_for_admin resolves any never-before-cached edition's title
+    # via a synchronous OL call (admin_loans.py's _TITLE_CACHE only helps once
+    # an edition has been seen once by this worker). This route is `async
+    # def`, so that blocking call, when it happens, freezes this worker's
+    # entire event loop — every other concurrent request on it stalls too,
+    # not just this one. Same root cause and same fix as admin_get_items.
+    items, total = await run_in_threadpool(
+        query_loans_for_admin,
+        status=st, user=usr, limit=limit, offset=off, sort=srt, order=ordr,
     )
     eff_limit = max(1, min(int(limit or 500), 5000))
     return JSONResponse({"items": items, "total": total, "limit": eff_limit, "offset": off})

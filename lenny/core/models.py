@@ -58,12 +58,25 @@ class Item(Base):
         # Serves both the `modified_since` range scan and the (updated_at, id)
         # sort the OPDS feed pages by. Mirrored in alembic f3a91c47b208.
         Index('idx_items_updated_at', 'updated_at', 'id'),
+        # Back the admin item search (core/admin_items.py). varchar_pattern_ops:
+        # a plain btree index can't serve LIKE 'prefix%' under a non-C locale
+        # (same issue as idx_loans_patron_email_hash) — only accelerates a
+        # leading-anchor search, which is what the search box does.
+        Index('idx_items_title', 'title', postgresql_ops={'title': 'varchar_pattern_ops'}),
+        Index('idx_items_author', 'author', postgresql_ops={'author': 'varchar_pattern_ops'}),
     )
 
     id = Column(BigInteger, primary_key=True)
     openlibrary_edition = Column(BigInteger, nullable=False)
     encrypted = Column(Boolean, default= False, nullable=False)
     formats = Column(SQLAlchemyEnum(FormatEnum), nullable=False)
+    # Denormalized from Open Library at add-time so admin search never has to
+    # call out per request (that live-lookup pattern was the source of
+    # multi-second latency on GET /admin/loans — see core/admin_loans.py).
+    # NULL until backfilled (scripts/backfill_item_titles.py) or if OL lookup
+    # failed at add-time; search simply skips rows with no title/author.
+    title = Column(String(1024), nullable=True)
+    author = Column(String(512), nullable=True)
     # NULL = use the global LENNY_LOAN_DURATION_DAYS setting (configs.get_loan_duration_days()).
     loan_duration_days = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now())

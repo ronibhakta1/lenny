@@ -422,6 +422,17 @@ make migrate-rollback   # Rollback last migration (use with caution)
 
 For full details, see [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 
+### One-off data backfills
+
+Some migrations add a column that needs populating for rows that existed
+before it did. These are safe to re-run — they only touch rows still missing
+the value.
+
+```sh
+make backfill-item-titles   # Populate Item.title/author for pre-existing rows
+                             # (migration e2a5c8f1d3b7), resolved from Open Library.
+```
+
 ---
 
 ## Health Check

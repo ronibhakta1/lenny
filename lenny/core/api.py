@@ -4,6 +4,7 @@ from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
 import ipaddress
+import time as _time
 import requests as _requests
 import httpx as _httpx
 import logging
@@ -275,17 +276,42 @@ class LennyAPI:
             return email_data.get("email") if isinstance(email_data, dict) else email_data
         return None
 
+    # GET /admin/items enriches every row with a live OL search on every
+    # request — measured at ~9s for 16 items (the DB query itself is ~15ms),
+    # which is the same class of latency /admin/loans had before its title/
+    # author columns were denormalized. That fix doesn't apply cleanly here:
+    # this endpoint's contract is the full public-item shape (description,
+    # cover, etc.), not just title/author, so there's more to cache than two
+    # columns. A short TTL cache on the OL-only portion, keyed by the exact
+    # edition set, cuts repeat requests (the common case: reloading the same
+    # admin listing page) to ~0 while leaving Lenny-owned fields (encrypted,
+    # loan_duration_days, availability) always fresh — those come from
+    # `imap`, re-merged on every call regardless of cache hit/miss.
+    _ENRICH_CACHE_TTL_S = 300
+    _enrich_cache: dict = {}
+
     @classmethod
     def _enrich_items(cls, items, fields=None, limit=None):
         imap = dict((i.openlibrary_edition, i) for i in items)
-        olids = [f"OL{i}M" for i in imap.keys()]
-        if olids:
-            q = f"edition_key:({' OR '.join(olids)})"
-            return dict((
-                int(book.olid),
-                book + {"lenny": imap[int(book.olid)]}
-            ) for book in OpenLibrary.search(query=q, fields=fields))
-        return {}
+        if not imap:
+            return {}
+        edition_ids = tuple(sorted(imap.keys()))
+        cache_key = (edition_ids, tuple(sorted(fields)) if fields else None)
+
+        now = _time.monotonic()
+        cached = cls._enrich_cache.get(cache_key)
+        if cached and cached[0] > now:
+            ol_by_olid = cached[1]
+        else:
+            q = f"edition_key:({' OR '.join(f'OL{eid}M' for eid in edition_ids)})"
+            ol_by_olid = {int(book.olid): book for book in OpenLibrary.search(query=q, fields=fields)}
+            # ponytail: crude cap instead of real LRU eviction — fine for a
+            # cache this size/TTL, revisit if the key space grows a lot.
+            if len(cls._enrich_cache) > 256:
+                cls._enrich_cache.clear()
+            cls._enrich_cache[cache_key] = (now + cls._ENRICH_CACHE_TTL_S, ol_by_olid)
+
+        return {olid: book + {"lenny": imap[olid]} for olid, book in ol_by_olid.items()}
     
     @classmethod
     def get_enriched_items(cls, olid=None, fields=None, offset=None, limit=None, encrypted=None,
@@ -324,7 +350,7 @@ class LennyAPI:
 
     @classmethod
     def opds_feed(cls, olid=None, offset=None, limit=None, query=None, auth_mode_direct=None, email=None,
-                  modified_since=None):
+                  email_hashed=False, modified_since=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
         and the LennyDataProvider to transform Open Library metadata into
@@ -347,7 +373,7 @@ class LennyAPI:
         # If requesting single item and user is authenticated, check for active loan
         if olid and email:
             if item := Item.exists(olid):
-                if item.is_login_required and Loan.exists(item.id, email):
+                if item.is_login_required and Loan.exists(item.id, email, hashed=email_hashed):
                     return build_post_borrow_publication(olid, auth_mode_direct=use_direct)
 
         limit = limit or cls.DEFAULT_LIMIT
@@ -665,11 +691,14 @@ class LennyAPI:
             raise ItemExistsError(f"Item '{openlibrary_edition}' already exists.")
 
         if formats:= cls.upload_files(files, openlibrary_edition, encrypt=encrypt):
+            title, author = OpenLibrary.get_title_author(openlibrary_edition)
             try:
                 item = Item(
                     openlibrary_edition=openlibrary_edition,
                     encrypted=encrypt,
-                    formats=FormatEnum(formats)
+                    formats=FormatEnum(formats),
+                    title=title,
+                    author=author,
                 )
                 db.add(item)
                 db.commit()
@@ -924,12 +953,16 @@ class LennyAPI:
              return LennyDataProvider.get_shelf_feed([])
 
         query = f"edition_key:({' OR '.join(olids)})"
-        
-        resp = LennyDataProvider.search(
-            query=query, 
-            limit=len(olids), 
-            lenny_ids=lenny_ids
-        )
+
+        try:
+            resp = LennyDataProvider.search(
+                query=query,
+                limit=len(olids),
+                lenny_ids=lenny_ids
+            )
+        except (_requests.exceptions.RequestException, _httpx.HTTPError) as e:
+            logger.warning(f"Open Library unreachable during shelf feed build: {e}")
+            return LennyDataProvider.get_shelf_feed([])
 
         publications = []
         for record in resp.records:
