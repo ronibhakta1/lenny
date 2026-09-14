@@ -613,10 +613,13 @@ async def admin_search_items(
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="'q' is required")
     eff_limit = max(1, min(int(limit or 50), 200))
-    items = await run_in_threadpool(
+    items, ol_unavailable = await run_in_threadpool(
         LennyAPI.admin_search_items, q=q.strip(), encrypted=encrypted, limit=eff_limit,
     )
-    return JSONResponse({"items": items, "total": len(items), "limit": eff_limit})
+    return JSONResponse({
+        "items": items, "total": len(items), "limit": eff_limit,
+        "ol_unavailable": ol_unavailable,
+    })
 
 
 @router.delete("/admin/items/{book_id}", status_code=status.HTTP_204_NO_CONTENT)

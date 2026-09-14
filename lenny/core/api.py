@@ -321,14 +321,42 @@ class LennyAPI:
     # Library, scoped to editions Lenny actually holds. Plain listing
     # (no search term) is GET /admin/items' job, already cached there —
     # this only answers an actual `q`.
+    @staticmethod
+    def _prefix_query(q: str) -> str:
+        """Appends a trailing wildcard to the last word of `q`.
+
+        OL's search.json does whole-word/stemmed matching by default — 'the
+        suit' will never match "The Suitors", the same way normal full-text
+        search doesn't match a partial word. An admin typing into a search
+        box is almost always mid-word, so without this, correctly-typed
+        partial titles read as "search is broken" even though OL answered
+        correctly and the endpoint is working exactly as built. Confirmed
+        directly against OL: 'suit*' and 'the suit*' both match "The
+        Suitors"; 'the suit' does not. Only the last token gets the
+        wildcard — earlier words are assumed already finished.
+        """
+        parts = q.rsplit(None, 1)
+        if not parts:
+            return q
+        if len(parts) == 1:
+            return f"{parts[0]}*"
+        return f"{parts[0]} {parts[1]}*"
+
     @classmethod
-    def admin_search_items(cls, q: str, encrypted: Optional[bool] = None, limit: Optional[int] = None) -> list[dict]:
+    def admin_search_items(
+        cls, q: str, encrypted: Optional[bool] = None, limit: Optional[int] = None
+    ) -> tuple[list[dict], bool]:
+        """Returns `(items, ol_unavailable)`. `ol_unavailable=True` means a
+        batch failed to reach Open Library — the caller can't tell that
+        apart from "zero real matches" just by looking at an empty list
+        otherwise, which is exactly what a transient OL outage looked like
+        from the admin UI (silently empty, not an error)."""
         limit = max(1, min(int(limit or 50), 200))
         all_items = Item.get_all()
         if encrypted is not None:
             all_items = {k: v for k, v in all_items.items() if v.encrypted == encrypted}
         if not all_items:
-            return []
+            return [], False
 
         olid_list = list(all_items.keys())
         batches = [
@@ -336,11 +364,12 @@ class LennyAPI:
             for i in range(0, len(olid_list), cls.SEARCH_BATCH_SIZE)
         ]
 
+        prefixed_q = cls._prefix_query(q)
         collected: list[dict] = []
         seen: set[int] = set()
         try:
             for batch in batches:
-                search_query = f"{q} AND {cls._edition_key_query(batch)}"
+                search_query = f"{prefixed_q} AND {cls._edition_key_query(batch)}"
                 for book in OpenLibrary.search(
                     query=search_query, fields=["title", "author_name", "edition_key"], limit=limit
                 ):
@@ -368,8 +397,9 @@ class LennyAPI:
                     break
         except (_requests.exceptions.RequestException, _httpx.HTTPError) as e:
             logger.warning(f"Open Library unreachable during admin item search: {e}")
+            return collected, True
 
-        return collected
+        return collected, False
 
     @classmethod
     def get_enriched_items(cls, olid=None, fields=None, offset=None, limit=None, encrypted=None,

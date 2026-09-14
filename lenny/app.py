@@ -15,6 +15,16 @@ from lenny import __version__ as VERSION
 
 _log = logging.getLogger(__name__)
 
+# uvicorn's --log-level (LENNY_LOG_LEVEL) sets the ROOT logger, so DEBUG
+# doesn't just verbosify our own lenny.* logs — every third-party library
+# with no level of its own inherits it too. python_multipart logs a line per
+# form field parsed (every OTP submit, every item upload) and asyncio logs
+# its selector choice on every event loop start; neither is ever useful here.
+# Silenced individually rather than dropping the whole app to INFO, so our
+# own DEBUG logging still works when LENNY_LOG_LEVEL=debug is set.
+for _noisy_logger in ("python_multipart.multipart", "asyncio"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 app = FastAPI(
     title="Lenny API",
     description="Lenny: A Free, Open Source Lending System for Libraries",
