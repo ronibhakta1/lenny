@@ -33,7 +33,7 @@ briet-redeem: ifup
 		echo "Usage: make briet-redeem code=ABC123"; \
 		exit 1; \
 	fi
-	@docker exec -i $(container) python scripts/briet_redeem.py $(code)
+	@docker exec -i $(container) python scripts/briet_redeem.py "$(code)"
 
 # Delete one or more books (S3 files + DB record). Space-separate multiple.
 # e.g. make delete-book olid=OL51008637M
@@ -45,7 +45,7 @@ delete-book: ifup
 		echo "Usage: make delete-book olid=OL51008637M"; \
 		exit 1; \
 	fi
-	@docker exec -i $(container) python scripts/delete_book.py $(olid)
+	@docker exec -i $(container) python scripts/delete_book.py "$(olid)"
 
 # Start a public tunnel (e.g., via cloudflared)
 .PHONY: tunnel

@@ -693,21 +693,15 @@ async def update_item(request: Request, book_id: int, body: dict = Body(...)):
     """
     _require_admin(request)
 
-    current_id = book_id
+    # Validate the WHOLE payload before any of it takes effect. rename_item
+    # below moves S3 files and commits the DB change — it cannot be undone
+    # by a later validation failure, so nothing here may run until every
+    # field in the request has already passed its checks.
+    new_olid = None
     if "openlibrary_edition" in body:
         new_olid = body["openlibrary_edition"]
         if not isinstance(new_olid, int) or new_olid <= 0:
             raise HTTPException(status_code=400, detail="'openlibrary_edition' must be a positive integer")
-        try:
-            LennyAPI.rename_item(book_id, new_olid)
-        except ItemNotFoundError:
-            raise HTTPException(status_code=404, detail="Item not found")
-        except ItemExistsError as e:
-            raise HTTPException(status_code=409, detail=str(e))
-        except (S3UploadError, DatabaseUpdateError):
-            logger.exception("Item rename error")
-            raise HTTPException(status_code=500, detail="Internal server error")
-        current_id = new_olid
 
     kwargs = {}
     if "encrypted" in body:
@@ -734,11 +728,25 @@ async def update_item(request: Request, book_id: int, body: dict = Body(...)):
                 detail=f"'loan_duration_days' cannot exceed the global max of {max_duration} days",
             )
         kwargs["loan_duration_days"] = duration
-    if not kwargs and "openlibrary_edition" not in body:
+    if not kwargs and new_olid is None:
         raise HTTPException(
             status_code=400,
             detail="At least one of 'encrypted', 'loan_duration_days', 'openlibrary_edition' is required",
         )
+
+    # Everything validated — now perform the actual mutations.
+    current_id = book_id
+    if new_olid is not None:
+        try:
+            LennyAPI.rename_item(book_id, new_olid)
+        except ItemNotFoundError:
+            raise HTTPException(status_code=404, detail="Item not found")
+        except ItemExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except (S3UploadError, DatabaseUpdateError):
+            logger.exception("Item rename error")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        current_id = new_olid
 
     item = None
     if kwargs:

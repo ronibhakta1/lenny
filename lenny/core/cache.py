@@ -8,11 +8,12 @@
     :license: see LICENSE for more details
 """
 
+import hashlib
 import logging
 import random
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Column, String, BigInteger, Integer, DateTime, Index
+from sqlalchemy import Column, String, BigInteger, Integer, DateTime, Index, text
 from sqlalchemy.sql import func
 
 from lenny.core.db import session as db, Base
@@ -44,6 +45,26 @@ class CacheEntry(Base):
     value = Column(String(1024), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=False)
+
+
+def _lock_throttle_key(scope: str, key: str) -> None:
+    """Hold an exclusive lock on one (scope, key) for the rest of this
+    transaction — same technique as models.py's _lock_patron, and the same
+    reason: the thing being protected is a *count* across rows that may not
+    exist yet, which row locks can't express. Without this, two callers
+    hitting is_throttled for the same key at nearly the same instant can
+    both read the pre-record count, both conclude they're under the limit,
+    and both proceed — letting the limit be exceeded in exactly the case it
+    exists to prevent (e.g. two imports starting at once).
+
+    A no-op on SQLite, which serializes writers anyway, and where the test
+    suite runs on a single connection.
+    """
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    lock_key = int.from_bytes(
+        hashlib.sha256(f"{scope}:{key}".encode("utf-8")).digest()[:8], "big", signed=True)
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
 
 
 class Cache:
@@ -90,14 +111,39 @@ class Cache:
         Counts existing unexpired entries, then records the current
         attempt. Returns True if count >= limit (before recording).
         Only records the attempt if not already throttled.
+
+        The count and the conditional record happen under
+        _lock_throttle_key, in one uninterrupted transaction — count and
+        record must not be split across separate commits/rollbacks here,
+        since a Postgres advisory lock releases at transaction end, and an
+        early release is the same race this exists to close.
         """
-        current_count = cls._count(scope, key)
+        _lock_throttle_key(scope, key)
+
+        now = datetime.now(timezone.utc)
+        try:
+            current_count = db.query(CacheEntry).filter(
+                CacheEntry.scope == scope,
+                CacheEntry.key == key,
+                CacheEntry.expires_at > now,
+            ).count()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Cache count failed: {str(e)}")
+            current_count = 0
 
         if current_count < limit:
             try:
-                cls._record(scope, key, ttl)
-            except DatabaseInsertError:
-                pass
+                db.add(CacheEntry(
+                    scope=scope, key=key, value=None,
+                    expires_at=now + timedelta(seconds=ttl),
+                ))
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"Cache record failed: {str(e)}")
+        else:
+            db.commit()  # nothing written — releases the lock
 
         if random.random() < PURGE_PROBABILITY:
             cls.purge()

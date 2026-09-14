@@ -15,13 +15,17 @@ from lenny.core.api import LennyAPI
 from lenny.core.briet import parse_olid
 
 if __name__ == "__main__":
+    # A single quoted argument, split here rather than relying on the shell
+    # to word-split an unquoted Make variable — that path let shell
+    # metacharacters in `olid` execute on the host before this script ever
+    # ran. Splitting in Python instead is inert to shell syntax either way.
     parser = argparse.ArgumentParser(description="Delete one or more books from Lenny")
-    parser.add_argument("olids", nargs="+", help="Bare OLIDs or OpenLibrary edition keys (e.g. OL51008637M)")
+    parser.add_argument("olids", help="Space-separated bare OLIDs or OpenLibrary edition keys (e.g. OL51008637M)")
     args = parser.parse_args()
 
     parsed = []
     invalid = []
-    for raw in args.olids:
+    for raw in args.olids.split():
         olid = parse_olid(raw)
         if olid is None:
             invalid.append(raw)

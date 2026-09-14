@@ -266,3 +266,18 @@ def test_patch_allows_any_positive_value_when_global_unlimited(client, admin_ok)
             "/v1/api/admin/items/42", json={"loan_duration_days": 9999}, headers=HDRS
         )
     assert resp.status_code == 200
+
+
+def test_patch_rename_does_not_run_when_another_field_is_invalid(client, admin_ok):
+    """rename_item moves S3 files and commits immediately — an invalid
+    loan_duration_days in the same request must reject before that, not
+    permanently rename the item and then report an unrelated 400."""
+    with patch("lenny.routes.api.configs.get_loan_duration_days", return_value=14), \
+         patch("lenny.routes.api.LennyAPI.rename_item") as mock_rename:
+        resp = client.patch(
+            "/v1/api/admin/items/42",
+            json={"openlibrary_edition": 999, "loan_duration_days": -5},
+            headers=HDRS,
+        )
+    assert resp.status_code == 400
+    mock_rename.assert_not_called()

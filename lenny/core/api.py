@@ -779,14 +779,11 @@ class LennyAPI:
             raise ItemExistsError(f"Item '{openlibrary_edition}' already exists.")
 
         if formats:= cls.upload_files(files, openlibrary_edition, encrypt=encrypt):
-            title, author = OpenLibrary.get_title_author(openlibrary_edition)
             try:
                 item = Item(
                     openlibrary_edition=openlibrary_edition,
                     encrypted=encrypt,
                     formats=FormatEnum(formats),
-                    title=title,
-                    author=author,
                 )
                 db.add(item)
                 db.commit()
@@ -947,16 +944,17 @@ class LennyAPI:
 
     @classmethod
     def delete(cls, openlibrary_edition: int) -> None:
-        """Remove an item from S3 and the database (cascades to loans)."""
+        """Remove an item from S3 and the database (cascades to loans).
+
+        DB delete commits first, S3 cleanup is best-effort after. The other
+        order risks a DB row (and its loans) surviving with its files
+        already gone — an item that looks fine in every listing but 404s
+        the moment anyone tries to read it. An orphaned S3 object if the DB
+        commit fails is just wasted storage, easy to find and clean up later.
+        """
         item = Item.exists(openlibrary_edition)
         if not item:
             raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
-
-        for key in cls._item_s3_keys(openlibrary_edition):
-            try:
-                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
-            except ClientError as e:
-                logger.warning(f"Could not delete S3 object '{key}': {e}")
 
         try:
             db.delete(item)
@@ -964,6 +962,12 @@ class LennyAPI:
         except Exception as e:
             db.rollback()
             raise DatabaseDeleteError(f"Failed to delete item from db: {str(e)}.")
+
+        for key in cls._item_s3_keys(openlibrary_edition):
+            try:
+                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+            except ClientError as e:
+                logger.warning(f"Could not delete S3 object '{key}': {e}")
 
     # A bulk request is admin-typed/pasted, not machine-generated — this cap
     # exists so a malformed request (e.g. an accidental huge paste) can't tie
