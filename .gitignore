@@ -181,3 +181,13 @@ backups/
 
 # Local-only compose tweaks (e.g. publishing the API port for a host dev server)
 compose.override.yaml
+
+# flock-based lock files (core/ol_bootstrap.py's env_lock) — created the first
+# time any env file (.env/auth.env/ol.env/loan.env/reader.env) or the lending
+# state gets written through the admin UI, and never deleted afterward (that's
+# correct flock behavior, not a leak). Untracked, they permanently fail
+# update.sh's "working tree must be clean" pre-flight check on every real
+# instance that has ever toggled a setting — see ArchiveLabs/lenny update
+# reports.
+*.env.lock
+.lending_state.lock
