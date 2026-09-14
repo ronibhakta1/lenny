@@ -31,6 +31,8 @@ SSL_CRT = os.environ.get('LENNY_SSL_CRT')
 SSL_KEY = os.environ.get('LENNY_SSL_KEY')
 LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0"}
 OTP_SERVER = os.environ.get('OTP_SERVER', 'https://openlibrary.org')
+# Demo marketplace: same API as production BRIET, throwaway codes.
+BRIET_REDEEM_URL = os.environ.get('BRIET_REDEEM_URL', 'https://demo.market.briet.app/api/redeem-lenny')
 AUTH_MODE_DIRECT = False
 
 # Open Library / Internet Archive credentials.
@@ -52,7 +54,7 @@ LENNY_SEED = os.environ.get('LENNY_SEED')
 # get_loan_duration_days() below. The globals remain the fallback (and the
 # monkeypatch seam used in tests, where loan.env does not exist).
 LOAN_LIMIT         = int(os.environ.get('LENNY_LOAN_LIMIT', 10))
-LOAN_DURATION_DAYS = int(os.environ.get('LENNY_LOAN_DURATION_DAYS', 0))  # 0 = never expire
+LOAN_DURATION_DAYS = int(os.environ.get('LENNY_LOAN_DURATION_DAYS', 7))  # 0 = never expire
 # loan.env is the runtime-editable, cross-worker source of truth for loan policy
 # (written by the admin endpoints). Read it per-request so all workers agree even
 # though each caches its own boot-time globals above.

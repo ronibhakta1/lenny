@@ -21,8 +21,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_LIMIT  = 1000
 _MAX_OFFSET = 100_000
+
+# Standard Ebooks batch import. ~10s per book, so 100 is already a ~15 minute run;
+# the cap exists so one click can't tie up a worker for hours.
+_SE_DEFAULT_LIMIT = 25
+_SE_MAX_LIMIT     = 100
+_SE_RUN_TTL       = 3600  # how long one run blocks another
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Request,
     UploadFile,
     File,
@@ -33,6 +40,7 @@ from fastapi import (
     Cookie,
     Query,
 )
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
@@ -43,6 +51,9 @@ from lenny.core import auth
 from lenny.core.api import LennyAPI
 from lenny.core import ol_bootstrap
 from lenny.core.cache import Cache
+from lenny.core.briet import BRIET, import_briet_books, parse_olid
+from lenny.core.imports import ImportJob, PENDING as IMPORT_PENDING
+from lenny.core.standardebooks import import_standardebooks
 from lenny.core.openlibrary import ol_auth_status
 from lenny import configs
 from pyopds2_lenny import LennyDataProvider, build_post_borrow_publication, LennyDataRecord
@@ -55,11 +66,13 @@ from lenny.core.exceptions import (
     LoanNotRequiredError,
     DatabaseInsertError,
     DatabaseDeleteError,
+    DatabaseUpdateError,
     FileTooLargeError,
     S3UploadError,
     UploaderNotAllowedError,
     BookUnavailableError,
     PatronLoanLimitError,
+    EmailNotFoundError,
     LendingNotConfiguredError,
     LoanNotFoundError,
     OTPGenerationError,
@@ -67,8 +80,10 @@ from lenny.core.exceptions import (
 )
 from lenny.schemas.ol import OLLoginRequest
 from lenny.core.readium import ReadiumAPI
-from lenny.core.models import Item
-from lenny.core.utils import parse_modified_since
+from lenny.core.oauth2 import AccessToken
+from lenny.core.models import Item, Loan
+from lenny.core.utils import parse_modified_since, to_iso_utc
+from lenny.core.db import session as db
 from urllib.parse import quote
 COOKIES_MAX_AGE = 604800  # 1 week
 
@@ -104,6 +119,34 @@ def get_authenticated_email(
     if not email_data:
         return None
     return email_data.get("email") if isinstance(email_data, dict) else email_data
+
+
+def get_authenticated_identity(
+    request: Optional[Request] = None,
+    session: Optional[str] = None
+) -> tuple[Optional[str], bool]:
+    """Like `get_authenticated_email`, but also recognizes an OAuth2 bearer
+    token — the credential an `ol`-mode consumer (e.g. Open Library) presents
+    on every call after the initial browser login (see oauth2.py's
+    `_authenticated_patron` docstring). `verify_session_cookie` only knows the
+    direct-login cookie format, so a consumer's bearer token always looked
+    unauthenticated to it, and personalized borrow state (the read/return
+    links) silently never appeared for `ol`-mode patrons.
+
+    Returns `(identity, is_hashed)`. `is_hashed` is True when `identity` is
+    already a `patron_email_hash` (from the token) rather than a plaintext
+    email (from the cookie) — callers that check loan ownership need to know
+    which one they got, since `Loan.exists(..., hashed=...)` compares them
+    differently.
+    """
+    email = get_authenticated_email(request, session)
+    if email:
+        return email, False
+    if session:
+        tok = AccessToken.authenticate(session)
+        if tok and tok.has_scope("loans:read"):
+            return tok.patron_email_hash, True
+    return None, False
 
 
 def is_direct_auth_mode(auth_mode: Optional[str] = None, beta: bool = False) -> bool:
@@ -246,15 +289,18 @@ async def get_opds_item(request: Request, book_id: int, session: Optional[str] =
     link generation (showing read/return options).
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(request, session)
-    
+    email, email_hashed = get_authenticated_identity(request, session)
+
     item = Item.exists(book_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
     return Response(
         content=json.dumps(
-            LennyAPI.opds_feed(olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta), email=email)
+            LennyAPI.opds_feed(
+                olid=book_id, auth_mode_direct=is_direct_auth_mode(auth_mode, beta),
+                email=email, email_hashed=email_hashed,
+            )
         ),
         media_type="application/opds-publication+json"
     )
@@ -541,25 +587,303 @@ async def admin_get_items(
         limit = max(0, min(limit, _MAX_LIMIT))
     if offset is not None:
         offset = max(0, min(offset, _MAX_OFFSET))
-    return LennyAPI.get_enriched_items(
-        fields=fields, offset=offset, limit=limit, encrypted=encrypted
+    # get_enriched_items makes a synchronous (blocking) OL search call — on a
+    # cache miss this can run 5-10s+. This route is `async def`, so calling
+    # it inline blocks this worker's entire event loop for that whole time,
+    # stalling every other concurrent request on the worker, not just this
+    # one — measured as the intermittent multi-second spikes on unrelated
+    # admin routes. run_in_threadpool moves the blocking work off the loop.
+    return await run_in_threadpool(
+        LennyAPI.get_enriched_items,
+        fields=fields, offset=offset, limit=limit, encrypted=encrypted,
     )
 
 
+# Live-only admin search — no local title/author storage, no cache. See
+# LennyAPI.admin_search_items for why (reuses search_feed's batched
+# 'q AND edition_key:(...)' pattern instead of denormalizing onto Item).
+@router.get("/admin/items/search", status_code=status.HTTP_200_OK)
+async def admin_search_items(
+    request: Request,
+    q: str,
+    encrypted: Optional[bool] = None,
+    limit: Optional[int] = None,
+):
+    _require_admin(request)
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="'q' is required")
+    eff_limit = max(1, min(int(limit or 50), 200))
+    items, ol_unavailable = await run_in_threadpool(
+        LennyAPI.admin_search_items, q=q.strip(), encrypted=encrypted, limit=eff_limit,
+    )
+    return JSONResponse({
+        "items": items, "total": len(items), "limit": eff_limit,
+        "ol_unavailable": ol_unavailable,
+    })
+
+
 @router.delete("/admin/items/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_item(request: Request, book_id: int):
+async def delete_item(request: Request, book_id: str):
     """
     Delete an item from the catalog (S3 files + DB record, loans cascade).
-    Requires admin authentication.
+    Requires admin authentication. `book_id` accepts either a bare OLID
+    (51008637) or an OpenLibrary edition key (OL51008637M).
     """
     _require_admin(request)
+    olid = parse_olid(book_id)
+    if olid is None:
+        raise HTTPException(status_code=400, detail="Invalid OLID or edition key")
     try:
-        LennyAPI.delete(book_id)
+        LennyAPI.delete(olid)
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")
     except DatabaseDeleteError as e:
         logger.exception("Delete DB error")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/items/delete", status_code=status.HTTP_200_OK)
+async def delete_items_bulk(request: Request, body: dict = Body(...)):
+    """
+    Delete multiple items in one call. Body: {"book_ids": [...]} — each entry
+    a bare OLID or an OpenLibrary edition key (OL51008637M), mixed is fine.
+
+    Partial-failure tolerant: one bad/missing ID never blocks the rest.
+    Response reports each outcome separately so the caller can render an
+    accurate per-item summary rather than a single pass/fail for the batch.
+    """
+    _require_admin(request)
+
+    raw_ids = body.get("book_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="'book_ids' (non-empty list) is required")
+    if len(raw_ids) > LennyAPI.MAX_BULK_DELETE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many items: max {LennyAPI.MAX_BULK_DELETE} per request",
+        )
+
+    olids = []
+    invalid = []
+    for raw in raw_ids:
+        olid = parse_olid(raw)
+        if olid is None:
+            invalid.append(raw)
+        else:
+            olids.append(olid)
+
+    result = LennyAPI.delete_many(olids)
+    result["invalid"] = invalid
+    return result
+
+
+@router.patch("/admin/items/{book_id}")
+async def update_item(request: Request, book_id: int, body: dict = Body(...)):
+    """
+    Update an item: encrypted/DRM flag, per-item loan duration, and/or its
+    OpenLibrary edition key (fixes a wrong-edition import).
+
+    All fields optional, at least one required. `loan_duration_days: null`
+    clears a per-item override back to the global setting; omitting a key
+    entirely leaves it untouched. No file changes needed for `encrypted` to
+    take effect: the read path always serves the same underlying file
+    regardless of this flag — it's the entire access-control decision, not a
+    storage format. `openlibrary_edition` is different: it's baked into the
+    S3 object key names, so that one does move files (see LennyAPI.rename_item).
+    """
+    _require_admin(request)
+
+    # Validate the WHOLE payload before any of it takes effect. rename_item
+    # below moves S3 files and commits the DB change — it cannot be undone
+    # by a later validation failure, so nothing here may run until every
+    # field in the request has already passed its checks.
+    new_olid = None
+    if "openlibrary_edition" in body:
+        new_olid = body["openlibrary_edition"]
+        if not isinstance(new_olid, int) or new_olid <= 0:
+            raise HTTPException(status_code=400, detail="'openlibrary_edition' must be a positive integer")
+
+    kwargs = {}
+    if "encrypted" in body:
+        encrypted = body["encrypted"]
+        if not isinstance(encrypted, bool):
+            raise HTTPException(status_code=400, detail="'encrypted' must be a boolean")
+        kwargs["encrypted"] = encrypted
+    if "loan_duration_days" in body:
+        duration = body["loan_duration_days"]
+        if duration is not None and not isinstance(duration, int):
+            raise HTTPException(status_code=400, detail="'loan_duration_days' must be an integer or null")
+        if duration is not None and duration < 0:
+            raise HTTPException(status_code=400, detail="'loan_duration_days' must be >= 0 (0 = never expire)")
+        # Matches /admin/settings/loan-limits' own semantics: 0 means "never
+        # expire" at both the global and per-item level, so 0 always passes
+        # regardless of the cap — it isn't a value the cap constrains, it's
+        # the same "unlimited" escape hatch the global setting already has.
+        # Only a POSITIVE override above the global max is what the frontend
+        # blocks, so only that case is rejected here.
+        max_duration = configs.get_loan_duration_days()
+        if duration is not None and duration > 0 and max_duration > 0 and duration > max_duration:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'loan_duration_days' cannot exceed the global max of {max_duration} days",
+            )
+        kwargs["loan_duration_days"] = duration
+    if not kwargs and new_olid is None:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of 'encrypted', 'loan_duration_days', 'openlibrary_edition' is required",
+        )
+
+    # Everything validated — now perform the actual mutations.
+    current_id = book_id
+    if new_olid is not None:
+        try:
+            LennyAPI.rename_item(book_id, new_olid)
+        except ItemNotFoundError:
+            raise HTTPException(status_code=404, detail="Item not found")
+        except ItemExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except (S3UploadError, DatabaseUpdateError):
+            logger.exception("Item rename error")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        current_id = new_olid
+
+    item = None
+    if kwargs:
+        try:
+            item = LennyAPI.update_item(current_id, **kwargs)
+        except ItemNotFoundError:
+            raise HTTPException(status_code=404, detail="Item not found")
+        except DatabaseUpdateError:
+            logger.exception("Item update DB error")
+            raise HTTPException(status_code=500, detail="Internal server error")
+    else:
+        item = Item.exists(current_id)
+
+    return {
+        "openlibrary_edition": item.openlibrary_edition,
+        "encrypted": item.encrypted,
+        "loan_duration_days": item.loan_duration_days,
+    }
+
+
+@router.post("/admin/items/{book_id}/reupload", status_code=status.HTTP_200_OK)
+async def reupload_item(
+    request: Request,
+    book_id: int,
+    encrypted: bool = Form(False, description="Set to true if the file is encrypted"),
+    file: UploadFile = File(..., description="The PDF or EPUB file to upload (max 50MB)"),
+):
+    """
+    Replace an existing item's file (fixes a wrong-file import). Item id and
+    every loan on it are untouched — only the S3 object(s) and the
+    encrypted/formats flags change. Under /admin/, so admin-token gated,
+    unlike the IP-allowlisted /upload (which is for creating new items).
+    """
+    _require_admin(request)
+    try:
+        LennyAPI.reupload(book_id, files=[file], encrypt=encrypted)
+        return HTMLResponse(status_code=status.HTTP_200_OK, content="File replaced successfully.")
+    except ItemNotFoundError:
+        raise HTTPException(status_code=404, detail="Item not found")
+    except InvalidFileError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except (S3UploadError, DatabaseUpdateError):
+        logger.exception("Reupload error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/admin/imports")
+async def admin_get_imports(request: Request):
+    """
+    Books currently being ingested, plus recent failures.
+
+    Source-agnostic on purpose: this is the single place the admin UI polls to
+    see anything in flight, regardless of which importer produced it. Items
+    here are NOT yet in /admin/items — they land there once ingestion commits.
+    """
+    _require_admin(request)
+    return {"imports": ImportJob.list()}
+
+
+@router.post("/admin/imports/standardebooks")
+async def admin_import_standardebooks(request: Request, background_tasks: BackgroundTasks, body: dict = Body(None)):
+    """
+    Import a batch of Standard Ebooks (~800 available, all open access).
+
+    `limit` is how many books to add that aren't already in the library — the
+    importer skips what it already has, so this can be called repeatedly to pull
+    the catalog down in batches rather than paging by offset.
+
+    Runs in the background; progress shows up in /admin/imports.
+    """
+    _require_admin(request)
+
+    limit = (body or {}).get("limit", _SE_DEFAULT_LIMIT)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be a number")
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+    limit = min(limit, _SE_MAX_LIMIT)
+
+    # One import run at a time. A second click would otherwise race the first,
+    # downloading the same books twice (both runs see the same "existing" set).
+    if Cache.is_throttled("import_run", "standardebooks", limit=1, ttl=_SE_RUN_TTL):
+        raise HTTPException(status_code=409, detail="A Standard Ebooks import is already running")
+
+    background_tasks.add_task(import_standardebooks, limit)
+    return {"source": "standardebooks", "limit": limit, "status": "started"}
+
+
+@router.post("/admin/briet/redeem")
+def admin_briet_redeem(request: Request, background_tasks: BackgroundTasks, body: dict = Body(...)):
+    """
+    Redeem a BRIET bundle code and queue its books for import.
+
+    The redemption itself is synchronous so the admin immediately learns
+    whether the code was valid and what it contained; the (slow) downloads run
+    in the background and are tracked via /admin/imports.
+
+    Defined as `def` rather than `async def` so FastAPI runs it in a
+    threadpool — BRIET.fetch sleeps between retries and would otherwise block
+    the event loop.
+    """
+    _require_admin(request)
+
+    code = (body.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="A redeem code is required")
+
+    # Codes are single-use and admin-supplied, but this is still user input hitting
+    # a third party — same throttle primitive OTP uses.
+    if Cache.is_throttled("briet_redeem", code, limit=5, ttl=3600):
+        raise HTTPException(status_code=429, detail="Too many attempts for this code")
+
+    try:
+        books = BRIET.redeem(code)
+    except httpx.HTTPStatusError as e:
+        upstream = e.response.status_code
+        if 400 <= upstream < 500 and upstream != 429:
+            raise HTTPException(status_code=400, detail="Invalid or already redeemed code")
+        logger.exception("BRIET redeem upstream error")
+        raise HTTPException(status_code=502, detail="BRIET is unavailable, try again shortly")
+    except (httpx.HTTPError, ValueError) as e:
+        logger.exception("BRIET redeem failed")
+        raise HTTPException(status_code=502, detail="Could not reach BRIET")
+
+    if not books:
+        raise HTTPException(status_code=404, detail="No books found for this code")
+
+    for book in books:
+        ImportJob.record(BRIET.SOURCE, book["olid"], IMPORT_PENDING, title=book.get("title"))
+
+    background_tasks.add_task(import_briet_books, books)
+
+    return {"code": code, "count": len(books), "books": books}
 
 
 @router.get("/profile")
@@ -1248,11 +1572,89 @@ async def admin_list_loans(
     if off < 0:
         raise HTTPException(status_code=400, detail="'offset' must be >= 0.")
 
-    items, total = query_loans_for_admin(
-        status=st, user=usr, limit=limit, offset=off, sort=srt, order=ordr
+    # query_loans_for_admin resolves any never-before-cached edition's title
+    # via a synchronous OL call (admin_loans.py's _TITLE_CACHE only helps once
+    # an edition has been seen once by this worker). This route is `async
+    # def`, so that blocking call, when it happens, freezes this worker's
+    # entire event loop — every other concurrent request on it stalls too,
+    # not just this one. Same root cause and same fix as admin_get_items.
+    items, total = await run_in_threadpool(
+        query_loans_for_admin,
+        status=st, user=usr, limit=limit, offset=off, sort=srt, order=ordr,
     )
     eff_limit = max(1, min(int(limit or 500), 5000))
     return JSONResponse({"items": items, "total": total, "limit": eff_limit, "offset": off})
+
+
+@router.post("/admin/loans", status_code=status.HTTP_201_CREATED)
+async def admin_create_loan(request: Request, body: dict = Body(...)):
+    """
+    Manually grant a loan for a book to a patron's email.
+
+    Reuses `Item.borrow()` as-is — same row-level lock, same idempotency
+    (existing active loan for this email just comes back unchanged), same
+    per-item copy-availability check. Only open-access items are rejected
+    (LoanNotRequiredError): they don't need a loan record at all. Deliberately
+    does NOT bypass the per-patron loan limit — an admin wanting to override
+    that is a distinct, not-yet-requested feature, not a side effect of this one.
+    """
+    _require_admin(request)
+
+    olid = body.get("openlibrary_edition")
+    email = body.get("email")
+    if not isinstance(olid, int):
+        raise HTTPException(status_code=400, detail="'openlibrary_edition' (int) is required")
+    if not email or not isinstance(email, str) or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid 'email' is required")
+
+    item = Item.exists(olid)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    try:
+        loan = item.borrow(email)
+    except LoanNotRequiredError:
+        raise HTTPException(status_code=400, detail="Item is open-access, no loan needed")
+    except EmailNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except BookUnavailableError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except PatronLoanLimitError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception:
+        logger.exception("Admin create-loan error item=%s", olid)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {
+        "id": loan.id,
+        "item_id": loan.item_id,
+        "openlibrary_edition": olid,
+        "due_date": to_iso_utc(loan.due_date) if loan.due_date else None,
+    }
+
+
+@router.post("/admin/loans/{loan_id}/return", status_code=status.HTTP_200_OK)
+async def admin_return_loan(request: Request, loan_id: int):
+    """
+    Force-return a loan by id, bypassing the patron-email lookup the
+    self-service `unborrow` path needs (the admin only has the loan record,
+    identified by `patron_email_hash`, not the patron's actual email).
+    """
+    _require_admin(request)
+
+    loan = db.query(Loan).filter(Loan.id == loan_id).first()
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    if loan.returned_at is not None:
+        raise HTTPException(status_code=409, detail="Loan is already returned")
+
+    try:
+        loan.finalize()
+    except DatabaseInsertError:
+        logger.exception("Admin return DB error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return {"id": loan.id, "item_id": loan.item_id, "returned_at": to_iso_utc(loan.returned_at)}
 
 
 @router.get("/admin/settings/loan-limits", status_code=status.HTTP_200_OK)

@@ -20,11 +20,34 @@ function get_tunnel() {
     grep -aEo 'https://[a-zA-Z0-9.-]+\.(trycloudflare|cfargotunnel)\.com' cloudflared.log 2>/dev/null | head -n1
 }
 
+# Writes LENNY_PROXY into .env so it survives any later `docker compose ...
+# api` recreate, not just the one that ran inside this script — a bare
+# recreate reads .env fresh and previously had no way to see a tunnel URL
+# that only ever lived in a shell export from `make tunnel`'s own process.
+function persist_proxy_env() {
+    local value="$1"
+    local env_file="./.env"
+    [[ -f "$env_file" ]] || return 0
+
+    if ! grep -qE '^LENNY_PROXY=' "$env_file"; then
+        echo "LENNY_PROXY=$value" >> "$env_file"
+        return 0
+    fi
+
+    local tmp perms
+    tmp=$(mktemp "${env_file}.XXXXXX")
+    perms=$(stat -c "%a" "$env_file" 2>/dev/null || stat -f "%OLp" "$env_file" 2>/dev/null || echo "600")
+    chmod "$perms" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+    sed "s|^LENNY_PROXY=.*|LENNY_PROXY=$value|" "$env_file" > "$tmp"
+    mv "$tmp" "$env_file"
+}
+
 function close_tunnel() {
     local url=$(get_tunnel)
     if [[ -n "$url" ]]; then
 	pkill -f 'cloudflared tunnel --url'
 	rm cloudflared.log
+	persist_proxy_env ""
 	echo "[+] Closing cloudflared tunnel $url"
     fi
 }
@@ -52,6 +75,7 @@ function create_tunnel() {
     if [[ -n "$url" ]]; then
         if verify_tunnel "$url" 2>/dev/null; then
             echo "[+] Reusing existing tunnel: $url"
+            persist_proxy_env "$url"
             return 0
         else
             echo "[*] Stale tunnel detected, cleaning up..."
@@ -72,6 +96,7 @@ function create_tunnel() {
 	url=$(get_tunnel)
         if [[ -n "$url" ]]; then
 	    echo "[+] Public cloudflared tunnel is running at: $url"
+	    persist_proxy_env "$url"
 	    return 0
         fi
     done

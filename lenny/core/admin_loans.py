@@ -58,6 +58,13 @@ def _loan_status(loan: Loan, now: datetime.datetime) -> str:
     return "active"
 
 
+# Edition titles are effectively immutable — cache them for the life of the
+# worker process so repeat loan pages (same editions, over and over) don't
+# re-hit openlibrary.org on every request. That live call was the source of
+# multi-second/timeout latency on GET /admin/loans under load.
+_TITLE_CACHE: dict[int, str] = {}
+
+
 def _resolve_titles(edition_ids: list[int]) -> dict[int, str]:
     """Batch-fetch OL titles for a set of edition integers.
 
@@ -68,22 +75,21 @@ def _resolve_titles(edition_ids: list[int]) -> dict[int, str]:
     if not edition_ids:
         return {}
 
-    olid_query = " OR ".join(f"OL{eid}M" for eid in edition_ids)
-    query = f"edition_key:({olid_query})"
-
-    try:
-        records = OpenLibrary.search(query=query, fields=["title", "edition_key"])
-    except Exception as exc:
-        logger.warning("OL title resolution failed for %d ids: %s", len(edition_ids), exc)
-        return {}
-
-    titles: dict[int, str] = {}
-    for rec in records:
+    uncached = [eid for eid in edition_ids if eid not in _TITLE_CACHE]
+    if uncached:
+        olid_query = " OR ".join(f"OL{eid}M" for eid in uncached)
+        query = f"edition_key:({olid_query})"
         try:
-            titles[int(rec.olid)] = getattr(rec, "title", "") or ""
-        except (AttributeError, TypeError, ValueError):
-            continue
-    return titles
+            records = OpenLibrary.search(query=query, fields=["title", "edition_key"])
+            for rec in records:
+                try:
+                    _TITLE_CACHE[int(rec.olid)] = getattr(rec, "title", "") or ""
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            logger.warning("OL title resolution failed for %d ids: %s", len(uncached), exc)
+
+    return {eid: _TITLE_CACHE[eid] for eid in edition_ids if eid in _TITLE_CACHE}
 
 
 def _user_identifier(loan: Loan) -> str:

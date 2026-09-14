@@ -129,7 +129,8 @@ class OpenLibrary:
         logger.error(f"Error searching Open Library after retry: {last_exc}")
         raise last_exc  # type: ignore[misc]
 
-    
+
+
 class OpenLibraryRecord(dict):
     def __init__(self, data=None, **kwargs):
         data = data or {}

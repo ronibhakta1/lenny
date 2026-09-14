@@ -4,6 +4,7 @@ from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
 import socket
 import ipaddress
+import time as _time
 import requests as _requests
 import httpx as _httpx
 import logging
@@ -22,6 +23,7 @@ from lenny.core.exceptions import (
     InvalidFileError,
     DatabaseInsertError,
     DatabaseDeleteError,
+    DatabaseUpdateError,
     FileTooLargeError,
     S3UploadError,
     UploaderNotAllowedError,
@@ -274,18 +276,131 @@ class LennyAPI:
             return email_data.get("email") if isinstance(email_data, dict) else email_data
         return None
 
+    # GET /admin/items enriches every row with a live OL search on every
+    # request — measured at ~9s for 16 items (the DB query itself is ~15ms),
+    # which is the same class of latency /admin/loans had before its title/
+    # author columns were denormalized. That fix doesn't apply cleanly here:
+    # this endpoint's contract is the full public-item shape (description,
+    # cover, etc.), not just title/author, so there's more to cache than two
+    # columns. A short TTL cache on the OL-only portion, keyed by the exact
+    # edition set, cuts repeat requests (the common case: reloading the same
+    # admin listing page) to ~0 while leaving Lenny-owned fields (encrypted,
+    # loan_duration_days, availability) always fresh — those come from
+    # `imap`, re-merged on every call regardless of cache hit/miss.
+    _ENRICH_CACHE_TTL_S = 300
+    _enrich_cache: dict = {}
+
     @classmethod
     def _enrich_items(cls, items, fields=None, limit=None):
         imap = dict((i.openlibrary_edition, i) for i in items)
-        olids = [f"OL{i}M" for i in imap.keys()]
-        if olids:
-            q = f"edition_key:({' OR '.join(olids)})"
-            return dict((
-                int(book.olid),
-                book + {"lenny": imap[int(book.olid)]}
-            ) for book in OpenLibrary.search(query=q, fields=fields))
-        return {}
-    
+        if not imap:
+            return {}
+        edition_ids = tuple(sorted(imap.keys()))
+        cache_key = (edition_ids, tuple(sorted(fields)) if fields else None)
+
+        now = _time.monotonic()
+        cached = cls._enrich_cache.get(cache_key)
+        if cached and cached[0] > now:
+            ol_by_olid = cached[1]
+        else:
+            q = f"edition_key:({' OR '.join(f'OL{eid}M' for eid in edition_ids)})"
+            ol_by_olid = {int(book.olid): book for book in OpenLibrary.search(query=q, fields=fields)}
+            # ponytail: crude cap instead of real LRU eviction — fine for a
+            # cache this size/TTL, revisit if the key space grows a lot.
+            if len(cls._enrich_cache) > 256:
+                cls._enrich_cache.clear()
+            cls._enrich_cache[cache_key] = (now + cls._ENRICH_CACHE_TTL_S, ol_by_olid)
+
+        return {olid: book + {"lenny": imap[olid]} for olid, book in ol_by_olid.items()}
+
+    # Deliberately no local title/author storage and no caching here (unlike
+    # _enrich_items above) — an earlier version denormalized title/author
+    # onto Item for this, which turned out more machinery than wanted for
+    # what's a live catalog anyway. Same batched-query pattern as
+    # search_feed (patron-facing /opds/search): every call re-asks Open
+    # Library, scoped to editions Lenny actually holds. Plain listing
+    # (no search term) is GET /admin/items' job, already cached there —
+    # this only answers an actual `q`.
+    @staticmethod
+    def _prefix_query(q: str) -> str:
+        """Appends a trailing wildcard to the last word of `q`.
+
+        OL's search.json does whole-word/stemmed matching by default — 'the
+        suit' will never match "The Suitors", the same way normal full-text
+        search doesn't match a partial word. An admin typing into a search
+        box is almost always mid-word, so without this, correctly-typed
+        partial titles read as "search is broken" even though OL answered
+        correctly and the endpoint is working exactly as built. Confirmed
+        directly against OL: 'suit*' and 'the suit*' both match "The
+        Suitors"; 'the suit' does not. Only the last token gets the
+        wildcard — earlier words are assumed already finished.
+        """
+        parts = q.rsplit(None, 1)
+        if not parts:
+            return q
+        if len(parts) == 1:
+            return f"{parts[0]}*"
+        return f"{parts[0]} {parts[1]}*"
+
+    @classmethod
+    def admin_search_items(
+        cls, q: str, encrypted: Optional[bool] = None, limit: Optional[int] = None
+    ) -> tuple[list[dict], bool]:
+        """Returns `(items, ol_unavailable)`. `ol_unavailable=True` means a
+        batch failed to reach Open Library — the caller can't tell that
+        apart from "zero real matches" just by looking at an empty list
+        otherwise, which is exactly what a transient OL outage looked like
+        from the admin UI (silently empty, not an error)."""
+        limit = max(1, min(int(limit or 50), 200))
+        all_items = Item.get_all()
+        if encrypted is not None:
+            all_items = {k: v for k, v in all_items.items() if v.encrypted == encrypted}
+        if not all_items:
+            return [], False
+
+        olid_list = list(all_items.keys())
+        batches = [
+            olid_list[i:i + cls.SEARCH_BATCH_SIZE]
+            for i in range(0, len(olid_list), cls.SEARCH_BATCH_SIZE)
+        ]
+
+        prefixed_q = cls._prefix_query(q)
+        collected: list[dict] = []
+        seen: set[int] = set()
+        try:
+            for batch in batches:
+                search_query = f"{prefixed_q} AND {cls._edition_key_query(batch)}"
+                for book in OpenLibrary.search(
+                    query=search_query, fields=["title", "author_name", "edition_key"], limit=limit
+                ):
+                    try:
+                        eid = int(book.olid)
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                    if eid not in all_items or eid in seen:
+                        continue
+                    seen.add(eid)
+                    item = all_items[eid]
+                    authors = getattr(book, "author_name", None) or []
+                    collected.append({
+                        "id": item.id,
+                        "edition_key": f"OL{eid}M",
+                        "title": getattr(book, "title", None),
+                        "author": ", ".join(authors) if authors else None,
+                        "encrypted": item.encrypted,
+                        "formats": item.formats.name if item.formats else None,
+                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                    })
+                    if len(collected) >= limit:
+                        break
+                if len(collected) >= limit:
+                    break
+        except (_requests.exceptions.RequestException, _httpx.HTTPError) as e:
+            logger.warning(f"Open Library unreachable during admin item search: {e}")
+            return collected, True
+
+        return collected, False
+
     @classmethod
     def get_enriched_items(cls, olid=None, fields=None, offset=None, limit=None, encrypted=None,
                            modified_since=None):
@@ -323,7 +438,7 @@ class LennyAPI:
 
     @classmethod
     def opds_feed(cls, olid=None, offset=None, limit=None, query=None, auth_mode_direct=None, email=None,
-                  modified_since=None):
+                  email_hashed=False, modified_since=None):
         """
         Generate an OPDS 2.0 catalog using the opds2 Catalog.create helper
         and the LennyDataProvider to transform Open Library metadata into
@@ -346,7 +461,7 @@ class LennyAPI:
         # If requesting single item and user is authenticated, check for active loan
         if olid and email:
             if item := Item.exists(olid):
-                if item.is_login_required and Loan.exists(item.id, email):
+                if item.is_login_required and Loan.exists(item.id, email, hashed=email_hashed):
                     return build_post_borrow_publication(olid, auth_mode_direct=use_direct)
 
         limit = limit or cls.DEFAULT_LIMIT
@@ -668,7 +783,7 @@ class LennyAPI:
                 item = Item(
                     openlibrary_edition=openlibrary_edition,
                     encrypted=encrypt,
-                    formats=FormatEnum(formats)
+                    formats=FormatEnum(formats),
                 )
                 db.add(item)
                 db.commit()
@@ -677,18 +792,169 @@ class LennyAPI:
                 db.rollback()
                 raise DatabaseInsertError(f"Failed to add item to db: {str(e)}.")
 
+    UNSET = object()  # sentinel: "field not provided", distinct from JSON null
+
     @classmethod
-    def delete(cls, openlibrary_edition: int) -> None:
-        """Remove an item from S3 and the database (cascades to loans)."""
+    def update_item(cls, openlibrary_edition: int, encrypted=UNSET, loan_duration_days=UNSET) -> Item:
+        """Update an item's encrypted/DRM flag and/or per-item loan duration.
+
+        Callers must pass `cls.UNSET` (the default) for a field that wasn't
+        part of the request — plain `None` for `loan_duration_days` means
+        "clear the override, fall back to the global setting" (Loan.create
+        treats a NULL column the same way), so it can't double as "unchanged".
+
+        `encrypted`: no S3 file swap needed — `encode_book_path` (readium.py)
+        always serves the plain `{id}.epub` key regardless of this flag; the
+        `_encrypted` twin written at upload time is never read by anything.
+        This flag is the entire access-control mechanism (gates
+        `is_readable`/`is_lendable`, checked by `@requires_item_auth()` on the
+        read routes), not a different file.
+        """
         item = Item.exists(openlibrary_edition)
         if not item:
             raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
 
-        for key in s3.get_keys(prefix=str(openlibrary_edition)):
+        try:
+            if encrypted is not cls.UNSET:
+                item.encrypted = encrypted
+            if loan_duration_days is not cls.UNSET:
+                item.loan_duration_days = loan_duration_days
+            db.commit()
+            return item
+        except Exception as e:
+            db.rollback()
+            raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition}: {str(e)}.")
+
+    @classmethod
+    def _item_s3_keys(cls, openlibrary_edition: int) -> list:
+        """S3 keys belonging to exactly this item: `{olid}{ext}` and
+        `{olid}_encrypted{ext}`, never a different OLID.
+
+        `s3.get_keys(prefix=str(olid))` alone is not safe: OLID 5100863 is a
+        string-prefix of 51008637, so deleting the shorter one would also
+        delete the longer one's files. The character right after the numeric
+        OLID is always '.' or '_' for a real match — never another digit —
+        so that's the boundary check.
+        """
+        olid_str = str(openlibrary_edition)
+        return [
+            key for key in s3.get_keys(prefix=olid_str)
+            if key == olid_str or key[len(olid_str):len(olid_str) + 1] in (".", "_")
+        ]
+
+    @classmethod
+    def rename_item(cls, old_olid: int, new_olid: int) -> Item:
+        """Repoint an item at a different OpenLibrary edition (e.g. the
+        wrong edition got matched on import), moving its S3 files to match —
+        openlibrary_edition is baked into the object key names, so a bare
+        DB update would leave every file 404ing under the old key.
+
+        S3 has no atomic rename: copies to the new keys first, commits the DB
+        change, and only then deletes the old keys. A mid-failure leaves (at
+        worst) duplicate storage under both OLIDs, never a dangling item
+        pointing at a key that doesn't exist — copy failures roll back their
+        own partial copies, DB failures roll back the copies too.
+        """
+        if old_olid == new_olid:
+            item = Item.exists(old_olid)
+            if not item:
+                raise ItemNotFoundError(f"Item '{old_olid}' not found.")
+            return item
+
+        item = Item.exists(old_olid)
+        if not item:
+            raise ItemNotFoundError(f"Item '{old_olid}' not found.")
+        if Item.exists(new_olid):
+            raise ItemExistsError(f"Item '{new_olid}' already exists.")
+
+        old_keys = cls._item_s3_keys(old_olid)
+        old_prefix, new_prefix = str(old_olid), str(new_olid)
+        copied = []
+        try:
+            for key in old_keys:
+                new_key = new_prefix + key[len(old_prefix):]
+                s3.copy_object(
+                    Bucket=s3.BOOKSHELF_BUCKET,
+                    CopySource={'Bucket': s3.BOOKSHELF_BUCKET, 'Key': key},
+                    Key=new_key,
+                )
+                copied.append(new_key)
+        except ClientError as e:
+            for key in copied:
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                except ClientError:
+                    pass
+            raise S3UploadError(f"Failed to copy S3 objects to new OLID {new_olid}: {e}")
+
+        try:
+            item.openlibrary_edition = new_olid
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            for key in copied:
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                except ClientError:
+                    pass
+            raise DatabaseUpdateError(f"Failed to rename item {old_olid} -> {new_olid}: {str(e)}.")
+
+        for key in old_keys:
             try:
                 s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
             except ClientError as e:
-                logger.warning(f"Could not delete S3 object '{key}': {e}")
+                logger.warning(f"Could not delete old S3 object '{key}' after rename: {e}")
+
+        return item
+
+    @classmethod
+    def reupload(cls, openlibrary_edition: int, files: list, encrypt: bool = False) -> Item:
+        """Replace an existing item's file(s) in place.
+
+        Opposite guard from `add`: requires the item to already exist rather
+        than rejecting if it does. Item.id and every Loan row are untouched —
+        only the S3 objects and the encrypted/formats flags change, so
+        history/loans survive a wrong-file correction.
+
+        ponytail: deletes the old file(s) before uploading the new one(s)
+        rather than a zero-downtime swap — correct and simple beats a brief
+        (millisecond-scale) availability gap on a rare, human-triggered admin
+        action. Upgrade to copy-then-delete (like rename_item) if this ever
+        needs to be online-safe.
+        """
+        item = Item.exists(openlibrary_edition)
+        if not item:
+            raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
+
+        for key in cls._item_s3_keys(openlibrary_edition):
+            try:
+                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+            except ClientError as e:
+                logger.warning(f"Could not delete old S3 object '{key}' before reupload: {e}")
+
+        formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
+        try:
+            item.encrypted = encrypt
+            item.formats = FormatEnum(formats)
+            db.commit()
+            return item
+        except Exception as e:
+            db.rollback()
+            raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition} after reupload: {str(e)}.")
+
+    @classmethod
+    def delete(cls, openlibrary_edition: int) -> None:
+        """Remove an item from S3 and the database (cascades to loans).
+
+        DB delete commits first, S3 cleanup is best-effort after. The other
+        order risks a DB row (and its loans) surviving with its files
+        already gone — an item that looks fine in every listing but 404s
+        the moment anyone tries to read it. An orphaned S3 object if the DB
+        commit fails is just wasted storage, easy to find and clean up later.
+        """
+        item = Item.exists(openlibrary_edition)
+        if not item:
+            raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
 
         try:
             db.delete(item)
@@ -696,6 +962,37 @@ class LennyAPI:
         except Exception as e:
             db.rollback()
             raise DatabaseDeleteError(f"Failed to delete item from db: {str(e)}.")
+
+        for key in cls._item_s3_keys(openlibrary_edition):
+            try:
+                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+            except ClientError as e:
+                logger.warning(f"Could not delete S3 object '{key}': {e}")
+
+    # A bulk request is admin-typed/pasted, not machine-generated — this cap
+    # exists so a malformed request (e.g. an accidental huge paste) can't tie
+    # up a worker looping over an unbounded list.
+    MAX_BULK_DELETE = 200
+
+    @classmethod
+    def delete_many(cls, openlibrary_editions: list) -> dict:
+        """Delete multiple items. One bad ID never aborts the rest.
+
+        Returns {"deleted": [...], "not_found": [...], "failed": {olid: error}}
+        so the caller (CLI or admin UI) can report a precise per-item outcome
+        instead of a single pass/fail for the whole batch.
+        """
+        result = {"deleted": [], "not_found": [], "failed": {}}
+        for olid in openlibrary_editions[:cls.MAX_BULK_DELETE]:
+            try:
+                cls.delete(olid)
+                result["deleted"].append(olid)
+            except ItemNotFoundError:
+                result["not_found"].append(olid)
+            except Exception as e:
+                logger.error(f"Bulk delete failed for OLID {olid}: {e}")
+                result["failed"][olid] = str(e)
+        return result
 
     @classmethod
     def get_borrowed_items(cls, email: str):
@@ -748,12 +1045,16 @@ class LennyAPI:
              return LennyDataProvider.get_shelf_feed([])
 
         query = f"edition_key:({' OR '.join(olids)})"
-        
-        resp = LennyDataProvider.search(
-            query=query, 
-            limit=len(olids), 
-            lenny_ids=lenny_ids
-        )
+
+        try:
+            resp = LennyDataProvider.search(
+                query=query,
+                limit=len(olids),
+                lenny_ids=lenny_ids
+            )
+        except (_requests.exceptions.RequestException, _httpx.HTTPError) as e:
+            logger.warning(f"Open Library unreachable during shelf feed build: {e}")
+            return LennyDataProvider.get_shelf_feed([])
 
         publications = []
         for record in resp.records:

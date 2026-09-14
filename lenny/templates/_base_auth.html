@@ -4,67 +4,113 @@
     <title>{% block title %}Lenny{% endblock %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+      /* Palette matches lenny-app's own tokens (packages/ui/src/styles/globals.css),
+         itself sourced from Open Library's tokens.css — kept in sync by hand here
+         since this page is server-rendered Jinja, not part of that build. */
+      :root {
+        --background: #faf9f4;
+        --foreground: #3d382e;
+        --card: #ffffff;
+        --card-foreground: #3d382e;
+        --primary: #1266ba;
+        --primary-foreground: #ffffff;
+        --muted-foreground: #77705f;
+        --accent: #eaf0fb;
+        --accent-foreground: #0b3c6f;
+        --destructive: #8d3825;
+        --destructive-foreground: #ffffff;
+        --border: #e5e1d2;
+        --input: #d1cbb7;
+        --ring: #1266ba;
+        --success: #4b723b;
+        --success-bg: #ecf3e8;
+        --success-border: #c5d7bc;
+        --error-bg: #f9efec;
+        --error-border: #e9ccc4;
+      }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        background: var(--background);
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
         padding: 20px;
-        color: #e4e4e7;
+        color: var(--foreground);
       }
       .card {
-        background: rgba(255,255,255,0.05);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255,255,255,0.1);
+        background: var(--card);
+        color: var(--card-foreground);
+        border: 1px solid var(--border);
         border-radius: 16px;
         padding: 40px;
         max-width: 400px;
         width: 100%;
       }
       .card--wide { max-width: 480px; text-align: center; }
-      h1 { font-size: 24px; margin-bottom: 8px; color: #fff; text-align: center; }
-      .subtitle { color: #a1a1aa; text-align: center; margin-bottom: 24px; }
-      .email { color: #3b82f6; font-weight: 600; }
-      .email--success { color: #10b981; }
-      .error { background: rgba(239,68,68,0.2); border: 1px solid #ef4444; color: #fca5a5; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
-      label { display: block; font-size: 14px; color: #a1a1aa; margin-bottom: 6px; }
+      h1 { font-size: 19px; margin-bottom: 6px; color: var(--card-foreground); text-align: center; }
+      .subtitle { font-size: 14px; line-height: 1.4; color: var(--muted-foreground); text-align: center; margin-bottom: 24px; }
+      .email { color: var(--primary); font-weight: 600; }
+      .email--success { color: var(--success); }
+      .error {
+        background: var(--error-bg);
+        border: 1px solid var(--error-border);
+        color: var(--destructive);
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+      }
+      label { display: block; font-size: 14px; color: var(--muted-foreground); margin-bottom: 6px; }
       input[type="email"], input[type="text"] {
         width: 100%;
         padding: 12px 16px;
-        border: 1px solid rgba(255,255,255,0.1);
+        border: 1px solid var(--input);
         border-radius: 8px;
-        background: rgba(0,0,0,0.3);
-        color: #fff;
+        background: var(--card);
+        color: var(--card-foreground);
         font-size: 16px;
         margin-bottom: 20px;
       }
-      input:focus { outline: none; border-color: #3b82f6; }
+      input:focus { outline: none; border-color: var(--ring); }
       .btn {
         width: 100%;
-        padding: 14px 24px;
+        padding: 12px 24px;
         border: none;
         border-radius: 8px;
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 500;
         cursor: pointer;
-        transition: transform 0.2s, box-shadow 0.2s;
-        color: #fff;
+        transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+        color: var(--primary-foreground);
         text-decoration: none;
         display: inline-block;
         text-align: center;
       }
       .btn:hover { transform: translateY(-2px); }
-      .btn--primary { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); }
-      .btn--primary:hover { box-shadow: 0 4px 12px rgba(59,130,246,0.4); }
-      .btn--success { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
-      .btn--success:hover { box-shadow: 0 4px 12px rgba(16,185,129,0.4); }
+      .btn--primary { background: var(--primary); }
+      .btn--primary:hover { opacity: 0.92; }
+      .btn--success { background: var(--success); color: #ffffff; }
+      .btn--success:hover { opacity: 0.92; }
+      .btn--link {
+        background: none;
+        width: auto;
+        display: block;
+        margin: 16px auto 0;
+        padding: 6px 8px;
+        color: var(--muted-foreground);
+        font-size: 13px;
+        text-decoration: underline;
+      }
+      .btn--link:hover { transform: none; color: var(--foreground); }
+      .btn--link:disabled { color: var(--border); text-decoration: none; cursor: default; }
+      .resend-status { text-align: center; font-size: 12px; margin-top: 8px; min-height: 16px; color: var(--muted-foreground); }
+      .resend-status--ok { color: var(--success); }
+      .resend-status--error { color: var(--destructive); }
       .success-icon {
         width: 64px;
         height: 64px;
-        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        background: var(--success);
         border-radius: 50%;
         display: flex;
         align-items: center;
@@ -73,7 +119,7 @@
         font-size: 32px;
       }
       .token-info {
-        background: rgba(0,0,0,0.3);
+        background: var(--accent);
         border-radius: 8px;
         padding: 16px;
         margin: 24px 0;
@@ -81,27 +127,27 @@
         font-size: 12px;
         font-family: 'SF Mono', Monaco, monospace;
         word-break: break-all;
-        color: #a1a1aa;
-        border: 1px solid rgba(255,255,255,0.05);
+        color: var(--accent-foreground);
+        border: 1px solid var(--border);
       }
-      .token-info strong { color: #e4e4e7; }
+      .token-info strong { color: var(--card-foreground); }
       .otp-input {
-        font-size: 20px;
-        letter-spacing: 4px;
+        font-size: 16px;
+        letter-spacing: 3px;
         text-align: center;
       }
       .badge {
         display: inline-block;
-        padding: 4px 12px;
+        padding: 3px 10px;
         border-radius: 20px;
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 1px;
-        margin-bottom: 16px;
+        margin-bottom: 14px;
       }
-      .badge--oauth { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
-      .badge--direct { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+      .badge--oauth { background: var(--accent); color: var(--accent-foreground); border: 1px solid var(--border); }
+      .badge--direct { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); }
     </style>
   </head>
   <body>

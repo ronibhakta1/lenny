@@ -24,6 +24,29 @@ ifup:
 preload: ifup
 	@bash docker/utils/preload.sh $(items)
 
+# Redeem a BRIET bundle code and import its books
+# e.g. make briet-redeem code=ABC123
+.PHONY: briet-redeem
+briet-redeem: ifup
+	@if [ -z "$(code)" ]; then \
+		echo "Error: Missing required argument."; \
+		echo "Usage: make briet-redeem code=ABC123"; \
+		exit 1; \
+	fi
+	@docker exec -i $(container) python scripts/briet_redeem.py "$(code)"
+
+# Delete one or more books (S3 files + DB record). Space-separate multiple.
+# e.g. make delete-book olid=OL51008637M
+#      make delete-book olid="OL51008637M 37044623"
+.PHONY: delete-book
+delete-book: ifup
+	@if [ -z "$(olid)" ]; then \
+		echo "Error: Missing required argument."; \
+		echo "Usage: make delete-book olid=OL51008637M"; \
+		exit 1; \
+	fi
+	@docker exec -i $(container) python scripts/delete_book.py "$(olid)"
+
 # Start a public tunnel (e.g., via cloudflared)
 .PHONY: tunnel
 tunnel:
@@ -146,7 +169,7 @@ url:
 	fi; \
 	OPDS_URL="$$TUNNEL_URL/v1/api/opds"; \
 	ENCODED_OPDS=$$(python3 -c "import urllib.parse; print(urllib.parse.quote('$$OPDS_URL', safe=''))"); \
-	READER_URL="https://reader.archive.org/?opds=$$ENCODED_OPDS"; \
+	READER_URL="https://reader.archive.org/catalog?home=$$ENCODED_OPDS"; \
 	echo "[+] OPDS Feed: $$OPDS_URL"; \
 	echo "[+] Reader URL: $$READER_URL"
 

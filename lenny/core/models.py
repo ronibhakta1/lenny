@@ -60,10 +60,17 @@ class Item(Base):
         Index('idx_items_updated_at', 'updated_at', 'id'),
     )
 
-    id = Column(BigInteger, primary_key=True)
+    # BigInteger PKs don't autoincrement on SQLite (only an INTEGER PRIMARY
+    # KEY aliases the rowid) — same fix as CacheEntry.id (core/cache.py) and
+    # oauth2.py's `_PK`. Only bit under TESTING via a multi-row add_all() +
+    # one commit(), which uses SQLAlchemy's batched INSERT...RETURNING path;
+    # single-row inserts happened to work by accident. Postgres is unaffected.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     openlibrary_edition = Column(BigInteger, nullable=False)
     encrypted = Column(Boolean, default= False, nullable=False)
     formats = Column(SQLAlchemyEnum(FormatEnum), nullable=False)
+    # NULL = use the global LENNY_LOAN_DURATION_DAYS setting (configs.get_loan_duration_days()).
+    loan_duration_days = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
 
@@ -267,7 +274,7 @@ class Item(Base):
             db.rollback()
             raise BookUnavailableError("No copies available for borrowing.")
 
-        return Loan.create(self.id, hashed_email, hashed=True)
+        return Loan.create(self.id, hashed_email, hashed=True, duration_days=self.loan_duration_days)
 
 
 class Loan(Base):
@@ -276,9 +283,22 @@ class Loan(Base):
         Index('idx_loans_item_patron_returned', 'item_id', 'patron_email_hash', 'returned_at'),
         Index('idx_loans_item_returned', 'item_id', 'returned_at'),
         Index('idx_loans_due_date', 'due_date'),
+        # The three below serve the admin listing (core/admin_loans.py)'s
+        # unfiltered default view, status filter, and patron-search filter —
+        # none of the indexes above have those columns as a leading column,
+        # so without these the admin loans page does a full sequential scan
+        # + full sort on every request regardless of table size.
+        Index('idx_loans_created_at', 'created_at', 'id'),
+        Index('idx_loans_returned_due', 'returned_at', 'due_date'),
+        # varchar_pattern_ops: a plain btree index can't serve the admin
+        # search's LIKE 'prefix%' scan under a non-C locale (confirmed via
+        # EXPLAIN — without it, this silently falls back to a sequential scan).
+        Index('idx_loans_patron_email_hash', 'patron_email_hash',
+              postgresql_ops={'patron_email_hash': 'varchar_pattern_ops'}),
     )
 
-    id = Column(BigInteger, primary_key=True)
+    # Same SQLite autoincrement fix as Item.id above.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     item_id = Column(BigInteger, ForeignKey('items.id'), nullable=False)
     patron_email_hash = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
@@ -319,11 +339,14 @@ class Loan(Base):
         ).first()
 
     @classmethod
-    def create(cls, item_id, email, hashed=False):
+    def create(cls, item_id, email, hashed=False, duration_days=None):
+        """`duration_days`: per-item override (Item.loan_duration_days). None
+        falls back to the global LENNY_LOAN_DURATION_DAYS setting."""
         from lenny import configs
         hashed_email = email if hashed else hash_email(email)
         due = None
-        duration_days = configs.get_loan_duration_days()
+        if duration_days is None:
+            duration_days = configs.get_loan_duration_days()
         if duration_days > 0:
             due = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=duration_days)
         try:

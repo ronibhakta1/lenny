@@ -92,6 +92,7 @@ else
   # external/custom-domain deployments.
   NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-}"
   OTP_SERVER="${OTP_SERVER:-https://openlibrary.org}"
+  BRIET_REDEEM_URL="${BRIET_REDEEM_URL:-https://demo.market.briet.app/api/redeem-lenny}"
 
   READER_PORT="${READER_PORT:-3000}"
   READIUM_PORT="${READIUM_PORT:-15080}"
@@ -135,6 +136,10 @@ LENNY_PRODUCTION=$LENNY_PRODUCTION
 LENNY_SSL_CRT=$LENNY_SSL_CRT
 LENNY_SSL_KEY=$LENNY_SSL_KEY
 OTP_SERVER=$OTP_SERVER
+# BRIET bundle-redeem endpoint. Defaults to BRIET's DEMO marketplace, which
+# behaves like production but hands out throwaway codes — swap in the real
+# host (market.briet.app) once that side is live.
+BRIET_REDEEM_URL=$BRIET_REDEEM_URL
 # Peer addresses uvicorn trusts to have set X-Forwarded-For. Narrow to your own
 # Docker network if you know it; NEVER leave this empty (see configure.sh).
 LENNY_FORWARDED_ALLOW_IPS=$LENNY_FORWARDED_ALLOW_IPS
@@ -287,7 +292,7 @@ else
   # Reuse existing values if present (e.g. exported from a legacy .env during
   # `make update` bootstrap); otherwise fall back to defaults.
   LENNY_LOAN_LIMIT="${LENNY_LOAN_LIMIT:-10}"
-  LENNY_LOAN_DURATION_DAYS="${LENNY_LOAN_DURATION_DAYS:-0}"
+  LENNY_LOAN_DURATION_DAYS="${LENNY_LOAN_DURATION_DAYS:-7}"
 
   cat <<EOF > "$LOAN_ENV_FILE"
 # Loan policy — runtime-editable from the admin UI (/admin/loan/settings).
