@@ -128,17 +128,22 @@ def test_update_env_file_preserves_unrelated_lines_byte_for_byte(tmp_path):
     assert "TRAILING=ok\n" in body
 
 
-def test_update_env_file_sets_0600_perms(tmp_path):
+def test_update_env_file_sets_0644_perms(tmp_path):
+    """0644, not 0600: this runs inside the container (no USER directive,
+    so root), and over the bind mount that makes the file root-owned on the
+    host. 0600 would then lock out the host user entirely, including
+    `docker compose` itself needing to read it for `env_file:` on the next
+    `make update` — confirmed as a real production failure."""
     from lenny.core.ol_bootstrap import update_env_file
 
     env = tmp_path / ".env"
     env.write_text("X=1\n")
-    os.chmod(env, 0o644)
+    os.chmod(env, 0o600)
 
     update_env_file(str(env), {"X": "2"})
 
     mode = stat.S_IMODE(os.stat(env).st_mode)
-    assert mode == 0o600
+    assert mode == 0o644
 
 
 def test_update_env_file_creates_file_when_missing(tmp_path):

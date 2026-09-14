@@ -172,8 +172,16 @@ def update_env_file(env_path: str, updates: Mapping[str, str]) -> None:
     """Atomically rewrite `env_path`, replacing or appending `updates`.
 
     Mirrors `docker/utils/ol_configure.sh`'s `env_set`: preserves unrelated
-    lines byte-for-byte, writes the new file with 0600 perms before moving it
+    lines byte-for-byte, writes the new file with 0644 perms before moving it
     into place, and never leaves a half-written file behind.
+
+    0644, not 0600: this runs inside the container, which has no USER
+    directive and so writes as root. Over the bind mount that makes the file
+    root-owned on the host — 0600 would then lock out the host user
+    entirely, including `docker compose` itself needing to read this file
+    for `env_file:` on the next `make update`, which is exactly the bug this
+    comment is here to stop someone re-introducing. Anyone with host
+    filesystem read access already has bigger problems than a 644 file.
 
     Keys missing from the file are appended at the end. Newline characters are
     stripped from all values to prevent env-file corruption.
@@ -191,7 +199,7 @@ def update_env_file(env_path: str, updates: Mapping[str, str]) -> None:
         )
         try:
             with os.fdopen(fd, "w") as out:
-                os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+                os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
                 try:
                     with open(env_path, "r") as src:
                         for line in src:
