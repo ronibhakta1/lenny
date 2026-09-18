@@ -678,10 +678,13 @@ async def delete_items_bulk(request: Request, body: dict = Body(...)):
 
 
 @router.patch("/admin/items/{book_id}")
-async def update_item(request: Request, book_id: int, body: dict = Body(...)):
+async def update_item(request: Request, book_id: str, body: dict = Body(...)):
     """
     Update an item: encrypted/DRM flag, per-item loan duration, and/or its
     OpenLibrary edition key (fixes a wrong-edition import).
+
+    `book_id` accepts either a bare OLID (51008637) or an OpenLibrary edition
+    key (OL51008637M), same as DELETE.
 
     All fields optional, at least one required. `loan_duration_days: null`
     clears a per-item override back to the global setting; omitting a key
@@ -692,6 +695,10 @@ async def update_item(request: Request, book_id: int, body: dict = Body(...)):
     S3 object key names, so that one does move files (see LennyAPI.rename_item).
     """
     _require_admin(request)
+
+    book_id = parse_olid(book_id)
+    if book_id is None:
+        raise HTTPException(status_code=400, detail="Invalid OLID or edition key")
 
     # Validate the WHOLE payload before any of it takes effect. rename_item
     # below moves S3 files and commits the DB change — it cannot be undone
@@ -770,7 +777,7 @@ async def update_item(request: Request, book_id: int, body: dict = Body(...)):
 @router.post("/admin/items/{book_id}/reupload", status_code=status.HTTP_200_OK)
 async def reupload_item(
     request: Request,
-    book_id: int,
+    book_id: str,
     encrypted: bool = Form(False, description="Set to true if the file is encrypted"),
     file: UploadFile = File(..., description="The PDF or EPUB file to upload (max 50MB)"),
 ):
@@ -779,8 +786,14 @@ async def reupload_item(
     every loan on it are untouched — only the S3 object(s) and the
     encrypted/formats flags change. Under /admin/, so admin-token gated,
     unlike the IP-allowlisted /upload (which is for creating new items).
+
+    `book_id` accepts either a bare OLID or an OpenLibrary edition key, same
+    as PATCH/DELETE.
     """
     _require_admin(request)
+    book_id = parse_olid(book_id)
+    if book_id is None:
+        raise HTTPException(status_code=400, detail="Invalid OLID or edition key")
     try:
         LennyAPI.reupload(book_id, files=[file], encrypt=encrypted)
         return HTMLResponse(status_code=status.HTTP_200_OK, content="File replaced successfully.")
