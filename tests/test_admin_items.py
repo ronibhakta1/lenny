@@ -281,3 +281,51 @@ def test_patch_rename_does_not_run_when_another_field_is_invalid(client, admin_o
         )
     assert resp.status_code == 400
     mock_rename.assert_not_called()
+
+
+# ─── PATCH /admin/items/{book_id} — OLID-vs-bare-int path (production bug) ──
+# The library edit page's encrypted/loan-duration toggle sends the book's
+# OpenLibrary edition key (e.g. "OL62577438M"), same format the OPDS feed
+# accepts. `book_id: int` used to hard-reject that with a 422 before the
+# route body ever ran ("unable to find item" even though OPDS could read the
+# same book). Route now parses it like DELETE always has.
+
+def test_patch_accepts_ol_prefixed_book_id(client, admin_ok):
+    with patch("lenny.routes.api.configs.get_loan_duration_days", return_value=0), \
+         patch("lenny.routes.api.LennyAPI.update_item", return_value=_mock_updated_item(None)) as mock_update:
+        resp = client.patch(
+            "/v1/api/admin/items/OL42M", json={"encrypted": True}, headers=HDRS
+        )
+    assert resp.status_code == 200
+    mock_update.assert_called_once_with(42, encrypted=True)
+
+
+def test_patch_rejects_unparseable_book_id(client, admin_ok):
+    resp = client.patch(
+        "/v1/api/admin/items/not-an-olid", json={"encrypted": True}, headers=HDRS
+    )
+    assert resp.status_code == 400
+
+
+# ─── POST /admin/items/{book_id}/reupload — same OLID-vs-int path ───────────
+
+def test_reupload_accepts_ol_prefixed_book_id(client, admin_ok):
+    with patch("lenny.routes.api.LennyAPI.reupload") as mock_reupload:
+        resp = client.post(
+            "/v1/api/admin/items/OL42M/reupload",
+            headers=HDRS,
+            data={"encrypted": "false"},
+            files={"file": ("book.epub", b"fake epub bytes", "application/epub+zip")},
+        )
+    assert resp.status_code == 200
+    assert mock_reupload.call_args.args[0] == 42
+
+
+def test_reupload_rejects_unparseable_book_id(client, admin_ok):
+    resp = client.post(
+        "/v1/api/admin/items/not-an-olid/reupload",
+        headers=HDRS,
+        data={"encrypted": "false"},
+        files={"file": ("book.epub", b"fake epub bytes", "application/epub+zip")},
+    )
+    assert resp.status_code == 400
