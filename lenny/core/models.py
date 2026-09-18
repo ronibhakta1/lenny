@@ -274,6 +274,19 @@ class Item(Base):
             db.rollback()
             raise BookUnavailableError("No copies available for borrowing.")
 
+        # Close out any overdue-but-unreturned loans on this item (never active
+        # ones — those are already counted in item_active above, so if one
+        # existed this borrow would already have failed). A new borrow means
+        # the old patron's copy is being handed to someone else now, so treat
+        # it as returned rather than leaving a stale row for an admin to close.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        db.query(Loan).filter(
+            Loan.item_id == self.id,
+            Loan.returned_at == None,
+            Loan.due_date != None,
+            Loan.due_date <= now,
+        ).update({"returned_at": now}, synchronize_session=False)
+
         return Loan.create(self.id, hashed_email, hashed=True, duration_days=self.loan_duration_days)
 
 
