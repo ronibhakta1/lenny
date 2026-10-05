@@ -48,6 +48,7 @@ except ImportError:  # pragma: no cover - preflight in the driver covers this
 
 _N = int(os.environ.get("STEP_OFFSET", "0"))
 _FAILED = False
+_SKIPPED = 0
 
 
 def _c(code: str, text: str) -> str:
@@ -75,6 +76,20 @@ def value(label: str, val) -> bool:
 
 def note(text: str) -> None:
     print(f"        {_c('90', text)}")
+
+
+def skipped(label: str, reason: str) -> None:
+    """A check this checkout cannot carry -- neither a pass nor a failure.
+
+    Three states, not two. `ok` means the property holds; `FAIL` means it does
+    not; this means the thing being checked does not exist on this branch, and
+    collapsing it into either of the others is how a run lies. It is counted
+    and reported in the summary so an absent check cannot read as a present
+    one.
+    """
+    global _SKIPPED
+    _SKIPPED += 1
+    print(f"   {_c('33', 'skip')} {label} -> {_c('33', reason)}")
 
 
 def die(label: str, detail: str) -> NoReturn:
@@ -276,6 +291,7 @@ def main() -> int:
     from ol_half import run_openlibrary_half  # noqa: E402  (imported late on purpose)
     rc = run_openlibrary_half(
         step=step, value=value, note=note, die=die, cannot_run=cannot_run,
+        skipped=skipped,
         issuer=ISSUER, provider_name=PROVIDER_NAME, client_id=CLIENT_ID,
         client_secret=CLIENT_SECRET, redirect_uri=REDIRECT_URI,
         patron_email=PATRON_EMAIL, edition_id=EDITION_ID,
@@ -283,6 +299,9 @@ def main() -> int:
     )
     if rc:
         return rc
+    if _SKIPPED:
+        print(f"\n{_c('33', f'{_SKIPPED} check(s) were SKIPPED -- see the skip rows above.')}")
+        print(f"{_c('90', 'A skipped check is not a passing one. What it covers is unverified.')}")
     return 1 if _FAILED else 0
 
 
@@ -305,6 +324,11 @@ def selftest() -> int:
     _FAILED = False
     if not value("a real value", "42") or _FAILED:
         print("   SELFTEST FAILED: a non-empty value was not accepted")
+        return 1
+    before = _SKIPPED
+    skipped("a check this branch cannot carry", "absent here; not a pass")
+    if _SKIPPED != before + 1 or _FAILED:
+        print("   SELFTEST FAILED: skipped() must count, and must not fail the run")
         return 1
     print("selftest: ok -- empty rows print FAIL and fail the run; real values pass")
     return 0

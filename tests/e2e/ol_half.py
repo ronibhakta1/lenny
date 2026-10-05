@@ -61,7 +61,7 @@ def _acquisitions_ddl() -> tuple[str, str]:
     return m.group(0), f"{path}:{line}"
 
 
-def run_openlibrary_half(*, step, value, note, die, cannot_run, issuer,
+def run_openlibrary_half(*, step, value, note, die, cannot_run, skipped, issuer,
                          provider_name, client_id, client_secret, redirect_uri,
                          patron_email, edition_id, grant, break_step):
     username = "e2e_patron"
@@ -97,11 +97,16 @@ def run_openlibrary_half(*, step, value, note, die, cannot_run, issuer,
         note(f"--break issuer: Open Library is configured with {node_issuer}, "
              "which does not resolve. Everything downstream of it must go red.")
 
+    node_display_name = "E2E Test Library"
     config.lenny_nodes = {
         provider_name: {
             "issuer": node_issuer,
             "client_id": client_id,
             "client_secret": client_secret,
+            # Read back in the mediated_borrow step. A node IS a library, so the
+            # name a patron is shown has to come from the node's own config; a
+            # constant that happened to match would prove nothing.
+            "name": node_display_name,
         }
     }
     config.lenny_redirect_uri = redirect_uri
@@ -182,27 +187,109 @@ def run_openlibrary_half(*, step, value, note, die, cannot_run, issuer,
     value("expires", stored.expires.isoformat())
     value("providers for this patron", ", ".join(ProviderToken.get_providers(username)))
 
+    # ── Which borrow does Open Library offer for this book? ──────────────────
+    # `mediated_borrow` decides whether the button sends the patron through
+    # Open Library's own handshake or straight to the node's sign-in. It
+    # creates no loan and never contacts the node -- it is a routing decision,
+    # which is exactly why it is its OWN step and not a stand-in for the call
+    # that borrows. An earlier version of this file picked between the two with
+    # `getattr(lenny, "mediated_borrow", None) or lenny.borrow`, as though they
+    # were two names for one function. They are two different operations, and
+    # had their arities matched, this harness would have reported a borrow
+    # while creating no loan.
+    step("Open Library: mediated_borrow() routes the borrow button")
+    mediated = getattr(lenny, "mediated_borrow", None)
+    if mediated is None:
+        skipped("lenny.mediated_borrow()",
+                "absent from this checkout -- routing is decided elsewhere on "
+                "this branch, so nothing here covers it")
+        note("present on openlibrary#13552-descended branches; absent on #13687. "
+             "This is a statement about the checkout, not about the seam.")
+    else:
+        offered = mediated(ol_edition_key)
+        if not offered:
+            die(f"mediated_borrow({ol_edition_key}) offered nothing",
+                "a configured node lends this edition and an acquisitions row "
+                "says so, so the borrow button should route through Open "
+                "Library. None means the patron is sent to the node's own "
+                "sign-in instead, and nothing on this side is exercised.")
+        path, library = offered
+        value(f"mediated_borrow({ol_edition_key})", f"{path!r}, {library!r}")
+        if f"OL{ol_edition_id}M" not in path:
+            die("the routing path does not name the edition asked for",
+                f"{path!r} should contain OL{ol_edition_id}M")
+        value("path names the edition", f"OL{ol_edition_id}M in {path}")
+        if library != node_display_name:
+            die("the library name shown to the patron did not come from config",
+                f"configured name={node_display_name!r}, got {library!r}. The "
+                "node's own `name` is what a patron should be shown -- see "
+                "lenny.node_display_name().")
+        value("library name came from the node's config", repr(library))
+
+        # The control. A function that returns a plausible tuple for every
+        # edition would pass everything above; what makes the answer mean
+        # something is that it declines an edition no configured node lends.
+        absent_key = "/books/OL999999999M"
+        declined = mediated(absent_key)
+        if declined is not None:
+            die("mediated_borrow offered a node for an edition nobody lends",
+                f"{absent_key} has no acquisitions row, so this must be None; "
+                f"got {declined!r}. Without this, the check above would pass "
+                "for a function that answers yes to everything.")
+        value(f"control: mediated_borrow({absent_key})",
+              "None -- declines an edition no configured node lends")
+
     # ── Borrow through Open Library's own code ───────────────────────────────
-    borrow_fn = getattr(lenny, "mediated_borrow", None) or lenny.borrow
-    step(f"Open Library: borrow edition {ol_edition_id} via lenny.{borrow_fn.__name__}()")
+    # `lenny.borrow` unconditionally: it is the only function on any branch
+    # that creates a loan.
+    step(f"Open Library: borrow edition {ol_edition_id} via lenny.borrow()")
+
+    def _node_loan_keys():
+        """Books this patron holds at the node, read through OL's own code."""
+        return sorted(loan.get("book") for loan in lenny.provider_loans(username).loans)
+
+    before_keys = _node_loan_keys()
+    value("loans at the node before", f"{len(before_keys)} -- {', '.join(before_keys) or 'none'}")
+
     token = lenny.access_token_for(username, provider_name)
     if not token:
         die("access_token_for returned nothing",
             "the stored grant is unusable; the patron would be sent back through "
             "authorization. If --break issuer is on, this is the expected red.")
     value("access_token_for", f"{token[:14]}… ({len(token)} chars)")
-    try:
-        result = borrow_fn({"issuer": node_issuer}, token, ol_edition_id)
-    except lenny.LennyBorrowError as exc:
-        die(f"lenny.{borrow_fn.__name__}() refused: {exc.error}",
-            f"HTTP {exc.status} -- {exc.message}")
-    except Exception as exc:  # noqa: BLE001 - the node is the thing under test
-        die(f"lenny.{borrow_fn.__name__}() could not reach the node",
-            f"{type(exc).__name__}: {exc}")
+
+    if break_step == "no-loan":
+        note("--break no-loan: skipping the actual lenny.borrow() call and "
+             "fabricating its response. The loan-count check below must catch it.")
+        result = {"status": "borrowed", "edition_id": ol_edition_id,
+                  "due_at": "2099-01-01T00:00:00+00:00"}
+    else:
+        try:
+            result = lenny.borrow({"issuer": node_issuer}, token, ol_edition_id)
+        except lenny.LennyBorrowError as exc:
+            die(f"lenny.borrow() refused: {exc.error}",
+                f"HTTP {exc.status} -- {exc.message}")
+        except Exception as exc:  # noqa: BLE001 - the node is the thing under test
+            die("lenny.borrow() could not reach the node",
+                f"{type(exc).__name__}: {exc}")
     value("node response status", result.get("status"))
     value("node response edition_id", result.get("edition_id"))
     result_due_at = result.get("due_at")
     value("node response due_at", result_due_at or "no expiry")
+
+    # A borrow that returns a plausible dict without creating a loan is the
+    # exact failure this step exists to make impossible. The node's own loan
+    # list is the outcome; the response body is only the operation.
+    after_keys = _node_loan_keys()
+    value("loans at the node after", f"{len(after_keys)} -- {', '.join(after_keys) or 'none'}")
+    gained = sorted(set(after_keys) - set(before_keys))
+    if gained != [ol_edition_key]:
+        die("the borrow returned, but the node gained no such loan",
+            f"before={before_keys} after={after_keys} gained={gained}, "
+            f"expected exactly ['{ol_edition_key}'].\n"
+            "A response body says the call completed. Only the node's loan list "
+            "says a loan exists, and those are different claims.")
+    value("the node gained exactly this loan", gained[0])
 
     # ── Refresh, with the patron's row locked ────────────────────────────────
     # Forced by backdating the stored expiry, because a token minted a minute

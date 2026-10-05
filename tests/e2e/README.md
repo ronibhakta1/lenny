@@ -33,8 +33,10 @@ reassuring direction.
 * `oldev:latest` — Open Library's dev image. Override with `OL_IMAGE`.
 * `postgres:16`. Override with `PG_IMAGE`.
 * An Open Library checkout carrying the Lenny borrow code: it must have
-  `openlibrary/core/provider_tokens.py` and a `mediated_borrow()` or `borrow()`
-  in `openlibrary/plugins/upstream/lenny.py`. Pass it with `--openlibrary`, or
+  `openlibrary/core/provider_tokens.py` and a `borrow()` in
+  `openlibrary/plugins/upstream/lenny.py`. `mediated_borrow()` is *also*
+  exercised where it exists, but it is not a substitute for `borrow()` — see
+  below. Pass it with `--openlibrary`, or
   set `OL_CHECKOUT`. Today that means a branch descended from openlibrary#13552
   or #13687; `master` will make the script exit `2`.
 
@@ -57,11 +59,28 @@ them — the api image runs uvicorn directly.
 schema, the OTP stub, an operator-registered OAuth client, and two lendable
 items. 6–12 walk Lenny's side: the patron's OTP sign-in, RFC 8414 discovery,
 PKCE S256 authorization, the consent screen, the code→token exchange, a borrow
-and the patron's loans. 13–20 are Open Library's own code: the bootstrap, the
-two tables, `node_for_edition`, `ProviderToken.upsert`, a borrow through
-`lenny.borrow()`/`mediated_borrow()`, a forced refresh through
-`node_refresher()`, `provider_loans()`, and finally `datetime_from_isoformat()`
-on the expiry that comes back — the last hop before the loans page renders.
+and the patron's loans. 13–21 are Open Library's own code: the bootstrap, the
+two tables, `node_for_edition`, `ProviderToken.upsert`, `mediated_borrow()`, a
+borrow through `lenny.borrow()`, a forced refresh through `node_refresher()`,
+`provider_loans()`, and finally `datetime_from_isoformat()` on the expiry that
+comes back — the last hop before the loans page renders.
+
+**`mediated_borrow()` and `borrow()` are different operations and get different
+steps.** `mediated_borrow(edition_key)` returns `(path, library_name)` or
+`None`: it decides whether the borrow button routes through Open Library at
+all, creates no loan, and never contacts the node. `borrow(pending, token,
+edition_id)` POSTs to the node and creates the loan. An earlier version of this
+harness chose between them with `getattr(lenny, "mediated_borrow", None) or
+lenny.borrow`, as though they were two names for one function; on a checkout
+carrying both, that called the wrong one. `mediated_borrow()` is present on
+openlibrary#13552-descended branches and absent on #13687, where its step
+reports **`skip`** — a third state that is neither a pass nor a failure, counted
+and restated in the summary so an absent check cannot read as a present one.
+
+**The borrow step asserts a loan appeared, not that a call returned.** It reads
+the node's loans through `provider_loans()` before and after, and requires the
+set to have gained exactly the edition it asked for. A response body says the
+operation completed; only the loan list says a loan exists.
 
 Every row prints the value it rests on. A row with no value prints `FAIL`, not a
 blank, and fails the run; `--selftest` watches that guard fire rather than
@@ -93,6 +112,7 @@ they should turn red; a run that goes red somewhere else is itself a finding.
 ```bash
 tests/e2e/run_borrow_e2e.sh --openlibrary PATH --break issuer
 tests/e2e/run_borrow_e2e.sh --openlibrary PATH --break advertised-issuer
+tests/e2e/run_borrow_e2e.sh --openlibrary PATH --break no-loan
 ```
 
 * `--break issuer` configures Open Library with a node issuer that does not
@@ -102,6 +122,13 @@ tests/e2e/run_borrow_e2e.sh --openlibrary PATH --break advertised-issuer
   resolve while Open Library is configured with the one that works. Expect red
   at step 8, discovery. This is the hazard below, caught earlier than production
   would catch it.
+* `--break no-loan` skips the real `lenny.borrow()` call and fabricates a
+  plausible success response. Expect three green rows reporting a borrow — and
+  then red in that same step on `the borrow returned, but the node gained no
+  such loan`. This is the regression guard for the defect that prompted it: the
+  pre-fix harness, measured, did eventually go red on this, but two steps later
+  at `provider_loans()` and only because that step happened to assert both
+  books, while the borrow step itself showed three greens.
 
 Under `--break`, a run in which everything passes exits `1` and says so: the
 harness could not see the failure it was told to produce.
@@ -144,6 +171,18 @@ this harness, that is noted.
   still dies. The node's `due_at` *is* timezone-aware;
   `lenny._expiry` normalises it. Step 20 checks both directions: the normalised
   value parses, and the node's raw value still does not.
+* **`mediated_borrow()` does not borrow.** On openlibrary#13552-descended
+  branches it is `mediated_borrow(edition_key) -> tuple[str, str] | None` — a
+  routing decision that creates no loan and makes no network call — while
+  `borrow(pending, token, edition_id)` is what creates the loan. Treating the
+  first as a fallback for the second calls the wrong function; on a checkout
+  carrying both it raised `TypeError: mediated_borrow() takes 1 positional
+  argument but 3 were given`, which is the lucky outcome. Had the arities
+  matched it would have reported a borrow that never happened.
+* **The library name a patron is shown comes from the node's own `name` key**
+  (`lenny.node_display_name`), falling back to the provider name titled. The
+  harness configures a name and asserts it comes back, so the value is one that
+  flowed from config rather than a constant that happens to match.
 * **`provider_loans` never raises, and returns empty when `lenny_nodes` is
   unset** — without ever touching the database. An empty result is not evidence
   the node is healthy.

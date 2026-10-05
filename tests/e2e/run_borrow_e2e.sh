@@ -223,14 +223,26 @@ step_value "openlibrary image" "${OL_IMAGE} $(docker image inspect "$OL_IMAGE" -
 step_value "openlibrary checkout" "${OL_CHECKOUT} @ $(git -C "$OL_CHECKOUT" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
 step_value "lenny worktree" "${REPO_ROOT} @ $(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 
-# A named function the flow script also reports, so a reader can tell which
-# borrow entry point this checkout actually has (`mediated_borrow` on #13552,
-# `borrow` on #13687).
-OL_BORROW_FN="$(grep -oE '^def (mediated_borrow|borrow)\(' "${OL_CHECKOUT}/openlibrary/plugins/upstream/lenny.py" | head -1 | sed 's/^def //; s/($//; s/(//')"
-step_value "openlibrary borrow entry point" "lenny.${OL_BORROW_FN:-<none found>}()"
-[ -n "$OL_BORROW_FN" ] || cannot_run \
-  "${OL_CHECKOUT}/openlibrary/plugins/upstream/lenny.py defines neither
-   mediated_borrow() nor borrow(). Wrong branch."
+# `borrow()` is the only function on any branch that creates a loan, so it is
+# required. `mediated_borrow()` decides whether the borrow button routes through
+# Open Library at all -- a different operation, present only on
+# openlibrary#13552-descended branches, and covered by its own step. These are
+# reported separately because an earlier version of this harness treated them as
+# two names for one function and would have reported a borrow that never
+# happened.
+OL_LENNY_PY="${OL_CHECKOUT}/openlibrary/plugins/upstream/lenny.py"
+grep -qE '^def borrow\(' "$OL_LENNY_PY" || cannot_run \
+  "${OL_LENNY_PY} defines no borrow(). That is the function that creates the
+   loan, so there is nothing here to exercise. Wrong branch."
+step_value "openlibrary lenny.borrow()" \
+  "present (line $(grep -nE '^def borrow\(' "$OL_LENNY_PY" | cut -d: -f1)) -- creates the loan"
+if grep -qE '^def mediated_borrow\(' "$OL_LENNY_PY"; then
+  step_value "openlibrary lenny.mediated_borrow()" \
+    "present (line $(grep -nE '^def mediated_borrow\(' "$OL_LENNY_PY" | cut -d: -f1)) -- routes the button; covered by its own step"
+else
+  step_value "openlibrary lenny.mediated_borrow()" \
+    "absent on this checkout -- that step will report skip, not pass"
+fi
 
 # ── the deliberate-failure drill ─────────────────────────────────────────────
 # A harness nobody has watched fail is not an instrument. Both modes name the
@@ -245,6 +257,13 @@ case "$BREAK_STEP" in
     # Expected: the node stack and the whole Lenny half are green; the Open
     # Library half goes red at its first call that leaves the process.
     ;;
+  no-loan)
+    # Step 17 skips the actual lenny.borrow() call and fabricates a plausible
+    # response. Expected: green until the loan-count check in that same step,
+    # which compares the node's loans before and after. This is the regression
+    # guard for the defect that prompted it -- a borrow reported from a
+    # response body rather than from a loan that exists.
+    ;;
   advertised-issuer)
     # The node advertises a host nothing can resolve, while Open Library is
     # configured with the one that works. This is the documented hazard:
@@ -256,7 +275,7 @@ case "$BREAK_STEP" in
     ADVERTISED_HOST="unreachable-node.invalid"
     ;;
   *)
-    echo "unknown --break mode: ${BREAK_STEP} (try: issuer, advertised-issuer)" >&2
+    echo "unknown --break mode: ${BREAK_STEP} (try: issuer, advertised-issuer, no-loan)" >&2
     exit "$EXIT_CANNOT_RUN" ;;
 esac
 [ -z "$BREAK_STEP" ] || printf '\n%s\n' "$(_c '1;33' "--break ${BREAK_STEP}: this run is EXPECTED to fail. Exit 0 would be the bug.")"
