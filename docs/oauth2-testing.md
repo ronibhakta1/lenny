@@ -1,3 +1,21 @@
+# End-to-end tests
+
+## The whole seam, in one command
+
+```bash
+tests/e2e/run_borrow_e2e.sh --openlibrary /path/to/an/openlibrary/checkout
+```
+
+Brings up its own throwaway node, walks a patron from "never signed in" to
+"Open Library holds my loan" — both halves, including Open Library's own
+`provider_tokens`, `lenny.py` and `datetime_from_isoformat` — and tears
+everything down. Exits `0` when the seam works, `1` when it is broken, and `2`
+when it could not run at all. See [tests/e2e/README.md](../tests/e2e/README.md)
+for what each step proves, what it deliberately does not, and the deliberate-
+failure drill.
+
+The rest of this file covers the narrower harnesses that predate it.
+
 # End-to-end browser tests
 
 These drive a real Chromium against a running Lenny node. They are skipped
