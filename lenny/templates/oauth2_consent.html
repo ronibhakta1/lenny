@@ -89,7 +89,8 @@
   }
   .account__email { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
   .account__switch {
-    flex: 1 1 100%; padding: 9px 12px; border-radius: 8px; text-align: center;
+    flex: 1 1 100%; min-height: 44px; padding: 9px 12px; border-radius: 8px; text-align: center;
+    display: flex; align-items: center; justify-content: center;
     border: 1px solid var(--input); background: var(--card);
     font-size: 13px; font-weight: 600; color: var(--primary); text-decoration: none;
   }
@@ -98,7 +99,7 @@
   .consent-lead { font-size: 14px; color: var(--muted-foreground); margin: 0 0 10px; }
   .scopes { list-style: none; padding: 0; margin: 0 0 20px; text-align: left; }
   .scopes li {
-    display: flex; align-items: center; gap: 12px;
+    display: grid; grid-template-columns: 32px 1fr; align-items: center; gap: 4px 12px;
     padding: 12px 14px; margin-bottom: 8px; border-radius: 8px;
     background: var(--accent); border: 1px solid var(--border);
   }
@@ -107,9 +108,12 @@
     display: flex; align-items: center; justify-content: center;
     background: var(--card); border: 1px solid var(--border); color: var(--accent-foreground);
   }
-  .scopes__text { flex: 1; font-size: 15px; font-weight: 600; color: var(--card-foreground); }
+  /* Icon, then the sentence, then its technical name underneath: the same shape
+     at every width, so no row is squeezed and no two rows differ. */
+  .scopes__icon { grid-row: 1 / span 2; }
+  .scopes__text { grid-column: 2; font-size: 15px; font-weight: 600; color: var(--card-foreground); }
   .scopes code {
-    flex: none; font-size: 11px; color: var(--accent-foreground);
+    grid-column: 2; justify-self: start; font-size: 11px; color: var(--accent-foreground);
     background: var(--card); border: 1px solid var(--border);
     border-radius: 999px; padding: 2px 8px;
   }
@@ -119,14 +123,14 @@
   }
   .destination__host {
     font-size: 13px; color: var(--card-foreground); font-weight: 600;
-    word-break: break-all;
+    overflow-wrap: anywhere;
   }
   .reassure {
     margin: 0 0 24px; padding-top: 14px; border-top: 1px solid var(--border);
     font-size: 13px; line-height: 1.5; color: var(--muted-foreground); text-align: left;
   }
   .actions { display: flex; flex-direction: column; gap: 10px; }
-  .actions .btn { width: 100%; padding: 13px 24px; font-size: 15px; }
+  .actions .btn { width: 100%; min-height: 46px; padding: 13px 24px; font-size: 15px; }
   /* The base .btn is white text and expects a background; a button with none
      rendered as invisible text on the card. */
   .btn--secondary {
