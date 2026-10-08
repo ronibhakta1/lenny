@@ -163,6 +163,40 @@ def _error(code: str, description: str, status: int = 400) -> JSONResponse:
                         content={"error": code, "error_description": description})
 
 
+_PROBLEMS = {
+    "invalid_client": (
+        "This app isn't set up with this library",
+        "The app that sent you here isn't registered with this library, or it has been turned off.",
+    ),
+    "invalid_request": (
+        "This app can't sign you in yet",
+        "The app's return address isn't one this library has on file for it.",
+    ),
+}
+
+
+def _problem_for_patron(request: Request, code: str, description: str, status: int = 400) -> Response:
+    """A problem on the very first hop, before there is anywhere safe to send an
+    error (RFC 6749 §4.1.2.1: do not redirect on a bad client_id or redirect_uri).
+
+    The person looking at it is a patron who followed a link, not a program. A
+    browser gets a page that says what happened and what to do; an API client
+    keeps the JSON. Same status and same message text either way, so nothing is
+    revealed about whether a client id exists or is disabled.
+    """
+    if "text/html" not in (request.headers.get("accept") or "").lower():
+        return _error(code, description, status)
+    heading, explanation = _PROBLEMS.get(code, ("Sign-in problem", description))
+    page = request.app.templates.TemplateResponse("oauth2_error.html", {
+        "request": request, "code": code, "description": description,
+        "heading": heading, "explanation": explanation,
+        "client_id": (request.query_params.get("client_id") or "")[:64],
+    }, status_code=status)
+    page.headers["X-Frame-Options"] = "DENY"
+    page.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    return page
+
+
 def _invalid_client() -> JSONResponse:
     """RFC 6749 §5.2: a 401 for a client that attempted Basic auth MUST carry
     the challenge, or the client cannot tell what to do differently."""
@@ -221,11 +255,11 @@ async def authorize(
     """
     client = OAuthClient.get(client_id or "")
     if client is None:
-        return _error("invalid_client", "Unknown client_id.")
+        return _problem_for_patron(request, "invalid_client", "Unknown client_id.")
     if not client.allows_redirect(redirect_uri or ""):
         # Not redirected back — see the note above.
-        return _error("invalid_request",
-                      "redirect_uri is not registered for this client.")
+        return _problem_for_patron(request, "invalid_request",
+                                   "redirect_uri is not registered for this client.")
 
     # From here the redirect target is trusted, so errors may travel to it.
     if response_type != "code":

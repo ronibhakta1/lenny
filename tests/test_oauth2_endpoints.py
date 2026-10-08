@@ -358,6 +358,64 @@ class TestAuthorize:
         assert href.startswith("/v1/api/oauth2/authorize?")
         assert f"client_id={obj.client_id}" in href and "code_challenge=" in href
 
+    def test_a_browser_gets_a_human_page_for_an_unregistered_app(self, app_client):
+        """A patron who follows a link from an unregistered app is not a program."""
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL, params={
+            "client_id": "nobody-home", "redirect_uri": REDIRECT, "response_type": "code",
+            "code_challenge": challenge, "code_challenge_method": "S256"},
+            headers={"Accept": "text/html,application/xhtml+xml"}, follow_redirects=False)
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("text/html")
+        assert "set up with this library" in r.text
+        assert "App Access" in r.text, "it must say who can fix it and where"
+        assert "nobody-home" in r.text and "invalid_client" in r.text
+        assert '"error"' not in r.text, "no raw JSON in front of a patron"
+        assert r.headers["x-frame-options"] == "DENY"
+
+    def test_a_program_still_gets_json_for_the_same_mistake(self, app_client):
+        _, challenge = pkce()
+        for accept in (None, "application/json", "*/*"):
+            r = app_client.get(AUTHORIZE_URL, params={
+                "client_id": "nobody-home", "redirect_uri": REDIRECT, "response_type": "code",
+                "code_challenge": challenge, "code_challenge_method": "S256"},
+                headers={"Accept": accept} if accept else {}, follow_redirects=False)
+            assert r.status_code == 400 and r.json()["error"] == "invalid_client"
+
+    def test_a_browser_gets_a_human_page_for_an_unregistered_return_address(
+            self, app_client, client):
+        obj, _ = client
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL,
+                           params=authorize_params(obj, challenge, redirect_uri="https://evil.example.com/cb"),
+                           headers={"Accept": "text/html"}, follow_redirects=False)
+        assert r.status_code == 400 and r.headers["content-type"].startswith("text/html")
+        assert "return address" in r.text
+        assert "evil.example.com" not in r.text, "never echo an unregistered address back"
+
+    def test_attack_the_problem_page_never_renders_markup_from_the_request(self, app_client):
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL, params={
+            "client_id": "<script>alert(1)</script>", "redirect_uri": REDIRECT,
+            "response_type": "code", "code_challenge": challenge,
+            "code_challenge_method": "S256"},
+            headers={"Accept": "text/html"}, follow_redirects=False)
+        assert "<script>alert(1)</script>" not in r.text
+        assert "&lt;script&gt;" in r.text
+
+    def test_a_disabled_app_looks_the_same_as_an_unknown_one(self, app_client, client):
+        """The page must not reveal which client ids exist."""
+        obj, _ = client
+        _, challenge = pkce()
+        OAuthClient.disable(obj.client_id)
+        a = app_client.get(AUTHORIZE_URL, params=authorize_params(obj, challenge),
+                           headers={"Accept": "text/html"}, follow_redirects=False)
+        b = app_client.get(AUTHORIZE_URL, params=authorize_params(obj, challenge, client_id="never-existed"),
+                           headers={"Accept": "text/html"}, follow_redirects=False)
+        strip = lambda r: re.sub(r"<code>[^<]*</code>", "", r.text)
+        assert a.status_code == b.status_code == 400
+        assert strip(a) == strip(b)
+
     def test_deny_redirects_with_access_denied(self, app_client, client, session_cookie):
         obj, _ = client
         _, challenge = pkce()
