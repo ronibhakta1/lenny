@@ -108,3 +108,59 @@ def test_attack_a_revoked_client_cuts_the_token_off():
     client_id = AccessToken.authenticate(token).client_id
     OAuthClient.disable(client_id)
     assert shelf(token).status_code == 401
+
+
+# ─── /profile and the cookie login (implicit), for both flows ────────────────
+
+def cookie_for(email):
+    from lenny.core import auth
+    return auth.create_session_cookie(email)
+
+
+def get(path, token=None, cookie=None):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    cookies = {"session": cookie} if cookie else {}
+    return TestClient(app).get(f"/v1/api/{path}", headers=headers, cookies=cookies)
+
+
+def test_profile_without_credentials_is_a_401():
+    assert get("profile").status_code == 401
+
+
+def test_profile_for_a_cookie_login_keeps_name_and_email():
+    """The implicit flow's patron is unchanged by any of this."""
+    lend_to(ME)
+    r = get("profile", cookie=cookie_for(ME))
+    assert r.status_code == 200
+    meta = r.json()["metadata"]
+    assert meta["email"] == ME and meta["name"] == "shelf-patron"
+    from lenny.configs import LOAN_LIMIT
+    assert r.json()["loans"]["available"] == max(0, LOAN_LIMIT - 1)
+
+
+def test_profile_for_a_bearer_token_counts_loans_but_shows_no_address():
+    lend_to(ME)
+    r = get("profile", token=token_for(ME))
+    assert r.status_code == 200
+    body = r.json()
+    from lenny.configs import LOAN_LIMIT
+    assert body["loans"]["available"] == max(0, LOAN_LIMIT - 1)
+    assert "email" not in body["metadata"] and "name" not in body["metadata"]
+    assert hash_email(ME) not in r.text, "the stored hash must never be shown as an address"
+
+
+def test_attack_profile_token_without_loans_read_is_refused():
+    assert get("profile", token=token_for(ME, scope="borrow")).status_code == 401
+
+
+def test_attack_profile_token_never_counts_another_patrons_loans():
+    lend_to(ME)
+    from lenny.configs import LOAN_LIMIT
+    r = get("profile", token=token_for(SOMEONE_ELSE))
+    assert r.json()["loans"]["available"] == LOAN_LIMIT
+
+
+def test_shelf_still_works_with_a_cookie_login():
+    with patch("lenny.core.api.LennyDataProvider.search", side_effect=requests.exceptions.ConnectionError("x")):
+        r = get("shelf", cookie=cookie_for(ME))
+    assert r.status_code == 200

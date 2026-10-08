@@ -1012,19 +1012,27 @@ class LennyAPI:
         return enriched_loans
 
     @classmethod
-    def get_user_profile(cls, email: str, name: Optional[str] = None) -> dict:
+    def get_user_profile(cls, email: str, name: Optional[str] = None, hashed: bool = False) -> dict:
         """
         Retrieves loan stats and generates the OPDS User Profile using LennyDataProvider.
+
+        `hashed=True` means *email* is a `hash_email()` digest (all an OAuth2
+        token carries). The profile then has no name or email: Lenny stores only
+        the hash, and a hash is not something to show as an address.
         """
-        current_loans = cls.get_borrowed_items(email)
+        current_loans = cls.get_borrowed_items(email, hashed=hashed)
         loans_count = len(current_loans)
-        
-        return LennyDataProvider.get_user_profile(
-            name=name,
-            email=email,
+
+        profile = LennyDataProvider.get_user_profile(
+            name=None if hashed else name,
+            email=None if hashed else email,
             active_loans_count=loans_count,
             loan_limit=LOAN_LIMIT
         )
+        if hashed:
+            for key in ("name", "email"):
+                profile["metadata"].pop(key, None)
+        return profile
 
     @classmethod
     def get_shelf_feed(cls, email: str, auth_mode_direct: bool = False, hashed: bool = False) -> dict:

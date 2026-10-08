@@ -920,7 +920,8 @@ async def profile(request: Request, session: Optional[str] = Cookie(None)):
     Returns the OPDS 2.0 User Profile.
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(request, session)
+    # Cookie login (implicit) or an OAuth2 bearer token with loans:read (PKCE).
+    email, email_hashed = get_authenticated_identity(request, session)
     
     if not email:
         return JSONResponse(
@@ -929,8 +930,8 @@ async def profile(request: Request, session: Optional[str] = Cookie(None)):
             media_type="application/opds-authentication+json"
         )
     
-    name = email.split("@")[0]
-    profile_data = LennyAPI.get_user_profile(email, name)
+    name = None if email_hashed else email.split("@")[0]
+    profile_data = LennyAPI.get_user_profile(email, name, hashed=email_hashed)
 
     return JSONResponse(
         profile_data, 
