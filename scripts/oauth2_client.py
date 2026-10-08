@@ -224,7 +224,7 @@ def cmd_register(args) -> int:
     try:
         client, secret = OAuthClient.register(
             name=args.name, redirect_uris=list(args.redirect_uri), scopes=scopes,
-            is_confidential=not args.public,
+            is_confidential=not args.public, client_id=args.client_id,
         )
     except ValueError as exc:
         print(exc, file=sys.stderr)
@@ -243,7 +243,7 @@ def cmd_register(args) -> int:
 
 
 def cmd_list(args) -> int:
-    """Client ids are server-generated, so this is the only way to find one."""
+    """Client ids are generated unless chosen at registration, so this is how to find one."""
     rows = db.query(OAuthClient).order_by(OAuthClient.created_at.desc()).all()
     if not rows:
         print("No registered clients.")
@@ -299,6 +299,9 @@ def main() -> int:
                           help="one or more registered callback URLs")
     register.add_argument("--scope", action="append",
                           help=f"repeatable; defaults to all ({' '.join(sorted(SCOPES))})")
+    register.add_argument("--client-id",
+                          help="use this client_id instead of a generated one, for a "
+                               "consumer that ships with a fixed id")
     register.add_argument("--public", action="store_true",
                           help="a native app that cannot keep a secret; "
                                "authenticates with PKCE alone (RFC 8252)")

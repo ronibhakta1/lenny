@@ -76,6 +76,13 @@ SCOPES = {
     "borrow": "Borrow and return books on your behalf",
 }
 
+# OpenID Connect identity scopes. Lenny's own server is not an OIDC provider, but
+# generic OIDC-minded clients send these by habit. They carry no permission here,
+# so they are ignored rather than treated as an unknown-scope error.
+OIDC_IDENTITY_SCOPES = {"openid", "profile", "email", "offline_access"}
+
+CLIENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}")
+
 
 _PK = BigInteger().with_variant(Integer, "sqlite")
 
@@ -217,14 +224,29 @@ class OAuthClient(Base):
     @classmethod
     def register(cls, name: str, redirect_uris: list[str],
                  scopes: Optional[list[str]] = None,
-                 is_confidential: bool = True) -> tuple["OAuthClient", Optional[str]]:
+                 is_confidential: bool = True,
+                 client_id: Optional[str] = None) -> tuple["OAuthClient", Optional[str]]:
         """Create a client. Returns `(client, client_secret)`.
+
+        `client_id` lets an operator pick the id, for a consumer that ships with a
+        fixed one (e.g. a reading app). It is not a secret — the registered
+        redirect_uris are what bind a client — so a chosen id is as safe as a
+        minted one. Omitted, a random id is minted.
 
         The secret is returned exactly once and never recoverable afterwards —
         only its hash is stored, so a database dump yields nothing replayable.
 
-        Raises ValueError for a redirect_uri that could not be honoured.
+        Raises ValueError for a redirect_uri that could not be honoured, or a
+        client_id that is malformed or already taken (a disabled client keeps its
+        id, so it cannot be reused to resurrect old tokens).
         """
+        if client_id is not None:
+            if not CLIENT_ID_RE.fullmatch(client_id):
+                raise ValueError(
+                    f"{client_id!r} cannot be a client_id: use 3-64 letters, digits, "
+                    "'.', '_' or '-', starting with a letter or digit.")
+            if db.query(cls).filter(cls.client_id == client_id).first():
+                raise ValueError(f"client_id {client_id!r} is already registered.")
         for uri in redirect_uris:
             if not acceptable_redirect(uri):
                 raise ValueError(
@@ -234,7 +256,7 @@ class OAuthClient(Base):
 
         secret = _mint(32) if is_confidential else None
         client = cls(
-            client_id=_mint(16),
+            client_id=client_id or _mint(16),
             client_secret_hash=_hash(secret) if secret else None,
             name=name,
             redirect_uris="\n".join(redirect_uris),
@@ -298,7 +320,10 @@ class OAuthClient(Base):
         allowed = self.allowed_scopes()
         if not requested:
             return " ".join(sorted(allowed)), None
-        asked = {s for s in requested.split() if s}
+        asked = {s for s in requested.split() if s} - OIDC_IDENTITY_SCOPES
+        if not asked:
+            # Only identity scopes were sent: same as sending none.
+            return " ".join(sorted(allowed)), None
         if unknown := asked - set(SCOPES):
             return None, f"unknown scope(s): {' '.join(sorted(unknown))}"
         if ungranted := asked - allowed:

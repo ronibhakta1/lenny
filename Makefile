@@ -112,10 +112,11 @@ redeploy:
 # Registration is open by default, so an operator needs to see who registered
 # and be able to stop one without opening a Python console.
 # usage: make oauth2-register NAME="Open Library" URI=https://openlibrary.org/lenny/callback
+# optional: CLIENT_ID=reader-archive-org to choose the id a consumer ships with
 .PHONY: oauth2-register
 oauth2-register:
 	@test -n "$(NAME)" -a -n "$(URI)" || { echo 'usage: make oauth2-register NAME="Open Library" URI=https://…/callback [SCOPE=loans:read] [PUBLIC=1]'; exit 1; }
-	@docker compose -p lenny exec api python3 scripts/oauth2_client.py register "$(NAME)" "$(URI)" $(if $(SCOPE),--scope $(SCOPE)) $(if $(PUBLIC),--public)
+	@docker compose -p lenny exec api python3 scripts/oauth2_client.py register "$(NAME)" "$(URI)" $(if $(SCOPE),--scope $(SCOPE)) $(if $(CLIENT_ID),--client-id $(CLIENT_ID)) $(if $(PUBLIC),--public)
 
 # Open Library is the consumer nearly every node wants, so it gets its own
 # targets rather than an incantation. Both are safe to run twice.

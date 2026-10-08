@@ -896,6 +896,37 @@ class TestNativeAppClients:
         assert token.status_code == 200, token.text
         assert token.json()["scope"] == "loans:read"
 
+    def test_fixed_id_app_sending_openid_completes_the_flow(
+            self, app_client, session_cookie):
+        """A reading app that ships a fixed client_id and sends `scope=openid`
+        out of habit must get a token, without gaining any permission it was
+        not registered for."""
+        obj, _ = OAuthClient.register(
+            name="Book Server", redirect_uris=[REDIRECT], scopes=["loans:read"],
+            is_confidential=False, client_id="reader-archive-org")
+
+        verifier, challenge = pkce()
+        r = consent(app_client, obj, challenge, session_cookie, scope="openid")
+        assert r.status_code == 303, r.text
+        code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+
+        token = app_client.post(TOKEN_URL, data={
+            "grant_type": "authorization_code", "code": code,
+            "redirect_uri": REDIRECT, "code_verifier": verifier,
+            "client_id": "reader-archive-org"})
+        assert token.status_code == 200, token.text
+        assert token.json()["scope"] == "loans:read"
+
+    def test_attack_unregistered_fixed_id_still_refused(self, app_client):
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL, params={
+            "client_id": "reader-archive-org", "redirect_uri": REDIRECT,
+            "response_type": "code", "scope": "openid", "state": "s",
+            "code_challenge": challenge, "code_challenge_method": "S256"},
+            follow_redirects=False)
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_client"
+
     def test_metadata_advertises_public_clients(self, app_client):
         meta = app_client.get("/.well-known/oauth-authorization-server").json()
         assert "none" in meta["token_endpoint_auth_methods_supported"]
