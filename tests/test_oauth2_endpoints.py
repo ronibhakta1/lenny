@@ -258,6 +258,24 @@ class TestAuthorize:
         # Scopes are described in words, not just symbols.
         assert "on loan" in r.text
 
+    def test_consent_screen_is_usable(self, app_client, client, session_cookie):
+        """The screen must render both choices visibly, read access before write,
+        and name where the patron is sent. "Not now" once had no background and
+        rendered as white text on white, so a patron could not see how to decline."""
+        obj, _ = client
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL, params=authorize_params(obj, challenge),
+                           cookies={"session": session_cookie}, follow_redirects=False)
+        assert r.status_code == 200
+        html = r.text
+        assert 'class="btn btn--primary"' in html and 'value="allow"' in html
+        assert 'class="btn btn--secondary"' in html and 'value="deny"' in html
+        assert ".btn--secondary" in html, "the decline button has no style of its own"
+        assert html.index("loans:read") < html.index(">borrow<"), \
+            "the read scope should be listed before the one that acts"
+        assert "You will return to" in html
+        assert '<meta charset="utf-8">' in html
+
     @pytest.mark.parametrize("override,expected", [
         ({"response_type": "token"}, "unsupported_response_type"),
         ({"code_challenge": ""}, "invalid_request"),
