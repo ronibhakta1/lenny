@@ -122,7 +122,8 @@ def get_authenticated_email(
 
 def get_authenticated_identity(
     request: Optional[Request] = None,
-    session: Optional[str] = None
+    session: Optional[str] = None,
+    scope: str = "loans:read",
 ) -> tuple[Optional[str], bool]:
     """Like `get_authenticated_email`, but also recognizes an OAuth2 bearer
     token — the credential an `ol`-mode consumer (e.g. Open Library) presents
@@ -137,13 +138,16 @@ def get_authenticated_identity(
     email (from the cookie) — callers that check loan ownership need to know
     which one they got, since `Loan.exists(..., hashed=...)` compares them
     differently.
+
+    `scope` is what the token must have been granted: `loans:read` to look,
+    `borrow` to act. A cookie login is not scoped.
     """
     email = get_authenticated_email(request, session)
     if email:
         return email, False
     if session:
         tok = AccessToken.authenticate(session)
-        if tok and tok.has_scope("loans:read"):
+        if tok and tok.has_scope(scope):
             return tok.patron_email_hash, True
     return None, False
 
@@ -349,11 +353,12 @@ async def borrow_item(request: Request, response: Response, book_id: int, format
          raise HTTPException(status_code=404, detail="Item not found")
 
     session = extract_session(request, session)
-    email = get_authenticated_email(request, session)
+    # Cookie login, or an OAuth2 bearer token that was granted the `borrow` scope.
+    email, email_hashed = get_authenticated_identity(request, session, scope="borrow")
 
     if email:
         try:
-            loan = item.borrow(email)
+            loan = item.borrow(email, hashed=email_hashed)
         except LoanNotRequiredError:
             pass
         except BookUnavailableError:
