@@ -1880,9 +1880,23 @@ async def update_auth_config(request: Request, body: dict = Body(...)):
 async def admin_list_oauth2_clients(request: Request):
     _require_admin(request)
     from lenny.core.oauth2 import OAuthClient, SCOPES
+    from lenny.routes.oauth2 import issuer_url
+    # What the developer of an app needs in order to connect to THIS node. The
+    # same values the public metadata document publishes, built the same way.
+    issuer = issuer_url(request)
+    base = f"{issuer}/v1/api"
     return JSONResponse({
         "clients": [c.public_view() for c in OAuthClient.all()],
         "available_scopes": [{"name": k, "description": v} for k, v in SCOPES.items()],
+        "connection": {
+            "issuer": issuer,
+            "discovery_url": f"{issuer}/.well-known/oauth-authorization-server",
+            "authorization_endpoint": f"{base}/oauth2/authorize",
+            "token_endpoint": f"{base}/oauth2/token",
+            "revocation_endpoint": f"{base}/oauth2/revoke",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "pkce_method": "S256",
+        },
     })
 
 

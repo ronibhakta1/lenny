@@ -108,6 +108,18 @@ def test_list_shows_clients_scopes_and_never_a_secret(http, admin):
     assert all("client_secret" not in c for c in body["clients"])
 
 
+def test_list_tells_an_app_developer_how_to_connect_to_this_node(http, admin):
+    """The admin screen shows these so a developer knows what to point at."""
+    conn = http.get(BASE, headers=HDRS).json()["connection"]
+    meta = http.get("/.well-known/oauth-authorization-server").json()
+    assert conn["issuer"] == meta["issuer"]
+    assert conn["authorization_endpoint"] == meta["authorization_endpoint"]
+    assert conn["token_endpoint"] == meta["token_endpoint"]
+    assert conn["revocation_endpoint"] == meta["revocation_endpoint"]
+    assert conn["discovery_url"] == f"{meta['issuer']}/.well-known/oauth-authorization-server"
+    assert conn["pkce_method"] == "S256"
+
+
 # ─── register ────────────────────────────────────────────────────────────────
 
 def test_register_a_public_app_with_a_chosen_id(http, admin):
