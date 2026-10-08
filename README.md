@@ -80,6 +80,18 @@ Lenny supports multiple authentication modes for patron login and lending:
 
 To switch back to OTP mode from external auth, set lending mode to `ol` or `none` via the Admin UI.
 
+### Letting reading apps use your library's sign-in
+
+Separate from the list above: **which apps may sign your patrons in and borrow for them**. The Book Server app (reader.archive.org) is registered automatically on every node. Add any other reader or catalogue in the Admin UI under **Settings → App Access**, or from the command line:
+
+```sh
+make oauth2-register NAME="Some Reader" URI=https://reader.example.org/ CLIENT_ID=some-reader PUBLIC=1
+make bookserver-connect     # check or restore the built-in Book Server
+make oauth2-clients         # list apps
+```
+
+Apps use Authorization Code with PKCE. The node's endpoints are at `/.well-known/oauth-authorization-server` and on the *For developers* tab of App Access. This is not the same as the external sign-in provider above: that one is how Lenny signs patrons in, this one is which apps may use Lenny. See [docs/OAUTH2.md](docs/OAUTH2.md) for the whole picture, including what an app can call, signing in as a different account, and the security notes.
+
 ---
 
 ## Features
@@ -188,6 +200,8 @@ Now any code change is picked up immediately by uvicorn. To switch back to produ
 Sync your Lenny OPDS feed with Archive.org's [Bookserver app](https://reader.archive.org). To have a personalized Lenny catalog with a great user interface.
 > [!IMPORTANT]
 > Bookserver app is Internet Archive's closed product, it doesn't come with lenny instance which you can own
+
+Lenny registers Book Server as a trusted app on every node by itself. Turn it off, or add other readers, under **Settings → App Access** (see [docs/OAUTH2.md](docs/OAUTH2.md)).
 
 ```sh
 make url 
