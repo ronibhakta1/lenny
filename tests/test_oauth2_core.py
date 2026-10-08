@@ -214,6 +214,23 @@ class TestChosenClientId:
         with pytest.raises(ValueError, match="cannot be a client_id"):
             OAuthClient.register(name="Bad", redirect_uris=[REDIRECT], client_id=bad)
 
+    def test_attack_ids_differing_only_by_case_are_the_same_id(self):
+        """`Reader-Archive-Org` beside `reader-archive-org` is a lookalike."""
+        OAuthClient.register(name="Real", redirect_uris=[REDIRECT], client_id="reader-archive-org")
+        with pytest.raises(ValueError, match="already registered"):
+            OAuthClient.register(name="Twin", redirect_uris=[OTHER_REDIRECT], client_id="Reader-Archive-Org")
+
+    @pytest.mark.parametrize("name", ["", "   ", "x" * 101])
+    def test_attack_a_name_that_is_empty_or_too_long_is_refused(self, name):
+        """The column holds 255; Postgres answers more with a 500."""
+        with pytest.raises(ValueError, match="name must be"):
+            OAuthClient.register(name=name, redirect_uris=[REDIRECT])
+
+    def test_attack_too_many_redirect_urls_refused(self):
+        uris = [f"https://a{i}.example.org/cb" for i in range(11)]
+        with pytest.raises(ValueError, match="at most"):
+            OAuthClient.register(name="Many", redirect_uris=uris)
+
     def test_a_chosen_id_still_needs_a_registered_redirect(self):
         """The id is public; the registered redirect is what binds the client."""
         obj, _ = OAuthClient.register(

@@ -83,6 +83,13 @@ OIDC_IDENTITY_SCOPES = {"openid", "profile", "email", "offline_access"}
 
 CLIENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}")
 
+# Bounds on what an operator can register. The database column for `name` is
+# 255 characters and Postgres refuses more with a 500; the rest keep one client
+# from carrying an unbounded amount of text that is read on every request.
+MAX_CLIENT_NAME_LEN = 100
+MAX_REDIRECT_URIS = 10
+MAX_REDIRECT_URI_LEN = 2048
+
 # Consumers every node trusts out of the box. Created once at startup if absent;
 # an operator who disables one keeps it disabled (the row stays, so it is never
 # recreated), and can bring it back from the admin page.
@@ -165,8 +172,16 @@ def acceptable_redirect(uri: str) -> bool:
         return False
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in uri):
         return False
+    # Whitespace and backslashes are not URI syntax, and the two ends of the flow
+    # parse them differently: a browser reads `https://evil.example.org\\@good.example.org/`
+    # as host evil.example.org, Python as good.example.org. A length cap stops a
+    # megabyte "URL" being stored and compared on every request.
+    if len(uri) > MAX_REDIRECT_URI_LEN or "\\" in uri or any(ch.isspace() for ch in uri):
+        return False
     if parsed.scheme == "https" and parsed.netloc:
-        return True
+        # `https://good.example.org@evil.example.org/cb` really names evil.example.org,
+        # but the consent screen would show a hurried patron the first half.
+        return "@" not in parsed.netloc
 
     # RFC 8252 §7.1 — a native app redirects to a private-use URI scheme,
     # because it has no https origin to own. Lenny already hands native OPDS
@@ -252,12 +267,19 @@ class OAuthClient(Base):
         client_id that is malformed or already taken (a disabled client keeps its
         id, so it cannot be reused to resurrect old tokens).
         """
+        name = (name or "").strip()
+        if not name or len(name) > MAX_CLIENT_NAME_LEN:
+            raise ValueError(f"name must be 1-{MAX_CLIENT_NAME_LEN} characters.")
+        if len(redirect_uris) > MAX_REDIRECT_URIS:
+            raise ValueError(f"at most {MAX_REDIRECT_URIS} redirect URLs per app.")
         if client_id is not None:
             if not CLIENT_ID_RE.fullmatch(client_id):
                 raise ValueError(
                     f"{client_id!r} cannot be a client_id: use 3-64 letters, digits, "
                     "'.', '_' or '-', starting with a letter or digit.")
-            if db.query(cls).filter(cls.client_id == client_id).first():
+            # Case-insensitive, so `Reader-Archive-Org` cannot sit beside
+            # `reader-archive-org` and be mistaken for it.
+            if db.query(cls).filter(func.lower(cls.client_id) == client_id.lower()).first():
                 raise ValueError(f"client_id {client_id!r} is already registered.")
         for uri in redirect_uris:
             if not acceptable_redirect(uri):

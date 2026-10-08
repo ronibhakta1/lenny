@@ -966,6 +966,11 @@ class TestSpecConformance:
         "https://app.example/cb#frag",              # RFC 6749 §3.1.2
         "https://app.example/cb\r\nX-Injected: 1",  # not URI syntax
         "http://app.example/cb",                    # plaintext, non-loopback
+        "https://good.example.org@evil.example.org/cb",   # userinfo: names the host after '@'
+        "https://evil.example.org\\@good.example.org/",   # browser and Python disagree on the host
+        "https://app.example/cb x",                 # whitespace is not URI syntax
+        "https://app.example/cb\nhttps://evil.example.org/cb",  # would split into two entries
+        "https://app.example/" + "a" * 3000,        # unbounded text read on every request
     ])
     def test_attack_malformed_redirect_uris_refused(self, uri):
         """A fragment would put the authorization code after the '#', where it
