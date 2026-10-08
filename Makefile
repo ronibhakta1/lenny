@@ -130,6 +130,12 @@ ol-connect:
 ol-disconnect:
 	@docker compose -p lenny exec api python3 scripts/oauth2_client.py ol-disconnect
 
+# Book Server (reader.archive.org) is registered automatically when a node starts.
+# This is for a node where that was disabled, or to check it. ENABLE=1 turns it back on.
+.PHONY: bookserver-connect
+bookserver-connect:
+	@docker compose -p lenny exec api python3 scripts/oauth2_client.py bookserver-connect $(if $(ENABLE),--enable)
+
 .PHONY: oauth2-clients
 oauth2-clients:
 	@docker compose -p lenny exec api python3 scripts/oauth2_client.py list

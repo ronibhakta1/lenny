@@ -242,6 +242,27 @@ def cmd_register(args) -> int:
     return 0
 
 
+def cmd_bookserver_connect(args) -> int:
+    """Make sure the default consumers (Book Server) are registered. Safe to run
+    twice; a default an operator disabled stays disabled unless --enable is given."""
+    from lenny.core.oauth2 import DEFAULT_CLIENTS, ensure_default_clients
+
+    created = set(ensure_default_clients())
+    for spec in DEFAULT_CLIENTS:
+        row = OAuthClient.find(spec["client_id"])
+        if row is not None and row.disabled_at and args.enable:
+            OAuthClient.enable(spec["client_id"])
+            print(f"Re-enabled {spec['name']!r} ({spec['client_id']}).")
+        elif row is not None and row.disabled_at:
+            print(f"{spec['name']!r} ({spec['client_id']}) is disabled. "
+                  "Re-run with --enable to turn it back on.")
+        else:
+            verb = "Registered" if spec["client_id"] in created else "Already registered"
+            print(f"{verb}: {spec['name']!r} ({spec['client_id']}) -> "
+                  f"{' '.join(spec['redirect_uris'])}")
+    return 0
+
+
 def cmd_list(args) -> int:
     """Client ids are generated unless chosen at registration, so this is how to find one."""
     rows = db.query(OAuthClient).order_by(OAuthClient.created_at.desc()).all()
@@ -306,6 +327,13 @@ def main() -> int:
                           help="a native app that cannot keep a secret; "
                                "authenticates with PKCE alone (RFC 8252)")
     register.set_defaults(fn=cmd_register)
+
+    book = sub.add_parser(
+        "bookserver-connect",
+        help="register the default consumers (Book Server) if this node lacks them")
+    book.add_argument("--enable", action="store_true",
+                      help="also turn a disabled default back on")
+    book.set_defaults(fn=cmd_bookserver_connect)
 
     sub.add_parser("list", help="show every registered client").set_defaults(fn=cmd_list)
 

@@ -83,6 +83,18 @@ OIDC_IDENTITY_SCOPES = {"openid", "profile", "email", "offline_access"}
 
 CLIENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}")
 
+# Consumers every node trusts out of the box. Created once at startup if absent;
+# an operator who disables one keeps it disabled (the row stays, so it is never
+# recreated), and can bring it back from the admin page.
+DEFAULT_CLIENTS = [
+    {
+        "client_id": "reader-archive-org",
+        "name": "Book Server",
+        "redirect_uris": ["https://reader.archive.org"],
+        "is_confidential": False,
+    },
+]
+
 
 _PK = BigInteger().with_variant(Integer, "sqlite")
 
@@ -266,6 +278,41 @@ class OAuthClient(Base):
         db.add(client)
         db.commit()
         return client, secret
+
+    @classmethod
+    def find(cls, client_id: str) -> Optional["OAuthClient"]:
+        """The client with this id in any state, including disabled. `get` is for
+        authenticating a request and hides disabled clients; this is for admin."""
+        return db.query(cls).filter(cls.client_id == client_id).first()
+
+    @classmethod
+    def all(cls) -> list["OAuthClient"]:
+        return db.query(cls).order_by(cls.created_at.desc(), cls.id.desc()).all()
+
+    @classmethod
+    def enable(cls, client_id: str) -> bool:
+        """Undo `disable` for the client itself. The tokens `disable` revoked stay
+        revoked: a re-enabled client signs its patrons in again from scratch."""
+        row = cls.find(client_id)
+        if row is None:
+            return False
+        row.disabled_at = None
+        db.add(row)
+        db.commit()
+        return True
+
+    def public_view(self) -> dict:
+        """Everything an admin screen may show. Never the secret or its hash."""
+        return {
+            "client_id": self.client_id,
+            "name": self.name,
+            "redirect_uris": [u.strip() for u in self.redirect_uris.splitlines() if u.strip()],
+            "scopes": sorted(self.allowed_scopes()),
+            "is_confidential": bool(self.is_confidential),
+            "status": "disabled" if self.disabled_at else "active",
+            "is_default": self.client_id in {c["client_id"] for c in DEFAULT_CLIENTS},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
     @classmethod
     def disable(cls, client_id: str) -> int:
@@ -739,3 +786,26 @@ def sweep_expired(older_than_days: int = 1) -> int:
     ).delete(synchronize_session=False)
     db.commit()
     return deleted
+
+
+def ensure_default_clients() -> list[str]:
+    """Create any DEFAULT_CLIENTS this node does not have yet. Safe to run on
+    every start and from several workers at once. Returns the ids it created.
+
+    A default that exists in any state, disabled included, is left alone, so an
+    operator's decision to turn one off is not undone by the next restart.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    created = []
+    for spec in DEFAULT_CLIENTS:
+        if OAuthClient.find(spec["client_id"]):
+            continue
+        try:
+            OAuthClient.register(**spec)
+            created.append(spec["client_id"])
+        except (IntegrityError, ValueError):
+            # Another worker won the race, or the spec is invalid; either way
+            # there is nothing for this one to do.
+            db.rollback()
+    return created

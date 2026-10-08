@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import os
 
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
@@ -30,6 +31,27 @@ app = FastAPI(
     description="Lenny: A Free, Open Source Lending System for Libraries",
     version=VERSION,
 )
+
+@app.on_event("startup")
+def _seed_default_oauth_clients() -> None:
+    """Make a fresh node trust the consumers Lenny ships with (Book Server).
+
+    A failure here must never stop the API coming up: the node works without
+    the defaults, and an operator can add them with `make bookserver-connect`.
+    """
+    if os.environ.get("TESTING"):
+        return
+    try:
+        from lenny.core.oauth2 import ensure_default_clients
+        for client_id in ensure_default_clients():
+            logging.getLogger("lenny").info("Registered default OAuth client %s", client_id)
+    except Exception:
+        logging.getLogger("lenny").warning(
+            "Could not seed default OAuth clients; run `make bookserver-connect`.",
+            exc_info=True)
+    finally:
+        db_session.remove()
+
 
 # `db_session` is a scoped_session shared across requests on the same worker
 # thread. A DB error leaves its transaction aborted; without a teardown,

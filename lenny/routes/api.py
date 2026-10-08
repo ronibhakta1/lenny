@@ -1871,6 +1871,71 @@ async def update_auth_config(request: Request, body: dict = Body(...)):
     return JSONResponse({"updated": True, "fields": fields})
 
 
+# ─── OAuth2 clients (connected apps) ─────────────────────────────────────────
+# What `make oauth2-register` does, for the admin page. Same admin gate as every
+# /admin route; the client secret is returned once, at registration, and never
+# again (only its hash is stored).
+
+@router.get("/admin/oauth2/clients", status_code=status.HTTP_200_OK)
+async def admin_list_oauth2_clients(request: Request):
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient, SCOPES
+    return JSONResponse({
+        "clients": [c.public_view() for c in OAuthClient.all()],
+        "available_scopes": [{"name": k, "description": v} for k, v in SCOPES.items()],
+    })
+
+
+@router.post("/admin/oauth2/clients", status_code=status.HTTP_201_CREATED)
+async def admin_register_oauth2_client(request: Request, body: dict = Body(...)):
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient, SCOPES
+
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="'name' is required.")
+    uris = body.get("redirect_uris")
+    if isinstance(uris, str):
+        uris = [u for u in uris.replace(",", "\n").split() if u]
+    if not isinstance(uris, list) or not uris or not all(isinstance(u, str) for u in uris):
+        raise HTTPException(status_code=400, detail="'redirect_uris' must list at least one URL.")
+    scopes = body.get("scopes") or sorted(SCOPES)
+    if not isinstance(scopes, list) or (unknown := set(scopes) - set(SCOPES)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown scope(s). Available: {', '.join(sorted(SCOPES))}.")
+    public = body.get("public", True)
+    if not isinstance(public, bool):
+        raise HTTPException(status_code=400, detail="'public' must be a JSON boolean.")
+    client_id = (str(body["client_id"]).strip() or None) if body.get("client_id") else None
+
+    try:
+        client, secret = OAuthClient.register(
+            name=name, redirect_uris=[u.strip() for u in uris], scopes=scopes,
+            is_confidential=not public, client_id=client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(status_code=201, content={**client.public_view(), "client_secret": secret})
+
+
+@router.post("/admin/oauth2/clients/{client_id}/disable", status_code=status.HTTP_200_OK)
+async def admin_disable_oauth2_client(request: Request, client_id: str):
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient
+    if OAuthClient.find(client_id) is None:
+        raise HTTPException(status_code=404, detail="No such client.")
+    return JSONResponse({"client_id": client_id, "revoked_tokens": OAuthClient.disable(client_id)})
+
+
+@router.post("/admin/oauth2/clients/{client_id}/enable", status_code=status.HTTP_200_OK)
+async def admin_enable_oauth2_client(request: Request, client_id: str):
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient
+    if not OAuthClient.enable(client_id):
+        raise HTTPException(status_code=404, detail="No such client.")
+    return JSONResponse({"client_id": client_id, "status": "active"})
+
+
 @router.post("/admin/auth/mode", status_code=status.HTTP_200_OK)
 async def toggle_auth_mode(request: Request, body: dict = Body(...)):
     """One-field shorthand to enable or disable external auth.
