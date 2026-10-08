@@ -12,6 +12,7 @@ from pyopds2_lenny import LennyDataProvider, LennyDataRecord, build_post_borrow_
 from pyopds2 import Catalog, Metadata
 from pyopds2.models import Link, Navigation
 from pyopds2.provider import DataProvider
+from lenny import configs as _configs
 from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email, parse_modified_since, to_iso_utc
 from lenny.core.models import Item, FormatEnum, Loan
@@ -44,6 +45,30 @@ def _make_url(path):
     return f"{url}{path}"
 
 LennyDataProvider.BASE_URL = _make_url("/v1/api/")
+# Same configured issuer as routes.oauth2.issuer_url, never the Host header. Lets
+# the library build an Authorization Code + PKCE entry; auth_document() decides
+# whether a client is shown it.
+LennyDataProvider.OAUTH_ISSUER = _make_url("").rstrip("/")
+
+_AUTH_IMPLICIT = "http://opds-spec.org/auth/oauth/implicit"
+_AUTH_PKCE = "http://opds-spec.org/auth/oauth/authorization-code-with-pkce"
+
+
+def auth_document() -> dict:
+    """The OPDS Authentication Document for the flow the admin has made active.
+
+    One flow at a time, following the admin switch: `external` (OIDC provider
+    configured and enabled) advertises Authorization Code + PKCE only; every
+    other mode keeps the implicit entry exactly as before. A node that never
+    configured an external provider therefore never advertises PKCE.
+    ponytail: advertising both together waits on the revised spec (#237).
+    """
+    doc = LennyDataProvider.get_authentication_document()
+    want = _AUTH_PKCE if _configs.read_lending_mode() == "external" else _AUTH_IMPLICIT
+    # Fall back to everything the library gave us rather than an empty list
+    # (e.g. an older pyopds2_lenny without the PKCE entry).
+    doc["authentication"] = [a for a in doc["authentication"] if a["type"] == want] or doc["authentication"]
+    return doc
 
 # empty_catalog / build_catalog / build_publication are not yet in the
 # pyopds2_lenny library (pinned to commit 356518d). Patch them here so

@@ -48,7 +48,7 @@ from fastapi.responses import (
     JSONResponse,
 )
 from lenny.core import auth
-from lenny.core.api import LennyAPI
+from lenny.core.api import LennyAPI, auth_document
 from lenny.core import ol_bootstrap
 from lenny.core.cache import Cache
 from lenny.core.briet import BRIET, import_briet_books, parse_olid
@@ -196,7 +196,7 @@ def requires_item_auth(do_function=None):
                 if 'error' in result:
                     return JSONResponse(
                         status_code=401, 
-                        content=LennyDataProvider.get_authentication_document(),
+                        content=auth_document(),
                         media_type="application/opds-authentication+json"
                     )
  
@@ -405,7 +405,7 @@ async def borrow_item(request: Request, response: Response, book_id: int, format
             )
         return JSONResponse(
             status_code=401,
-            content=LennyDataProvider.get_authentication_document(),
+            content=auth_document(),
             media_type="application/opds-authentication+json"
         )
 
@@ -925,7 +925,7 @@ async def profile(request: Request, session: Optional[str] = Cookie(None)):
     if not email:
         return JSONResponse(
             status_code=401,
-            content=LennyDataProvider.get_authentication_document(),
+            content=auth_document(),
             media_type="application/opds-authentication+json"
         )
     
@@ -950,7 +950,7 @@ async def get_shelf(request: Request, session: Optional[str] = Cookie(None), aut
     if not email:
         return JSONResponse(
             status_code=401,
-            content=LennyDataProvider.get_authentication_document(),
+            content=auth_document(),
             media_type="application/opds-authentication+json"
         )
     

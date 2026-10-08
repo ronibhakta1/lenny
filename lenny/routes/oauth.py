@@ -31,7 +31,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from lenny import configs
 from lenny.core import auth
-from lenny.core.api import LennyAPI
+from lenny.core.api import LennyAPI, auth_document
 from lenny.core.exceptions import (
     InvalidOLCredentialsError,
     LendingNotConfiguredError,
@@ -46,7 +46,6 @@ from lenny.core.external_auth import (
 )
 from lenny.core.patron_auth import AuthModeManager as _AuthModeManager
 from lenny.core.patron_auth import validate_patron_ia_s3
-from pyopds2_lenny import LennyDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,7 @@ def _get_authenticated_email(
 async def oauth_implicit(request: Request) -> Response:
     """Returns the OPDS Authentication Document describing the available flows."""
     return Response(
-        content=json.dumps(LennyDataProvider.get_authentication_document()),
+        content=json.dumps(auth_document()),
         media_type="application/opds-authentication+json",
     )
 
