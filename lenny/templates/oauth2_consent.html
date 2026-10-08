@@ -6,7 +6,8 @@
 <div class="card" role="main" aria-labelledby="consent-title">
   <div style="text-align: center;"><span class="badge badge--oauth">Authorize</span></div>
   <h1 id="consent-title">{{ client_name }} wants access to your library account</h1>
-  <p class="subtitle">Signed in as <span class="email">{{ email }}</span></p>
+  <p class="subtitle">Signed in as <span class="email">{{ email }}</span><br>
+    <a class="switch" href="{{ switch_url }}">Not you? Use a different account</a></p>
 
   {#
     Reading comes before acting. The scopes arrive sorted by name, which put
@@ -58,6 +59,7 @@
 </div>
 
 <style>
+  .switch { font-size: 13px; color: var(--primary); }
   .consent-lead { font-size: 14px; color: var(--muted-foreground); margin: 0 0 10px; }
   .scopes { list-style: none; padding: 0; margin: 0 0 20px; text-align: left; }
   .scopes li {

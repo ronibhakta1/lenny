@@ -43,6 +43,7 @@ from lenny.core.external_auth import (
     OAuthConfig,
     OIDCDiscoveryError,
     OIDCTokenError,
+    valid_prompt,
 )
 from lenny.core.patron_auth import AuthModeManager as _AuthModeManager
 from lenny.core.patron_auth import validate_patron_ia_s3
@@ -113,6 +114,7 @@ async def oauth_authorize(
     redirect_uri: Optional[str] = None,
     client_id: Optional[str] = None,
     state: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Response:
     """
     Handles OTP-based authorization (OPDS Implicit flow).
@@ -133,6 +135,8 @@ async def oauth_authorize(
             params["opds_redirect_uri"] = redirect_uri
         if state:
             params["opds_state"] = state
+        if p := valid_prompt(prompt):
+            params["prompt"] = p
         qs = ("?" + urlencode(params)) if params else ""
         return RedirectResponse(url=f"/v1/api/oauth/external/start{qs}", status_code=302)
     _require_lending()
@@ -265,6 +269,7 @@ async def oauth_external_start(
     redirect_to: Optional[str] = None,
     opds_redirect_uri: Optional[str] = None,
     opds_state: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Response:
     """Initiate the external OIDC flow.
 
@@ -305,7 +310,7 @@ async def oauth_external_start(
         return _invalid_redirect_uri_response(requested_opds_uri)
 
     try:
-        auth_url, state, nonce, code_verifier = await svc.initiate_flow()
+        auth_url, state, nonce, code_verifier = await svc.initiate_flow(prompt=valid_prompt(prompt))
     except (OIDCDiscoveryError, RuntimeError) as exc:
         logger.error("OIDC initiate_flow failed: %s", exc)
         return JSONResponse(

@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from lenny.core import auth
+from lenny.core.external_auth import valid_prompt
 from lenny.core.exceptions import (
     BookUnavailableError,
     LoanNotRequiredError,
@@ -209,11 +210,14 @@ async def authorize(
     state: Optional[str] = None,
     code_challenge: Optional[str] = None,
     code_challenge_method: str = "S256",
+    prompt: Optional[str] = None,
 ) -> Response:
     """Begin an authorization request.
 
     Sends the patron to log in if they have no Lenny session, then asks them to
-    approve the client's requested scopes.
+    approve the client's requested scopes. `prompt=login` or `select_account`
+    (OIDC Core §3.1.2.1) ignores an existing session and has the patron sign in
+    again, so a different account can be chosen.
     """
     client = OAuthClient.get(client_id or "")
     if client is None:
@@ -238,15 +242,23 @@ async def authorize(
     if scope_error:
         return _redirect_error(redirect_uri, "invalid_scope", scope_error, state)
 
-    email = _authenticated_patron(request)
+    fresh = valid_prompt(prompt)
+    email = None if fresh else _authenticated_patron(request)
     if not email:
-        # No Lenny session yet. Send them through the existing OTP login and
-        # come back here afterwards with the request intact.
+        # No Lenny session yet, or the client asked for a fresh sign-in. Send
+        # them through login and come back here afterwards with the request
+        # intact. `prompt` is deliberately NOT part of the return trip, or the
+        # patron would be asked to sign in again forever.
         this_request = f"/v1/api/oauth2/authorize?{urlencode(_echo(request))}"
-        return RedirectResponse(
-            url=f"/v1/api/oauth/authorize?{urlencode({'redirect_uri': this_request})}",
-            status_code=303,
-        )
+        login = {"redirect_uri": this_request}
+        if fresh:
+            login["prompt"] = fresh
+        redirect = RedirectResponse(
+            url=f"/v1/api/oauth/authorize?{urlencode(login)}", status_code=303)
+        if fresh:
+            # Drop the old login so it cannot be picked up again on the way back.
+            redirect.delete_cookie(key="session", path="/", secure=True, samesite="Lax")
+        return redirect
 
     # The form carries one opaque, signed handle instead of the request's
     # parameters. Two things follow: the POST cannot be fed a different
@@ -278,6 +290,9 @@ async def authorize(
         "redirect_host": urlparse(redirect_uri).netloc,
         "request_handle": handle,
         "email": email,
+        # "Not you?": the same request, asking for a fresh sign-in.
+        "switch_url": "/v1/api/oauth2/authorize?" + urlencode(
+            {**_echo(request), "prompt": "select_account"}),
     })
     # RFC 6749 §10.13 / RFC 9700 §4.16 — this is the screen where a patron
     # grants access, so it must not be framable. The app-wide CORS policy

@@ -294,6 +294,70 @@ class TestAuthorize:
         assert q["error"][0] == expected
         assert q["state"][0] == "state-123", "state must survive an error"
 
+    @pytest.mark.parametrize("prompt", ["login", "select_account"])
+    def test_prompt_forces_a_fresh_sign_in_and_drops_the_old_login(
+            self, app_client, client, session_cookie, prompt):
+        """A patron who is already signed in can ask to sign in as someone else."""
+        obj, _ = client
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL,
+                           params={**authorize_params(obj, challenge), "prompt": prompt},
+                           cookies={"session": session_cookie}, follow_redirects=False)
+        assert r.status_code == 303
+        loc = urlparse(r.headers["location"])
+        assert loc.path == "/v1/api/oauth/authorize"
+        outer = parse_qs(loc.query)
+        assert outer["prompt"] == [prompt], "the provider has to be told to show its chooser"
+        back = outer["redirect_uri"][0]
+        assert "prompt" not in back, "the return trip must not ask again, or login never ends"
+        assert f"client_id={obj.client_id}" in back
+        cleared = r.headers.get("set-cookie", "")
+        assert "session=" in cleared and ("Max-Age=0" in cleared or "expires=" in cleared.lower()), \
+            "the old session cookie must be dropped"
+
+    def test_the_return_trip_after_a_fresh_sign_in_reaches_consent(
+            self, app_client, client, session_cookie):
+        obj, _ = client
+        _, challenge = pkce()
+        first = app_client.get(AUTHORIZE_URL,
+                               params={**authorize_params(obj, challenge), "prompt": "login"},
+                               follow_redirects=False)
+        back = parse_qs(urlparse(first.headers["location"]).query)["redirect_uri"][0]
+        again = app_client.get(back, cookies={"session": session_cookie}, follow_redirects=False)
+        assert again.status_code == 200 and "Allow" in again.text
+
+    def test_attack_prompt_is_an_allow_list(self, app_client, client, session_cookie):
+        """Anything but login/select_account is ignored, never forwarded."""
+        obj, _ = client
+        _, challenge = pkce()
+        for junk in ("none", "consent", "x%0d%0aSet-Cookie:evil=1", "login-ish"):
+            r = app_client.get(AUTHORIZE_URL,
+                               params={**authorize_params(obj, challenge), "prompt": junk},
+                               cookies={"session": session_cookie}, follow_redirects=False)
+            assert r.status_code == 200, f"{junk!r} should be ignored"
+
+    def test_prompt_cannot_get_around_client_checks(self, app_client, session_cookie):
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL, params={
+            "client_id": "nobody", "redirect_uri": REDIRECT, "response_type": "code",
+            "code_challenge": challenge, "code_challenge_method": "S256", "prompt": "login"},
+            cookies={"session": session_cookie}, follow_redirects=False)
+        assert r.status_code == 400 and r.json()["error"] == "invalid_client"
+
+    def test_consent_offers_a_way_to_use_a_different_account(
+            self, app_client, client, session_cookie):
+        obj, _ = client
+        _, challenge = pkce()
+        r = app_client.get(AUTHORIZE_URL, params=authorize_params(obj, challenge),
+                           cookies={"session": session_cookie}, follow_redirects=False)
+        assert r.status_code == 200
+        assert "Not you?" in r.text
+        link = re.search(r'href="([^"]*prompt=select_account[^"]*)"', r.text)
+        assert link, "no switch-account link on the consent screen"
+        href = link.group(1).replace("&amp;", "&")
+        assert href.startswith("/v1/api/oauth2/authorize?")
+        assert f"client_id={obj.client_id}" in href and "code_challenge=" in href
+
     def test_deny_redirects_with_access_denied(self, app_client, client, session_cookie):
         obj, _ = client
         _, challenge = pkce()
