@@ -990,12 +990,15 @@ class LennyAPI:
         return result
 
     @classmethod
-    def get_borrowed_items(cls, email: str):
+    def get_borrowed_items(cls, email: str, hashed: bool = False):
         """
         Returns active (non-returned, non-expired) Loan objects for the patron.
         Ensures openlibrary_edition is set for each loan.
+
+        `hashed=True` means *email* is already a `hash_email()` digest, which is
+        all an OAuth2 access token carries.
         """
-        email_hash = hash_email(email)
+        email_hash = email if hashed else hash_email(email)
         loans = db.query(Loan).filter(
             Loan.patron_email_hash == email_hash,
             *Loan._active_filters(),
@@ -1024,11 +1027,11 @@ class LennyAPI:
         )
 
     @classmethod
-    def get_shelf_feed(cls, email: str, auth_mode_direct: bool = False) -> dict:
+    def get_shelf_feed(cls, email: str, auth_mode_direct: bool = False, hashed: bool = False) -> dict:
         """
         Retrieves user loans, fetches their metadata, and generates the OPDS Shelf Feed.
         """
-        loans = cls.get_borrowed_items(email)
+        loans = cls.get_borrowed_items(email, hashed=hashed)
         
         if not loans:
              return LennyDataProvider.get_shelf_feed([])

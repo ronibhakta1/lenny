@@ -945,7 +945,9 @@ async def get_shelf(request: Request, session: Optional[str] = Cookie(None), aut
     Contains all currently borrowed items with return/read links.
     """
     session = extract_session(request, session)
-    email = get_authenticated_email(request, session)
+    # A session cookie, or the OAuth2 bearer token (scope loans:read) that a
+    # reading app gets from the PKCE flow. The token carries a hashed identity.
+    email, email_hashed = get_authenticated_identity(request, session)
     
     if not email:
         return JSONResponse(
@@ -954,7 +956,7 @@ async def get_shelf(request: Request, session: Optional[str] = Cookie(None), aut
             media_type="application/opds-authentication+json"
         )
     
-    shelf_feed = LennyAPI.get_shelf_feed(email, auth_mode_direct=is_direct_auth_mode(auth_mode))
+    shelf_feed = LennyAPI.get_shelf_feed(email, auth_mode_direct=is_direct_auth_mode(auth_mode), hashed=email_hashed)
     
     return Response(
         content=json.dumps(shelf_feed),
