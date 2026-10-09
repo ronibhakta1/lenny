@@ -11,7 +11,7 @@ RUN corepack enable
 # Changing this value invalidates the build cache from this line onward —
 # deterministic on both BuildKit and the classic builder — so `make update`
 # re-clones and checks out the new commit. No floating HEAD = no surprise drift.
-ARG LENNY_APP_REF=655b67ccc46b6aaa0d25534bdb118b400cade6b2
+ARG LENNY_APP_REF=ce9126889d9dedf301cd85d476ecc06ff1f8d6c1
 
 RUN git clone https://github.com/ArchiveLabs/lenny-app . && \
     git checkout "$LENNY_APP_REF"
