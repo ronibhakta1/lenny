@@ -245,6 +245,7 @@ async def authorize(
     code_challenge: Optional[str] = None,
     code_challenge_method: str = "S256",
     prompt: Optional[str] = None,
+    login_hint: Optional[str] = None,
 ) -> Response:
     """Begin an authorization request.
 
@@ -284,7 +285,14 @@ async def authorize(
         # intact. `prompt` is deliberately NOT part of the return trip, or the
         # patron would be asked to sign in again forever.
         this_request = f"/v1/api/oauth2/authorize?{urlencode(_echo(request))}"
+        # RFC 6749 §3.1.2.1 `login_hint`: the consumer already knows which
+        # patron this is, so pass it along and spare them typing an address
+        # they just proved they own somewhere else. It only ever PRE-FILLS the
+        # field — see `_login_hint` in routes/oauth.py for why it must not
+        # trigger the send by itself.
         login = {"redirect_uri": this_request}
+        if login_hint:
+            login["login_hint"] = login_hint
         if fresh:
             login["prompt"] = fresh
         redirect = RedirectResponse(
@@ -322,6 +330,12 @@ async def authorize(
         # in error, which is the failure mode that remains once self-
         # registration is gone.
         "redirect_host": urlparse(redirect_uri).netloc,
+        # This node's own hostname. Deliberately not a new "library name"
+        # setting: the consent sentence needs to name which library is being
+        # borrowed from, and the node already knows its public address. An
+        # operator-set display name would be nicer and is a config decision
+        # nobody has made.
+        "node_host": urlparse(issuer_url(request)).hostname or "this library",
         "request_handle": handle,
         "email": email,
         # "Not you?": the same request, asking for a fresh sign-in.
@@ -344,7 +358,7 @@ def _echo(request: Request) -> dict:
     """The authorization request's own parameters, for round-tripping through
     login. Rebuilt from the parsed query so nothing extra is carried along."""
     keep = ("client_id", "redirect_uri", "response_type", "scope", "state",
-            "code_challenge", "code_challenge_method")
+            "code_challenge", "code_challenge_method", "login_hint")
     return {k: v for k, v in request.query_params.items() if k in keep}
 
 

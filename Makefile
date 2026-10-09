@@ -111,7 +111,7 @@ redeploy:
 # ── OAuth 2.0 client administration ──────────────────────────────────────────
 # Registration is open by default, so an operator needs to see who registered
 # and be able to stop one without opening a Python console.
-# usage: make oauth2-register NAME="Open Library" URI=https://openlibrary.org/lenny/callback
+# usage: make oauth2-register NAME="Open Library" URI=https://openlibrary.org/borrow/lenny/callback
 # optional: CLIENT_ID=reader-archive-org to choose the id a consumer ships with
 .PHONY: oauth2-register
 oauth2-register:
