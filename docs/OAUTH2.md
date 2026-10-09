@@ -345,6 +345,7 @@ is safe; it leaves one extra row in `oauth_clients`, which nothing else reads.
 | `prompt=login` / `select_account` and a **"Not you?"** button | Additive | None |
 | The public API documentation **no longer lists admin routes** | Anyone who scraped `/openapi.json` for them. The routes themselves are unchanged | None |
 | **Admin: a new *App Access* screen** (Settings → Apps & readers) | Needs the matching `lenny-app` build | Upgrade both together. Lenny without the new admin works, the screen is simply missing. The new admin with an older Lenny shows an error on that screen only |
+| **The admin app is hardened** (the matching `lenny-app` build): its proxy rejects odd paths, answers 401 without the admin cookie, checks `Origin` on changing calls, and sign-in now fails closed in production when its two settings are missing | Anyone running the admin behind their own reverse proxy, or running `lenny-app` outside Lenny's `compose.yaml` | Nothing with the bundled `compose.yaml` and nginx: they already pass `LENNY_INTERNAL_API_URL` and `ADMIN_INTERNAL_SECRET` and forward `Host`. A custom proxy must forward `Host` or `X-Forwarded-Host`, and Secure cookies need TLS in production |
 | `pyopds2_lenny` is pinned to a newer commit | Nobody | With an older copy the sign-in document keeps showing the implicit flow |
 
 ### To start using OAuth PKCE with your apps
