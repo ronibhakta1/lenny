@@ -59,6 +59,21 @@ def test_library_without_pkce_entry_never_yields_an_empty_document(mode, monkeyp
     assert types(core_api.auth_document()) == [IMPLICIT]
 
 
+@pytest.mark.parametrize("m", ["ol", "none", "external"])
+def test_both_mode_advertises_both_flows_in_every_admin_mode(mode, monkeypatch, m):
+    """The upgrade escape hatch: a reader that only speaks implicit keeps working."""
+    mode(m)
+    monkeypatch.setenv("LENNY_AUTH_DOC_MODE", "both")
+    assert types(core_api.auth_document()) == [IMPLICIT, PKCE]
+
+
+@pytest.mark.parametrize("value", ["", "active", "ACTIVE", "nonsense"])
+def test_anything_but_both_keeps_one_flow_at_a_time(mode, monkeypatch, value):
+    mode("external")
+    monkeypatch.setenv("LENNY_AUTH_DOC_MODE", value)
+    assert types(core_api.auth_document()) == [PKCE]
+
+
 def test_switching_changes_the_document_live(mode):
     seen = []
     for m in ["ol", "external", "none", "external", "ol"]:

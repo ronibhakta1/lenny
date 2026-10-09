@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import UploadFile, Request
 from botocore.exceptions import ClientError
+import os as _os
 import time as _time
 import requests as _requests
 import httpx as _httpx
@@ -61,9 +62,15 @@ def auth_document() -> dict:
     configured and enabled) advertises Authorization Code + PKCE only; every
     other mode keeps the implicit entry exactly as before. A node that never
     configured an external provider therefore never advertises PKCE.
-    ponytail: advertising both together waits on the revised spec (#237).
+
+    Escape hatch for a node whose readers only speak the implicit flow:
+    LENNY_AUTH_DOC_MODE=both advertises the implicit entry and then the PKCE
+    entry, in any mode, so an upgrade strands no existing reader.
+    ponytail: "both" becomes the default once the revised spec settles (#237).
     """
     doc = LennyDataProvider.get_authentication_document()
+    if _os.environ.get("LENNY_AUTH_DOC_MODE", "active").strip().lower() == "both":
+        return doc
     want = _AUTH_PKCE if _configs.read_lending_mode() == "external" else _AUTH_IMPLICIT
     # Fall back to everything the library gave us rather than an empty list
     # (e.g. an older pyopds2_lenny without the PKCE entry).

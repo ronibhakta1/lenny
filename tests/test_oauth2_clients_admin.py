@@ -355,3 +355,25 @@ def test_attack_edit_reset_and_remove_need_the_admin_pair(http, method, path, bo
     assert r.status_code in (401, 403)
     c = OAuthClient.get("fix-me")
     assert c is not None and c.name == "Fix Me"
+
+
+# ─── the public API documentation must not map the admin surface ─────────────
+
+def test_the_published_schema_leaves_out_every_admin_route(http):
+    for url in ("/openapi.json", "/v1/api/openapi.json"):
+        r = http.get(url)
+        if r.status_code != 200:
+            continue
+        paths = list(r.json()["paths"])
+        assert paths, "the public API should still be documented"
+        leaked = [p for p in paths if "/admin" in p or p.endswith("/upload")]
+        assert leaked == [], f"admin routes published at {url}: {leaked}"
+        assert any(p.endswith("/oauth2/authorize") for p in paths), "public OAuth endpoints stay documented"
+
+
+def test_leaving_a_route_out_of_the_docs_does_not_open_or_close_it(http):
+    """The schema is documentation only; the gate is the route's own check."""
+    assert http.get(BASE).status_code in (401, 403), "still closed to a stranger"
+    with patch("lenny.routes.api.auth.verify_admin_internal_secret", return_value=True), \
+         patch("lenny.routes.api.auth.verify_admin_token", return_value=True):
+        assert http.get(BASE, headers=HDRS).status_code == 200, "still open to the admin"

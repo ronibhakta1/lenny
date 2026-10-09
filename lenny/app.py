@@ -209,6 +209,27 @@ async def oauth_authorization_server_metadata(request: Request):
     })
 
 
+# The API documentation (/openapi.json and the Swagger page) is public so that app
+# developers can read the endpoints they may call. It must not also be a map of the
+# admin surface: every admin route is refused to a stranger, but listing them, with
+# their parameters, tells one what to aim at. Admin routes (and the admin-only
+# upload) are left out of the published schema; they still work, behind their gate.
+def _is_internal_path(path: str) -> bool:
+    return "admin" in path.split("/") or path.rstrip("/").endswith("/upload")
+
+
+def _public_openapi() -> dict:
+    if app.openapi_schema is None:
+        from fastapi.openapi.utils import get_openapi
+        schema = get_openapi(title=app.title, version=app.version,
+                             description=app.description, routes=app.routes)
+        schema["paths"] = {p: v for p, v in schema["paths"].items() if not _is_internal_path(p)}
+        app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _public_openapi
+
 app.mount("/static", StaticFiles(directory="lenny/static"), name="static")
 
 if __name__ == "__main__":
