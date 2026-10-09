@@ -512,6 +512,7 @@ On machines with limited RAM, tune these in your `.env` before running `make upd
 |----------|---------|-------------|
 | `LENNY_WORKERS` | `2` | uvicorn worker processes — reduce to `1` on very small machines |
 | `LENNY_ADMIN_NODE_HEAP_MB` | `384` | Node.js heap cap for the admin UI — raise on machines with 8+ GB RAM |
+| `LENNY_OL_TIMEOUT` | `8` | seconds to wait for Open Library before giving up on one call. After 3 failures in a row Lenny stops calling for 30s and serves the last good page it has |
 
 ---
 

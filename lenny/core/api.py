@@ -18,6 +18,8 @@ from lenny.core import db, s3, auth
 from lenny.core.utils import hash_email, parse_modified_since, to_iso_utc
 from lenny.core.models import Item, FormatEnum, Loan
 from lenny.core.openlibrary import OpenLibrary
+from lenny.core.upstream import open_library as _ol_guard, install_timeout as _install_ol_timeout
+import pyopds2_openlibrary as _pyopds2_openlibrary
 from lenny.core.exceptions import (
     ItemExistsError,
     InvalidFileError,
@@ -44,6 +46,15 @@ def _make_url(path):
     if PORT and PORT not in {80, 443}:
         url += f":{PORT}"
     return f"{url}{path}"
+
+_install_ol_timeout(_pyopds2_openlibrary)
+
+
+def _guarded_search(**kw):
+    """LennyDataProvider.search with a deadline, a breaker and a stale fallback."""
+    key = (kw.get("query"), kw.get("limit"), kw.get("offset"))
+    return _ol_guard.call(key, LennyDataProvider.search, **kw)
+
 
 LennyDataProvider.BASE_URL = _make_url("/v1/api/")
 # Same configured issuer as routes.oauth2.issuer_url, never the Host header. Lets
@@ -516,7 +527,7 @@ class LennyAPI:
         modified_map = cls._modified_map(items)
 
         try:
-            search_response = LennyDataProvider.search(
+            search_response = _guarded_search(
                 query=cls._edition_key_query(edition_ids),
                 limit=limit,
                 # Paging already happened in the DB query above, and `query`
@@ -642,7 +653,7 @@ class LennyAPI:
                 if not batch_ids:
                     continue
 
-                response = LennyDataProvider.search(
+                response = _guarded_search(
                     query=f"{query} AND {cls._edition_key_query(batch_ids)}",
                     limit=limit,
                     lenny_ids={edition_id: edition_id for edition_id in batch_ids},
@@ -1060,7 +1071,7 @@ class LennyAPI:
         query = f"edition_key:({' OR '.join(olids)})"
 
         try:
-            resp = LennyDataProvider.search(
+            resp = _guarded_search(
                 query=query,
                 limit=len(olids),
                 lenny_ids=lenny_ids
