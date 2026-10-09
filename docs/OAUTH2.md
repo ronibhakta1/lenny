@@ -257,9 +257,15 @@ still refused.
 
 ### Which sign-in document do apps see?
 
-The OPDS Authentication Document (`GET /v1/api/oauth/implicit`, and the 401
+The OPDS Authentication Document (`GET /v1/api/oauth/implicit` or
+`GET /v1/api/oauth/authentication`, which serve the same document, and the 401
 bodies from protected routes) follows the admin's active mode, one flow at a
 time:
+
+The document's `id` is its own address. It stays `…/oauth/implicit` while the
+document advertises the implicit flow, so readers that stored it keep working, and
+becomes `…/oauth/authentication` when it advertises PKCE only. The library
+(`pyopds2_lenny`) chooses it; both addresses always answer.
 
 | Admin mode | Document advertises |
 |---|---|
