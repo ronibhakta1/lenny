@@ -207,3 +207,151 @@ def test_enable_brings_the_app_back_but_not_its_old_tokens(http, admin):
 @pytest.mark.parametrize("action", ["disable", "enable"])
 def test_unknown_client_is_a_404(http, admin, action):
     assert http.post(f"{BASE}/no-such-app/{action}", headers=HDRS).status_code == 404
+
+
+# ─── edit ────────────────────────────────────────────────────────────────────
+
+def _app(client_id="fix-me", **kw):
+    c, secret = OAuthClient.register(
+        name=kw.pop("name", "Fix Me"), redirect_uris=kw.pop("redirect_uris", ["https://a.example.org/cb"]),
+        client_id=client_id, **kw)
+    return c, secret
+
+
+def _token(client_id, scope="loans:read borrow"):
+    return AccessToken.issue(client_id=client_id, patron_email_hash=hash_email("p@example.org"), scope=scope)[0]
+
+
+def test_edit_fixes_name_and_redirect_urls(http, admin):
+    _app()
+    r = http.patch(f"{BASE}/fix-me", headers=HDRS, json={
+        "name": "Fixed", "redirect_uris": ["https://b.example.org/cb", "https://c.example.org/cb"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "Fixed" and body["revoked_tokens"] == 0
+    c = OAuthClient.get("fix-me")
+    assert c.allows_redirect("https://b.example.org/cb") and c.allows_redirect("https://c.example.org/cb")
+    assert not c.allows_redirect("https://a.example.org/cb"), "the old URL must stop being accepted"
+
+
+def test_edit_does_not_touch_a_field_that_was_not_sent(http, admin):
+    _app(scopes=["loans:read"])
+    http.patch(f"{BASE}/fix-me", headers=HDRS, json={"name": "Only the name"})
+    c = OAuthClient.get("fix-me")
+    assert c.allowed_scopes() == {"loans:read"} and c.allows_redirect("https://a.example.org/cb")
+
+
+def test_attack_taking_a_permission_away_revokes_tokens_that_carry_it(http, admin):
+    """Otherwise 'I removed borrow' would stay untrue until the token expired."""
+    _app()
+    wide = _token("fix-me", "loans:read borrow")
+    r = http.patch(f"{BASE}/fix-me", headers=HDRS, json={"scopes": ["loans:read"]})
+    assert r.status_code == 200 and r.json()["revoked_tokens"] == 1
+    assert AccessToken.authenticate(wide) is None
+
+
+def test_adding_a_permission_or_changing_a_name_keeps_existing_tokens(http, admin):
+    _app(scopes=["loans:read"])
+    tok = _token("fix-me", "loans:read")
+    r = http.patch(f"{BASE}/fix-me", headers=HDRS, json={"scopes": ["loans:read", "borrow"], "name": "Wider"})
+    assert r.json()["revoked_tokens"] == 0
+    assert AccessToken.authenticate(tok) is not None
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"name": ""}, {"name": "x" * 101}, {"name": 5},
+    {"redirect_uris": []}, {"redirect_uris": ["http://evil.example.org/cb"]},
+    {"redirect_uris": ["https://good.example.org@evil.example.org/cb"]},
+    {"redirect_uris": [f"https://a{i}.example.org/cb" for i in range(11)]},
+    {"scopes": []}, {"scopes": ["admin:all"]}, {"scopes": "borrow"},
+])
+def test_attack_bad_edits_are_refused_and_change_nothing(http, admin, payload):
+    _app()
+    r = http.patch(f"{BASE}/fix-me", headers=HDRS, json=payload)
+    assert r.status_code == 400
+    c = OAuthClient.get("fix-me")
+    assert c.name == "Fix Me" and c.allows_redirect("https://a.example.org/cb")
+
+
+def test_the_id_and_the_type_cannot_be_edited(http, admin):
+    _app()
+    r = http.patch(f"{BASE}/fix-me", headers=HDRS, json={"client_id": "stolen", "is_confidential": False, "name": "ok"})
+    assert r.status_code == 200
+    assert OAuthClient.get("fix-me").is_confidential is True and OAuthClient.get("stolen") is None
+
+
+def test_edit_unknown_client_is_a_404(http, admin):
+    assert http.patch(f"{BASE}/nope", headers=HDRS, json={"name": "x"}).status_code == 404
+
+
+# ─── reset secret ────────────────────────────────────────────────────────────
+
+def test_reset_secret_gives_a_new_one_once_and_kills_the_old(http, admin):
+    _, old = _app()
+    r = http.post(f"{BASE}/fix-me/rotate-secret", headers=HDRS)
+    assert r.status_code == 200
+    new = r.json()["client_secret"]
+    c = OAuthClient.get("fix-me")
+    assert new and new != old and c.verify_secret(new) and not c.verify_secret(old)
+    assert new not in http.get(BASE, headers=HDRS).text, "shown once, never listed"
+
+
+def test_a_public_app_has_no_secret_to_reset(http, admin):
+    _app("public-one", is_confidential=False)
+    r = http.post(f"{BASE}/public-one/rotate-secret", headers=HDRS)
+    assert r.status_code == 400 and "no secret" in r.json()["detail"]
+
+
+# ─── remove ──────────────────────────────────────────────────────────────────
+
+def test_remove_needs_the_app_to_be_off_first(http, admin):
+    _app()
+    r = http.delete(f"{BASE}/fix-me", headers=HDRS)
+    assert r.status_code == 409 and "turn the app off" in r.json()["detail"]
+    assert OAuthClient.get("fix-me") is not None
+
+
+def test_remove_deletes_the_app_its_tokens_and_codes(http, admin):
+    _app()
+    tok = _token("fix-me")
+    http.post(f"{BASE}/fix-me/disable", headers=HDRS)
+    r = http.delete(f"{BASE}/fix-me", headers=HDRS)
+    assert r.status_code == 200 and r.json()["deleted"] is True
+    assert OAuthClient.find("fix-me") is None
+    assert AccessToken.authenticate(tok) is None
+    assert db.query(AccessToken).count() == 0
+
+
+def test_attack_a_removed_id_that_is_registered_again_inherits_nothing(http, admin):
+    _app()
+    tok = _token("fix-me")
+    http.post(f"{BASE}/fix-me/disable", headers=HDRS)
+    http.delete(f"{BASE}/fix-me", headers=HDRS)
+    _app("fix-me", redirect_uris=["https://new-owner.example.org/cb"])
+    assert AccessToken.authenticate(tok) is None, "the old owner's token must not work for the new one"
+
+
+def test_attack_a_built_in_app_cannot_be_removed_even_when_off(http, admin):
+    ensure_default_clients()
+    http.post(f"{BASE}/reader-archive-org/disable", headers=HDRS)
+    r = http.delete(f"{BASE}/reader-archive-org", headers=HDRS)
+    assert r.status_code == 409 and "built-in" in r.json()["detail"]
+    assert OAuthClient.find("reader-archive-org") is not None
+
+
+def test_remove_unknown_client_is_a_404(http, admin):
+    assert http.delete(f"{BASE}/nope", headers=HDRS).status_code == 404
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("PATCH", f"{BASE}/fix-me", {"name": "x"}),
+    ("POST", f"{BASE}/fix-me/rotate-secret", None),
+    ("DELETE", f"{BASE}/fix-me", None),
+])
+def test_attack_edit_reset_and_remove_need_the_admin_pair(http, method, path, body):
+    _app()
+    r = http.request(method, path, json=body)
+    assert r.status_code in (401, 403)
+    c = OAuthClient.get("fix-me")
+    assert c is not None and c.name == "Fix Me"

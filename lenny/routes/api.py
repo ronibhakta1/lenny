@@ -1932,6 +1932,66 @@ async def admin_register_oauth2_client(request: Request, body: dict = Body(...))
     return JSONResponse(status_code=201, content={**client.public_view(), "client_secret": secret})
 
 
+@router.patch("/admin/oauth2/clients/{client_id}", status_code=status.HTTP_200_OK)
+async def admin_update_oauth2_client(request: Request, client_id: str, body: dict = Body(...)):
+    """Fix a mistake in an app's name, redirect URLs or permissions. The id and
+    the app type are not editable. Removing a permission revokes the app's live
+    tokens (reported in `revoked_tokens`) so the change is true immediately."""
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient
+
+    fields = {k: body[k] for k in ("name", "redirect_uris", "scopes") if k in body}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Send at least one of: name, redirect_uris, scopes.")
+    uris = fields.get("redirect_uris")
+    if isinstance(uris, str):
+        uris = [u for u in uris.replace(",", "\n").split() if u]
+    if "redirect_uris" in fields:
+        if not isinstance(uris, list) or not all(isinstance(u, str) for u in uris):
+            raise HTTPException(status_code=400, detail="'redirect_uris' must list at least one URL.")
+        fields["redirect_uris"] = [u.strip() for u in uris]
+    if "scopes" in fields and (not isinstance(fields["scopes"], list) or not all(isinstance(s, str) for s in fields["scopes"])):
+        raise HTTPException(status_code=400, detail="'scopes' must be a list.")
+    if "name" in fields and not isinstance(fields["name"], str):
+        raise HTTPException(status_code=400, detail="'name' must be a string.")
+    try:
+        client, revoked = OAuthClient.update(client_id, **fields)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="No such client.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({**client.public_view(), "revoked_tokens": revoked})
+
+
+@router.post("/admin/oauth2/clients/{client_id}/rotate-secret", status_code=status.HTTP_200_OK)
+async def admin_rotate_oauth2_client_secret(request: Request, client_id: str):
+    """New secret for a server app, returned once. The old one stops working now."""
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient
+    try:
+        secret = OAuthClient.rotate_secret(client_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="No such client.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({"client_id": client_id, "client_secret": secret})
+
+
+@router.delete("/admin/oauth2/clients/{client_id}", status_code=status.HTTP_200_OK)
+async def admin_delete_oauth2_client(request: Request, client_id: str):
+    """Remove an app that is already turned off, with the tokens and codes it
+    held. Built-in apps and apps that are still on are refused (409)."""
+    _require_admin(request)
+    from lenny.core.oauth2 import OAuthClient
+    try:
+        OAuthClient.delete(client_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="No such client.")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return JSONResponse({"client_id": client_id, "deleted": True})
+
+
 @router.post("/admin/oauth2/clients/{client_id}/disable", status_code=status.HTTP_200_OK)
 async def admin_disable_oauth2_client(request: Request, client_id: str):
     _require_admin(request)

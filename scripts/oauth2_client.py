@@ -263,6 +263,20 @@ def cmd_bookserver_connect(args) -> int:
     return 0
 
 
+def cmd_delete(args) -> int:
+    """Remove an app that is already turned off, with its tokens and codes."""
+    try:
+        OAuthClient.delete(args.client_id)
+    except LookupError:
+        print(f"No client with id {args.client_id!r}.", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"Removed {args.client_id!r} and everything it held.")
+    return 0
+
+
 def cmd_list(args) -> int:
     """Client ids are generated unless chosen at registration, so this is how to find one."""
     rows = db.query(OAuthClient).order_by(OAuthClient.created_at.desc()).all()
@@ -334,6 +348,11 @@ def main() -> int:
     book.add_argument("--enable", action="store_true",
                       help="also turn a disabled default back on")
     book.set_defaults(fn=cmd_bookserver_connect)
+
+    delete = sub.add_parser(
+        "delete", help="remove an app that is turned off, with its tokens and codes")
+    delete.add_argument("client_id")
+    delete.set_defaults(fn=cmd_delete)
 
     sub.add_parser("list", help="show every registered client").set_defaults(fn=cmd_list)
 

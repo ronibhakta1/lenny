@@ -214,6 +214,25 @@ backslash, a fragment, or `user@host` (a URL that names a different host than it
 appears to), and are limited to 2048 characters. A client has a name of 1-100
 characters and at most 10 redirect URLs.
 
+### Fixing a mistake
+
+An app registered with a wrong name, redirect URL or permission can be edited
+(Admin → App Access → the app's *Edit*, or `PATCH /v1/api/admin/oauth2/clients/{id}`).
+The client id and the app type are fixed, because tokens are keyed on the id and
+the type decides whether a secret exists.
+
+- **Taking a permission away signs that app's patrons out** (their live tokens are
+  revoked), so the change is true immediately instead of when each token expires.
+  Adding a permission, or changing the name or redirect URLs, does not.
+- **A lost or leaked secret** is reset, not recovered: *Reset secret* (or `POST
+  …/{id}/rotate-secret`) returns a new one once and the old one stops working at
+  once. Only server apps have a secret to reset.
+- **Removing an app** (`DELETE …/{id}`, or `make oauth2-delete CLIENT=<id>`) is two
+  steps on purpose: turn it off first, then remove it. It deletes the app with the
+  tokens and codes it held, so a later app registered under the same id inherits
+  nothing. A built-in app (Book Server) cannot be removed, only turned off, because
+  it would be recreated at the next start.
+
 ### What an app can do with its token
 
 | Call | Needs | Returns |

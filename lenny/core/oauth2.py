@@ -146,6 +146,34 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _REVERSE_DNS_SCHEME = re.compile(r"^[a-z][a-z0-9+.\-]*\.[a-z0-9+.\-]+$")
 
 
+def _check_name(name: Optional[str]) -> str:
+    name = (name or "").strip()
+    if not name or len(name) > MAX_CLIENT_NAME_LEN:
+        raise ValueError(f"name must be 1-{MAX_CLIENT_NAME_LEN} characters.")
+    return name
+
+
+def _check_redirects(redirect_uris: list[str]) -> list[str]:
+    if not redirect_uris:
+        raise ValueError("at least one redirect URL is required.")
+    if len(redirect_uris) > MAX_REDIRECT_URIS:
+        raise ValueError(f"at most {MAX_REDIRECT_URIS} redirect URLs per app.")
+    for uri in redirect_uris:
+        if not acceptable_redirect(uri):
+            raise ValueError(
+                f"{uri!r} cannot be a redirect_uri: it must be an absolute "
+                "https:// URL, http:// on loopback, or a private-use scheme "
+                "such as opds:// or com.example.app:// (RFC 8252).")
+    return list(dict.fromkeys(redirect_uris))  # drop exact duplicates, keep order
+
+
+def _check_scopes(scopes: list[str]) -> list[str]:
+    scopes = list(dict.fromkeys(scopes))
+    if not scopes or (unknown := set(scopes) - set(SCOPES)):
+        raise ValueError(f"scopes must be some of: {', '.join(sorted(SCOPES))}.")
+    return scopes
+
+
 def acceptable_redirect(uri: str) -> bool:
     """Whether a redirect_uri may be registered.
 
@@ -267,11 +295,8 @@ class OAuthClient(Base):
         client_id that is malformed or already taken (a disabled client keeps its
         id, so it cannot be reused to resurrect old tokens).
         """
-        name = (name or "").strip()
-        if not name or len(name) > MAX_CLIENT_NAME_LEN:
-            raise ValueError(f"name must be 1-{MAX_CLIENT_NAME_LEN} characters.")
-        if len(redirect_uris) > MAX_REDIRECT_URIS:
-            raise ValueError(f"at most {MAX_REDIRECT_URIS} redirect URLs per app.")
+        name = _check_name(name)
+        redirect_uris = _check_redirects(redirect_uris)
         if client_id is not None:
             if not CLIENT_ID_RE.fullmatch(client_id):
                 raise ValueError(
@@ -281,20 +306,13 @@ class OAuthClient(Base):
             # `reader-archive-org` and be mistaken for it.
             if db.query(cls).filter(func.lower(cls.client_id) == client_id.lower()).first():
                 raise ValueError(f"client_id {client_id!r} is already registered.")
-        for uri in redirect_uris:
-            if not acceptable_redirect(uri):
-                raise ValueError(
-                    f"{uri!r} cannot be a redirect_uri: it must be an absolute "
-                    "https:// URL, http:// on loopback, or a private-use scheme "
-                    "such as opds:// or com.example.app:// (RFC 8252).")
-
         secret = _mint(32) if is_confidential else None
         client = cls(
             client_id=client_id or _mint(16),
             client_secret_hash=_hash(secret) if secret else None,
             name=name,
             redirect_uris="\n".join(redirect_uris),
-            scopes=" ".join(scopes or list(SCOPES)),
+            scopes=" ".join(_check_scopes(scopes) if scopes else list(SCOPES)),
             is_confidential=is_confidential,
         )
         db.add(client)
@@ -306,6 +324,99 @@ class OAuthClient(Base):
         """The client with this id in any state, including disabled. `get` is for
         authenticating a request and hides disabled clients; this is for admin."""
         return db.query(cls).filter(cls.client_id == client_id).first()
+
+    @classmethod
+    def _revoke_live_tokens(cls, client_id: str) -> int:
+        tokens = db.query(AccessToken).filter(
+            AccessToken.client_id == client_id,
+            AccessToken.revoked_at == None,  # noqa: E711
+        ).all()
+        for token in tokens:
+            token.revoked_at = _now()
+            db.add(token)
+        return len(tokens)
+
+    @classmethod
+    def update(cls, client_id: str, *, name: Optional[str] = None,
+               redirect_uris: Optional[list[str]] = None,
+               scopes: Optional[list[str]] = None) -> tuple["OAuthClient", int]:
+        """Change what an admin got wrong at registration. Returns
+        `(client, tokens_revoked)`. Raises LookupError for an unknown client and
+        ValueError for a change that fails the same checks `register` applies.
+
+        The id is never editable: tokens and codes are keyed on it. Neither is the
+        type (public or server): that decides whether a secret exists, and a
+        secret is reset, not toggled.
+
+        Taking a permission away revokes the client's live tokens. Otherwise a
+        token issued with the old, wider scope would keep working until it expired,
+        which would make "I removed `borrow`" untrue. The patrons sign in again.
+        Redirect URLs need no such step: a code is bound to the URL it was issued
+        for and lives minutes, and the check runs again on every authorization.
+        """
+        row = cls.find(client_id)
+        if row is None:
+            raise LookupError(client_id)
+        new_name = _check_name(name) if name is not None else None
+        new_uris = _check_redirects(redirect_uris) if redirect_uris is not None else None
+        new_scopes = _check_scopes(scopes) if scopes is not None else None
+
+        revoked = 0
+        if new_scopes is not None and (row.allowed_scopes() - set(new_scopes)):
+            revoked = cls._revoke_live_tokens(client_id)
+        if new_name is not None:
+            row.name = new_name
+        if new_uris is not None:
+            row.redirect_uris = "\n".join(new_uris)
+        if new_scopes is not None:
+            row.scopes = " ".join(new_scopes)
+        db.add(row)
+        db.commit()
+        return row, revoked
+
+    @classmethod
+    def rotate_secret(cls, client_id: str) -> str:
+        """Issue a new secret for a server app and return it once. The old secret
+        stops working immediately; tokens already issued are not affected. This is
+        the answer to "the secret was shown once and we lost it" (or leaked).
+
+        Raises LookupError for an unknown client, ValueError for a public client,
+        which has no secret to rotate."""
+        row = cls.find(client_id)
+        if row is None:
+            raise LookupError(client_id)
+        if not row.is_confidential:
+            raise ValueError("this app is a public client: it has no secret to reset.")
+        secret = _mint(32)
+        row.client_secret_hash = _hash(secret)
+        db.add(row)
+        db.commit()
+        return secret
+
+    @classmethod
+    def delete(cls, client_id: str) -> None:
+        """Remove a client and everything it holds. Raises LookupError if unknown
+        and ValueError when removal is not allowed:
+
+        * a built-in client (it would simply be recreated at the next start, and
+          an operator's "off" is what survives a restart), and
+        * a client that is still on: turning it off first is the deliberate step,
+          so a removal is never one stray click away from signing patrons out.
+
+        Its tokens and codes go with it, so a later client registered under the
+        same id inherits nothing.
+        """
+        row = cls.find(client_id)
+        if row is None:
+            raise LookupError(client_id)
+        if client_id in {c["client_id"] for c in DEFAULT_CLIENTS}:
+            raise ValueError("a built-in app cannot be removed; turn it off instead.")
+        if row.disabled_at is None:
+            raise ValueError("turn the app off before removing it.")
+        db.query(AccessToken).filter(AccessToken.client_id == client_id).delete(synchronize_session=False)
+        db.query(AuthorizationCode).filter(AuthorizationCode.client_id == client_id).delete(synchronize_session=False)
+        db.delete(row)
+        db.commit()
 
     @classmethod
     def all(cls) -> list["OAuthClient"]:
@@ -349,15 +460,9 @@ class OAuthClient(Base):
             return 0
         row.disabled_at = _now()
         db.add(row)
-        tokens = db.query(AccessToken).filter(
-            AccessToken.client_id == client_id,
-            AccessToken.revoked_at == None,  # noqa: E711
-        ).all()
-        for token in tokens:
-            token.revoked_at = _now()
-            db.add(token)
+        revoked = cls._revoke_live_tokens(client_id)
         db.commit()
-        return len(tokens)
+        return revoked
 
     # ── checks ───────────────────────────────────────────────────────────────
 

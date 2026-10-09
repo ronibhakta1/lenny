@@ -145,6 +145,13 @@ oauth2-disable:
 	@test -n "$(CLIENT)" || { echo "usage: make oauth2-disable CLIENT=<client_id>"; exit 1; }
 	@docker compose -p lenny exec api python3 scripts/oauth2_client.py disable $(CLIENT)
 
+# Removes an app that is already turned off (make oauth2-disable first), together
+# with its tokens and codes. A built-in app cannot be removed; leave it disabled.
+.PHONY: oauth2-delete
+oauth2-delete:
+	@test -n "$(CLIENT)" || { echo "usage: make oauth2-delete CLIENT=<client_id>  (disable it first)"; exit 1; }
+	@docker compose -p lenny exec api python3 scripts/oauth2_client.py delete $(CLIENT)
+
 # Deletes codes and tokens that can no longer be used. Safe to run from cron.
 .PHONY: oauth2-sweep
 oauth2-sweep:

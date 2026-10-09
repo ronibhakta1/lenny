@@ -6,6 +6,7 @@ borrowed even though the patron had approved exactly that on the consent screen.
 """
 
 import os
+from unittest.mock import patch
 
 import pytest
 import sqlalchemy
@@ -59,8 +60,11 @@ def token_for(email, scope):
 
 def borrow(token=None):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    return TestClient(app).get(f"/v1/api/items/{EDITION}/borrow", headers=headers,
-                               follow_redirects=False)
+    # The response is a publication built from an Open Library lookup; the test is
+    # about who may borrow, so keep it off the network.
+    with patch("lenny.routes.api.build_post_borrow_publication", return_value={"metadata": {"title": "x"}}):
+        return TestClient(app).get(f"/v1/api/items/{EDITION}/borrow", headers=headers,
+                                   follow_redirects=False)
 
 
 def loans_of(email):
