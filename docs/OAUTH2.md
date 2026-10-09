@@ -270,6 +270,17 @@ A node that never configured an external provider never advertises PKCE.
 Advertising both flows together is deferred until the revised OPDS
 authentication spec settles ([#237](https://github.com/ArchiveLabs/lenny/issues/237)).
 
+### What a patron sees
+
+The consent screen, on a laptop and on a phone, and the page shown when an app is
+not set up with the library:
+
+<p>
+  <img src="images/oauth2-consent.png" alt="Consent screen: which account is signing in, what the app will be able to do, where the patron returns to, and Allow / Not now" width="330">
+  <img src="images/oauth2-consent-phone.png" alt="The same consent screen on a phone" width="290">
+  <img src="images/oauth2-error.png" alt="Error page: this app isn't set up with this library, nothing was shared, ask your librarian" width="330">
+</p>
+
 ### Signing in as a different account
 
 A browser keeps two logins: Lenny's own cookie (a week) and the sign-in
