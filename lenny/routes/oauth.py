@@ -4,7 +4,8 @@ OAuth / OIDC routes for Lenny.
 
 Contains:
   - Existing OPDS-standard OAuth endpoints (moved from api.py):
-      GET/POST /oauth/implicit   — OPDS Authentication Document
+      GET/POST /oauth/implicit   — OPDS Authentication Document (original address)
+      GET/POST /oauth/authentication — the same document, flow-neutral name
       GET/POST /oauth/authorize  — OTP-based authorization
 
   - New external OIDC provider endpoints:
@@ -97,8 +98,14 @@ def _get_authenticated_email(
     return email_data.get("email") if isinstance(email_data, dict) else None
 
 
+# `/oauth/implicit` is the original address, kept because readers have stored it.
+# `/oauth/authentication` serves the same document under a name that does not claim
+# a flow; it is the address the document names as its own `id` when the node
+# advertises Authorization Code + PKCE.
 @router.get("/oauth/implicit")
 @router.post("/oauth/implicit")
+@router.get("/oauth/authentication")
+@router.post("/oauth/authentication")
 async def oauth_implicit(request: Request) -> Response:
     """Returns the OPDS Authentication Document describing the available flows."""
     return Response(

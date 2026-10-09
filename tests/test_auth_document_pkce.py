@@ -104,3 +104,24 @@ def test_pkce_links_match_oauth_server_metadata(mode):
     assert links["authenticate"] == meta["authorization_endpoint"]
     assert links["code"] == links["refresh"] == meta["token_endpoint"]
     assert "S256" in meta["code_challenge_methods_supported"]
+
+
+def test_document_id_never_names_a_flow_it_does_not_advertise(mode):
+    mode("external")
+    pkce = core_api.auth_document()
+    assert pkce["id"].endswith("/v1/api/oauth/authentication")
+    assert "implicit" not in pkce["id"]
+    mode("ol")
+    # An implicit document keeps the id existing readers stored.
+    assert core_api.auth_document()["id"].endswith("/v1/api/oauth/implicit")
+
+
+@pytest.mark.parametrize("path", ["/v1/api/oauth/implicit", "/v1/api/oauth/authentication"])
+def test_the_id_is_an_address_that_serves_the_document(mode, path):
+    mode("external")
+    c = TestClient(app)
+    served = c.get(path)
+    assert served.status_code == 200
+    assert served.json() == core_api.auth_document()
+    assert served.json()["id"].endswith("/v1/api/oauth/authentication")
+    assert c.get(served.json()["id"].replace(LennyDataProvider.BASE_URL, "/v1/api/")).status_code == 200

@@ -62,8 +62,6 @@ LennyDataProvider.BASE_URL = _make_url("/v1/api/")
 # whether a client is shown it.
 LennyDataProvider.OAUTH_ISSUER = _make_url("").rstrip("/")
 
-_AUTH_IMPLICIT = "http://opds-spec.org/auth/oauth/implicit"
-_AUTH_PKCE = "http://opds-spec.org/auth/oauth/authorization-code-with-pkce"
 
 
 def auth_document() -> dict:
@@ -79,14 +77,12 @@ def auth_document() -> dict:
     entry, in any mode, so an upgrade strands no existing reader.
     ponytail: "both" becomes the default once the revised spec settles (#237).
     """
-    doc = LennyDataProvider.get_authentication_document()
     if _os.environ.get("LENNY_AUTH_DOC_MODE", "active").strip().lower() == "both":
-        return doc
-    want = _AUTH_PKCE if _configs.read_lending_mode() == "external" else _AUTH_IMPLICIT
-    # Fall back to everything the library gave us rather than an empty list
-    # (e.g. an older pyopds2_lenny without the PKCE entry).
-    doc["authentication"] = [a for a in doc["authentication"] if a["type"] == want] or doc["authentication"]
-    return doc
+        flows = ["implicit", "pkce"]
+    else:
+        flows = ["pkce"] if _configs.read_lending_mode() == "external" else ["implicit"]
+    # The library picks the entries and names the document (`id`) after them.
+    return LennyDataProvider.get_authentication_document(flows)
 
 # empty_catalog / build_catalog / build_publication are not yet in the
 # pyopds2_lenny library (pinned to commit 356518d). Patch them here so
