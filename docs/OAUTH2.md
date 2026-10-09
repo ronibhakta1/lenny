@@ -319,6 +319,58 @@ client's definition (id, name, redirect) is in code and contains no secret.
 
 ---
 
+## Upgrading to the app-access release
+
+Written for an operator who has a node that works today and wants to stay that
+way. **There is no database migration and no new required setting.** Rolling back
+is safe; it leaves one extra row in `oauth_clients`, which nothing else reads.
+
+| What changes | Who it can affect | What to do |
+|---|---|---|
+| **Book Server is registered automatically** at startup (`reader-archive-org`, redirect `https://reader.archive.org`) | Every node. It can now ask a patron for access, and the patron still has to approve it on the consent screen | To opt out: `make oauth2-disable CLIENT=reader-archive-org`. It stays off across restarts. A client you already registered under that id is left untouched |
+| **In `external` provider mode the sign-in document shows PKCE only** (it used to show implicit) | Nodes in `external` mode whose readers only speak the implicit flow (older Thorium, for example). They stop seeing a flow they can use | Add `LENNY_AUTH_DOC_MODE=both` to `.env` and restart the API. The document then lists implicit first, then PKCE, in any mode. Nodes in `ol` or `none` mode see no change |
+| `/shelf`, `/profile` and `/items/{id}/borrow` **also accept an app's bearer token** | Nobody. Cookie logins behave as before | None |
+| Consent screen and sign-in error page redesigned | Patrons see a clearer page. No flow changes | None |
+| `prompt=login` / `select_account` and a **"Not you?"** button | Additive | None |
+| The public API documentation **no longer lists admin routes** | Anyone who scraped `/openapi.json` for them. The routes themselves are unchanged | None |
+| **Admin: a new *App Access* screen** (Settings → Apps & readers) | Needs the matching `lenny-app` build | Upgrade both together. Lenny without the new admin works, the screen is simply missing. The new admin with an older Lenny shows an error on that screen only |
+| `pyopds2_lenny` is pinned to a newer commit | Nobody | With an older copy the sign-in document keeps showing the implicit flow |
+
+### To start using OAuth PKCE with your apps
+
+1. Make sure the node is reachable at its public address (`LENNY_PROXY`, or the
+   host and port from `make configure`). Every URL an app is given is built from it.
+2. Add each app: Settings → **App Access → Add an app**, or `make oauth2-register`
+   (see *Connecting a reading app*). Book Server is already there.
+3. Give the app's developer the endpoints from the *For developers* tab (or
+   `/.well-known/oauth-authorization-server`).
+4. If readers find your node through its OPDS feed rather than being configured by
+   hand, decide what the sign-in document should advertise: one flow at a time (the
+   default) or both (`LENNY_AUTH_DOC_MODE=both`).
+
+Nothing here changes how patrons sign in today. Whether they use one-time codes or
+an external provider is still the admin's choice, and is a separate setting from
+which apps may use Lenny's sign-in.
+
+### Settings added by this release
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LENNY_AUTH_DOC_MODE` | `active` | `active`: the sign-in document shows only the flow the admin switch selected. `both`: it shows implicit, then PKCE, in every mode |
+
+### Not done in this release
+
+Returning a book and opening it in the reader still require the patron's own
+login cookie, so an app that holds only a token cannot do either. Showing both
+flows by default, Device Authorization, a domain allow-list for the sign-in hint,
+and a client registry are tracked in
+[#237](https://github.com/ArchiveLabs/lenny/issues/237) because the revised OPDS
+authentication spec is not final. A login cookie also does not record how it was
+obtained, so a one-time-code login keeps working after the admin switches to an
+external provider until it expires.
+
+---
+
 ## Security properties
 
 Each of these is pinned by a test named `test_attack_*`; a green-to-red there

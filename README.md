@@ -92,6 +92,9 @@ make oauth2-clients         # list apps
 
 Apps use Authorization Code with PKCE. The node's endpoints are at `/.well-known/oauth-authorization-server` and on the *For developers* tab of App Access. This is not the same as the external sign-in provider above: that one is how Lenny signs patrons in, this one is which apps may use Lenny. See [docs/OAUTH2.md](docs/OAUTH2.md) for the whole picture, including what an app can call, signing in as a different account, and the security notes.
 
+> [!NOTE]
+> **Upgrading a node that works today?** There is no database migration and no new required setting. Two behaviors are worth a look: Book Server is now registered automatically (disable it with `make oauth2-disable CLIENT=reader-archive-org` if you do not want it), and a node in *external provider* mode now advertises PKCE only in its sign-in document. If your readers only speak the older implicit flow, set `LENNY_AUTH_DOC_MODE=both` in `.env` and restart. The full list is in [Upgrading to the app-access release](docs/OAUTH2.md#upgrading-to-the-app-access-release).
+
 ---
 
 ## Features
