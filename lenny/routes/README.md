@@ -235,6 +235,26 @@ the internal Docker network.
 
 ---
 
+### Bulk Import Batches
+
+State for the bulk EPUB import page (drop a folder, match to Open Library, review,
+import). Code lives in `lenny/core/bulk_import/`. EPUB files only.
+
+A batch is **kept for 30 days from its last write** (reads never extend it) and
+is then purged, lazily, the next time a batch is created or listed. An expired
+batch answers `410`; a purged one `404`. A row is identified by its path, size
+and modified time, so re-dropping the same folder re-attaches to the existing
+rows instead of duplicating them.
+
+- **POST /admin/import/batches** — create a batch (`201`).
+- **GET /admin/import/batches** — unexpired batches, newest first.
+- **GET /admin/import/batches/{id}** — summary: `total`, `counts` per state, `ready`, `auto_picked`, `skipped`, `encrypted`, `expires_at`.
+- **DELETE /admin/import/batches/{id}** — clear it (`204`).
+- **PUT /admin/import/batches/{id}/rows** — `{"rows": [{path, size, mtime, isbn?, title?, author?, language?, publisher?, year?, state?: "not_epub"}]}`, at most 500 per call. Idempotent. Returns `{created, existing}`.
+- **GET /admin/import/batches/{id}/rows** — `?state=&q=&skipped=&auto_picked=&cursor=&limit=` (limit up to 200). Returns `{rows, next_cursor}`.
+- **PATCH /admin/import/batches/{id}/rows/{row_id}** — `{skipped?, olid?, encrypted?}`. A new `olid` on an already imported row moves the stored book to that edition; loans stay with it.
+- **POST /admin/import/batches/{id}/actions** — `{action: "skip"|"unskip"|"set_encrypted", value?, state?, q?, skipped?, auto_picked?}` applied to every row matching the filter. Returns `{updated}`.
+
 ## Authentication
 Most endpoints require a valid session cookie. Use `/authenticate` to obtain one via email and OTP.
 
