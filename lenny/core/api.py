@@ -702,12 +702,16 @@ class LennyAPI:
         )
 
     @classmethod
-    def upload_file(cls, fp, filename):
+    def _check_size(cls, fp):
         if not fp.size or fp.size > cls.MAX_FILE_SIZE:
             one_mb = (1024 * 1024)
             raise FileTooLargeError(
                 f"{fp.filename} exceeds {cls.MAX_FILE_SIZE // one_mb}MB."
             )
+
+    @classmethod
+    def upload_file(cls, fp, filename):
+        cls._check_size(fp)
         fp.file.seek(0)
 
         try:
@@ -741,6 +745,7 @@ class LennyAPI:
             ext = Path(fp.filename).suffix.lower()
             if ext not in cls.VALID_EXTS:
                 raise InvalidFileError("Only EPUB files can be imported.")
+            cls._check_size(fp)
             if not is_valid_epub(fp.file):
                 raise InvalidFileError(f"{fp.filename} is not a valid EPUB file.")
             formats += cls.VALID_EXTS[ext].value

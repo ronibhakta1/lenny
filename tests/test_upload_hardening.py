@@ -65,6 +65,19 @@ def test_is_valid_epub_rejects_too_many_entries_before_parsing_them():
     assert utils.is_valid_epub(io.BytesIO(data)) is True
 
 
+def test_corrupt_compressed_mimetype_is_rejected_not_raised():
+    from lenny.core.utils import is_valid_epub
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", b"application/epub+zip" * 50, compress_type=zipfile.ZIP_DEFLATED)
+    data = bytearray(buf.getvalue())
+    start = data.index(b"mimetype") + len(b"mimetype")
+    for i in range(start, start + 12):       # scramble the start of the deflate stream
+        data[i] ^= 0xFF
+    assert is_valid_epub(io.BytesIO(bytes(data))) is False
+    assert is_valid_epub(io.BytesIO(bytes(data[: len(data) // 2]))) is False
+
+
 def test_is_valid_epub_leaves_the_file_at_the_start():
     from lenny.core.utils import is_valid_epub
     fp = io.BytesIO(make_epub())
@@ -110,6 +123,18 @@ def test_reupload_validates_before_deleting_the_stored_copy():
          patch.object(LennyAPI, "_item_s3_keys", return_value=["5.epub"]):
         with pytest.raises(InvalidFileError):
             LennyAPI.reupload(5, [upload_file("x.epub", b"not an epub")])
+    s3.delete_object.assert_not_called()
+
+
+def test_reupload_checks_size_before_deleting_the_stored_copy():
+    from lenny.core.api import LennyAPI
+    from lenny.core.exceptions import FileTooLargeError
+    with patch("lenny.core.api.s3") as s3, \
+         patch("lenny.core.api.Item.exists", return_value=MagicMock()), \
+         patch.object(LennyAPI, "_item_s3_keys", return_value=["5.epub"]), \
+         patch.object(LennyAPI, "MAX_FILE_SIZE", 10):
+        with pytest.raises(FileTooLargeError):
+            LennyAPI.reupload(5, [upload_file()])
     s3.delete_object.assert_not_called()
 
 

@@ -22,6 +22,7 @@ def is_valid_epub(fp) -> bool:
     """
     import struct
     import zipfile
+    import zlib
     try:
         fp.seek(0, 2)
         size = fp.tell()
@@ -37,7 +38,8 @@ def is_valid_epub(fp) -> bool:
         with zipfile.ZipFile(fp) as zf:
             with zf.open("mimetype") as m:
                 return m.read(len(EPUB_MIMETYPE) + 1) == EPUB_MIMETYPE
-    except (zipfile.BadZipFile, KeyError, OSError, ValueError, NotImplementedError, RuntimeError):
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError, NotImplementedError,
+            RuntimeError, zlib.error, EOFError):
         return False
     finally:
         try:
