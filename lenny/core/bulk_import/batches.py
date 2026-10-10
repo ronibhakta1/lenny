@@ -349,16 +349,28 @@ def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
             raise ImportRowNotFound(f"Row {row_id} not found.")
         if row.state == IMPORTING:
             raise ImportRowBusy("Wait for this upload to finish.")
+
+        # Work on the stored book first. Both calls open and commit their own
+        # transactions, so release this one (and its lock) around them, then
+        # re-take the lock and re-read the row before applying the row changes.
+        imported = row.state == IMPORTED and row.olid
+        rename = imported and olid is not None and olid != row.olid
+        reflag = imported and encrypted is not None and encrypted != row.encrypted
+        if rename or reflag:
+            from lenny.core.api import LennyAPI  # lazy: api imports a lot
+            current = row.olid
+            db.rollback()
+            if rename:
+                LennyAPI.rename_item(current, olid)
+                current = olid
+            if reflag:
+                LennyAPI.update_item(current, encrypted=encrypted)
+            _xact_lock(f"import_batch:{batch_id}")
+            batch = _get(batch_id)
+            row = db.query(ImportRow).filter(ImportRow.id == row_id).one()
+
         if olid is not None and olid != row.olid:
-            if row.state == IMPORTED and row.olid:
-                from lenny.core.api import LennyAPI  # lazy: api imports a lot
-                old = row.olid
-                db.rollback()  # rename_item opens its own transaction
-                LennyAPI.rename_item(old, olid)
-                _xact_lock(f"import_batch:{batch_id}")
-                batch = _get(batch_id)
-                row = db.query(ImportRow).filter(ImportRow.id == row_id).one()
-            else:
+            if row.state != IMPORTED:
                 row.state = MATCHED
             row.olid, row.decision, row.auto_picked, row.error = olid, USER, False, None
         if skipped is not None:
@@ -390,6 +402,13 @@ def bulk_update(batch_id: int, action: str, state: str | None = None,
         query = _filtered(batch_id, state, q, skipped, auto_picked)
         if action != "set_encrypted":
             query = query.filter(ImportRow.state.notin_(_SETTLED))
+        else:
+            # Imported rows already have an item; flip its flag in step with the row.
+            from lenny.core.models import Item
+            imported = query.filter(ImportRow.state == IMPORTED, ImportRow.olid.is_not(None))
+            db.query(Item).filter(Item.openlibrary_edition.in_(
+                imported.with_entities(ImportRow.olid).scalar_subquery()
+            )).update({"encrypted": value}, synchronize_session=False)
         # Only rows that actually change, so the count reports real work.
         updated = query.filter(differs).update(change, synchronize_session=False)
         _touch(batch)

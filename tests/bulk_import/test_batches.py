@@ -301,6 +301,68 @@ def test_a_failed_rename_leaves_the_row_untouched():
     assert b.list_rows(bid)["rows"][0]["olid"] == 111
 
 
+def test_encrypting_an_imported_row_flips_the_items_flag_too():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1))
+    rid = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(rid): {"state": b.IMPORTED, "olid": 111}})
+    with patch("lenny.core.api.LennyAPI.update_item") as update:
+        r = b.update_row(bid, rid, encrypted=True)
+    update.assert_called_once_with(111, encrypted=True)
+    assert r["encrypted"] is True
+    with patch("lenny.core.api.LennyAPI.update_item") as update:
+        b.update_row(bid, rid, encrypted=True)       # unchanged: no item call
+    update.assert_not_called()
+
+
+def test_changing_edition_and_encryption_together_applies_both():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1))
+    rid = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(rid): {"state": b.IMPORTED, "olid": 111}})
+    with patch("lenny.core.api.LennyAPI.rename_item") as rename, \
+         patch("lenny.core.api.LennyAPI.update_item") as update:
+        r = b.update_row(bid, rid, olid=222, encrypted=True, skipped=True)
+    rename.assert_called_once_with(111, 222)
+    update.assert_called_once_with(222, encrypted=True)
+    assert (r["olid"], r["encrypted"], r["skipped"], r["state"]) == (222, True, True, "imported")
+
+
+def test_a_failed_item_update_leaves_the_row_untouched():
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.exceptions import ItemNotFoundError
+    bid = new_batch(); b.upsert_rows(bid, rows(1))
+    rid = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(rid): {"state": b.IMPORTED, "olid": 111}})
+    with patch("lenny.core.api.LennyAPI.update_item", side_effect=ItemNotFoundError("gone")):
+        with pytest.raises(ItemNotFoundError):
+            b.update_row(bid, rid, encrypted=True)
+    assert b.list_rows(bid)["rows"][0]["encrypted"] is False
+
+
+def test_bulk_encrypt_flips_the_items_of_imported_rows_only():
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.db import session as db
+    from lenny.core.models import Item, FormatEnum
+    for olid in (801, 802, 803):
+        db.add(Item(openlibrary_edition=olid, encrypted=False, formats=FormatEnum.EPUB))
+    db.commit()
+    try:
+        bid = new_batch(); b.upsert_rows(bid, rows(2))
+        ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+        set_state(bid, **{str(ids[0]): {"state": b.IMPORTED, "olid": 801},
+                          str(ids[1]): {"state": b.MATCHED, "olid": 802}})
+        assert b.bulk_update(bid, "set_encrypted", value=True) == 2
+        enc = {i.openlibrary_edition: i.encrypted for i in db.query(Item).filter(
+            Item.openlibrary_edition.in_([801, 802, 803]))}
+        assert enc == {801: True, 802: False, 803: False}
+        b.bulk_update(bid, "set_encrypted", value=False)
+        assert db.query(Item).filter(Item.openlibrary_edition == 801).one().encrypted is False
+    finally:
+        db.query(Item).filter(Item.openlibrary_edition.in_([801, 802, 803])).delete(synchronize_session=False)
+        db.commit()
+
+
 # ─── bulk actions ────────────────────────────────────────────────────────────
 
 def test_bulk_skip_follows_the_filter_and_spares_settled_rows():
