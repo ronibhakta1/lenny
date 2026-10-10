@@ -15,8 +15,8 @@ from pyopds2.models import Link, Navigation
 from pyopds2.provider import DataProvider
 from lenny import configs as _configs
 from lenny.core import db, s3, auth
-from lenny.core.utils import hash_email, parse_modified_since, to_iso_utc
-from lenny.core.models import Item, FormatEnum, Loan
+from lenny.core.utils import hash_email, parse_modified_since, to_iso_utc, is_valid_epub
+from lenny.core.models import Item, FormatEnum, Loan, lock_editions
 from lenny.core.openlibrary import OpenLibrary
 from lenny.core.upstream import open_library as _ol_guard, install_timeout as _install_ol_timeout
 import pyopds2_openlibrary as _pyopds2_openlibrary
@@ -244,8 +244,8 @@ class LennyAPI:
     DEFAULT_LIMIT = 50
     OPDS_TITLE = "Lenny Catalog"
     MAX_FILE_SIZE = 100 * 1024 * 1024
+    # EPUB only. FormatEnum keeps its PDF members so existing rows still load.
     VALID_EXTS = {
-        ".pdf": FormatEnum.PDF,
         ".epub": FormatEnum.EPUB
     }
     SEARCH_BATCH_SIZE = 250
@@ -702,11 +702,6 @@ class LennyAPI:
         )
 
     @classmethod
-    def encrypt_file(cls, f, method="lcp"):
-        # XXX Not Implemented
-        return f
-
-    @classmethod
     def upload_file(cls, fp, filename):
         if not fp.size or fp.size > cls.MAX_FILE_SIZE:
             one_mb = (1024 * 1024)
@@ -733,46 +728,38 @@ class LennyAPI:
             )
     
     @classmethod
-    def upload_files(cls, files: list[UploadFile], filename, encrypt=False):
-        from io import BytesIO
+    def validate_files(cls, files: list[UploadFile]) -> int:
+        """Raise InvalidFileError unless every named file is an EPUB; returns the format flags.
+
+        Runs before anything is written or deleted, so a bad file can never
+        cost an existing book its stored copy (reupload deletes first).
+        """
         formats = 0
         for fp in files:
             if not fp.filename:
                 continue
-
             ext = Path(fp.filename).suffix.lower()
-
-            if ext in cls.VALID_EXTS:
-                formats += cls.VALID_EXTS[ext].value
-                
-                if encrypt:
-                    fp.file.seek(0)
-                    file_content = fp.file.read()
-                    
-                    fp.file.seek(0)
-                    cls.upload_file(fp, f"{filename}{ext}")
-                    
-                    encrypted_fp = BytesIO(file_content)
-                    class TempFile:
-                        def __init__(self, file, filename, content_type, size):
-                            self.file = file
-                            self.filename = filename
-                            self.content_type = content_type
-                            self.size = size
-                    
-                    temp_file = TempFile(
-                        cls.encrypt_file(encrypted_fp),
-                        fp.filename,
-                        fp.content_type,
-                        fp.size
-                    )
-                    cls.upload_file(temp_file, f"{filename}_encrypted{ext}")
-                else:
-                    cls.upload_file(fp, f"{filename}{ext}")
-            else:
-                raise InvalidFileError(f"Invalid format {ext} for {fp.filename}")
+            if ext not in cls.VALID_EXTS:
+                raise InvalidFileError("Only EPUB files can be imported.")
+            if not is_valid_epub(fp.file):
+                raise InvalidFileError(f"{fp.filename} is not a valid EPUB file.")
+            formats += cls.VALID_EXTS[ext].value
         if not formats:
             raise InvalidFileError("No valid files provided")
+        return formats
+
+    @classmethod
+    def upload_files(cls, files: list[UploadFile], filename, encrypt=False):
+        """Store each file as `{filename}.epub`; returns the format flags.
+
+        One S3 object per book. `encrypt` is not a storage concern: it is the
+        `Item.encrypted` flag alone, which every read path already honours, so
+        toggling it never needs another copy of the bytes.
+        """
+        formats = cls.validate_files(files)
+        for fp in files:
+            if fp.filename:
+                cls.upload_file(fp, f"{filename}{Path(fp.filename).suffix.lower()}")
         return formats
 
     @classmethod
@@ -783,11 +770,17 @@ class LennyAPI:
         reaching this must already have proved the caller is an admin
         (`_require_admin`). This used to take an `uploader_ip` and authorize on
         it, which authorized anyone who could reach the port.
-        """
-        if Item.exists(openlibrary_edition):
-            raise ItemExistsError(f"Item '{openlibrary_edition}' already exists.")
 
-        if formats:= cls.upload_files(files, openlibrary_edition, encrypt=encrypt):
+        The edition lock is held from the existence check to the commit, so two
+        uploads of the same book cannot both pass the check. The transaction is
+        always ended on the way out, which is what releases the lock.
+        """
+        try:
+            lock_editions(openlibrary_edition)
+            if Item.exists(openlibrary_edition):
+                raise ItemExistsError(f"Item '{openlibrary_edition}' already exists.")
+
+            formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
             try:
                 item = Item(
                     openlibrary_edition=openlibrary_edition,
@@ -800,6 +793,8 @@ class LennyAPI:
             except Exception as e:
                 db.rollback()
                 raise DatabaseInsertError(f"Failed to add item to db: {str(e)}.")
+        finally:
+            db.rollback()
 
     UNSET = object()  # sentinel: "field not provided", distinct from JSON null
 
@@ -864,57 +859,61 @@ class LennyAPI:
         pointing at a key that doesn't exist — copy failures roll back their
         own partial copies, DB failures roll back the copies too.
         """
-        if old_olid == new_olid:
+        try:
+            lock_editions(old_olid, new_olid)
+            if old_olid == new_olid:
+                item = Item.exists(old_olid)
+                if not item:
+                    raise ItemNotFoundError(f"Item '{old_olid}' not found.")
+                return item
+
             item = Item.exists(old_olid)
             if not item:
                 raise ItemNotFoundError(f"Item '{old_olid}' not found.")
-            return item
+            if Item.exists(new_olid):
+                raise ItemExistsError(f"Item '{new_olid}' already exists.")
 
-        item = Item.exists(old_olid)
-        if not item:
-            raise ItemNotFoundError(f"Item '{old_olid}' not found.")
-        if Item.exists(new_olid):
-            raise ItemExistsError(f"Item '{new_olid}' already exists.")
-
-        old_keys = cls._item_s3_keys(old_olid)
-        old_prefix, new_prefix = str(old_olid), str(new_olid)
-        copied = []
-        try:
-            for key in old_keys:
-                new_key = new_prefix + key[len(old_prefix):]
-                s3.copy_object(
-                    Bucket=s3.BOOKSHELF_BUCKET,
-                    CopySource={'Bucket': s3.BOOKSHELF_BUCKET, 'Key': key},
-                    Key=new_key,
-                )
-                copied.append(new_key)
-        except ClientError as e:
-            for key in copied:
-                try:
-                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
-                except ClientError:
-                    pass
-            raise S3UploadError(f"Failed to copy S3 objects to new OLID {new_olid}: {e}")
-
-        try:
-            item.openlibrary_edition = new_olid
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            for key in copied:
-                try:
-                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
-                except ClientError:
-                    pass
-            raise DatabaseUpdateError(f"Failed to rename item {old_olid} -> {new_olid}: {str(e)}.")
-
-        for key in old_keys:
+            old_keys = cls._item_s3_keys(old_olid)
+            old_prefix, new_prefix = str(old_olid), str(new_olid)
+            copied = []
             try:
-                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                for key in old_keys:
+                    new_key = new_prefix + key[len(old_prefix):]
+                    s3.copy_object(
+                        Bucket=s3.BOOKSHELF_BUCKET,
+                        CopySource={'Bucket': s3.BOOKSHELF_BUCKET, 'Key': key},
+                        Key=new_key,
+                    )
+                    copied.append(new_key)
             except ClientError as e:
-                logger.warning(f"Could not delete old S3 object '{key}' after rename: {e}")
+                for key in copied:
+                    try:
+                        s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                    except ClientError:
+                        pass
+                raise S3UploadError(f"Failed to copy S3 objects to new OLID {new_olid}: {e}")
 
-        return item
+            try:
+                item.openlibrary_edition = new_olid
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                for key in copied:
+                    try:
+                        s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                    except ClientError:
+                        pass
+                raise DatabaseUpdateError(f"Failed to rename item {old_olid} -> {new_olid}: {str(e)}.")
+
+            for key in old_keys:
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                except ClientError as e:
+                    logger.warning(f"Could not delete old S3 object '{key}' after rename: {e}")
+
+            return item
+        finally:
+            db.rollback()
 
     @classmethod
     def reupload(cls, openlibrary_edition: int, files: list, encrypt: bool = False) -> Item:
@@ -931,25 +930,30 @@ class LennyAPI:
         action. Upgrade to copy-then-delete (like rename_item) if this ever
         needs to be online-safe.
         """
-        item = Item.exists(openlibrary_edition)
-        if not item:
-            raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
-
-        for key in cls._item_s3_keys(openlibrary_edition):
-            try:
-                s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
-            except ClientError as e:
-                logger.warning(f"Could not delete old S3 object '{key}' before reupload: {e}")
-
-        formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
         try:
-            item.encrypted = encrypt
-            item.formats = FormatEnum(formats)
-            db.commit()
-            return item
-        except Exception as e:
+            lock_editions(openlibrary_edition)
+            item = Item.exists(openlibrary_edition)
+            if not item:
+                raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
+            cls.validate_files(files)
+
+            for key in cls._item_s3_keys(openlibrary_edition):
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
+                except ClientError as e:
+                    logger.warning(f"Could not delete old S3 object '{key}' before reupload: {e}")
+
+            formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
+            try:
+                item.encrypted = encrypt
+                item.formats = FormatEnum(formats)
+                db.commit()
+                return item
+            except Exception as e:
+                db.rollback()
+                raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition} after reupload: {str(e)}.")
+        finally:
             db.rollback()
-            raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition} after reupload: {str(e)}.")
 
     @classmethod
     def delete(cls, openlibrary_edition: int) -> None:

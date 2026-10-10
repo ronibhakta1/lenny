@@ -84,7 +84,7 @@ Base URL: `http://localhost:8080/v1/api`
 ### 7. Upload Item
 
 - **POST /upload**
-  - Uploads a PDF or EPUB file for an OpenLibrary edition.
+  - Uploads an EPUB file for an OpenLibrary edition (EPUB only; the file must be a real EPUB).
   - **Admin only.** Requires the same credential pair as every `/admin/` route:
     the `X-Admin-Internal-Secret` shared secret (from `auth.env`) *and* an admin
     Bearer token from `POST /admin/auth`. There is no IP-based exemption — a
@@ -92,7 +92,7 @@ Base URL: `http://localhost:8080/v1/api`
   - **Form Data:**
     - `openlibrary_edition` (int, required): OpenLibrary Edition ID (must be positive)
     - `encrypted` (bool, optional, default: false): Set to true if file is encrypted
-    - `file` (UploadFile, required): PDF or EPUB file (max 50MB)
+    - `file` (UploadFile, required): EPUB file (max 100MB)
   - Example:
     ```sh
     curl -X POST "http://localhost:8080/v1/api/upload" \
@@ -193,7 +193,7 @@ the internal Docker network.
   - Replaces an item's file (fixes a wrong-file import). Item id and loan
     history are untouched — only the S3 object(s) and `encrypted`/`formats`
     change.
-  - **Form Data:** `file` (required, PDF/EPUB, max 50MB), `encrypted`
+  - **Form Data:** `file` (required, EPUB, max 100MB), `encrypted`
     (optional bool, default false)
   - Response: plain text `"File replaced successfully."`, not JSON.
 

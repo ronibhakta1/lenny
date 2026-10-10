@@ -20,6 +20,9 @@ PROXY = os.environ.get('LENNY_PROXY', '')
 HOST = os.environ.get('LENNY_HOST', 'localhost')
 PORT = int(os.environ.get('LENNY_PORT', 8080))
 WORKERS = int(os.environ.get('LENNY_WORKERS', 1 if TESTING else 3))
+# Uploads running at once per worker process. Each ties up a thread and a
+# database connection, so keep it small: a Pi has few cores and patrons share them.
+UPLOAD_CONCURRENCY = max(1, int(os.environ.get('LENNY_UPLOAD_CONCURRENCY', 2)))
 DEBUG = bool(int(os.environ.get('LENNY_DEBUG', 0)))
 SEED = os.environ.get('LENNY_SEED')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
