@@ -128,6 +128,18 @@ def test_reupload_keeps_the_stored_copy_when_the_upload_fails():
     s3.delete_object.assert_not_called()
 
 
+def test_reupload_removes_stale_keys_only_after_the_commit():
+    from lenny.core.api import LennyAPI
+    from lenny.core.exceptions import DatabaseUpdateError
+    with patch("lenny.core.api.s3") as s3, patch("lenny.core.api.db") as db, \
+         patch("lenny.core.api.Item.exists", return_value=MagicMock()), \
+         patch.object(LennyAPI, "_item_s3_keys", return_value=["5.epub", "5_encrypted.epub"]):
+        db.commit.side_effect = Exception("db exploded")
+        with pytest.raises(DatabaseUpdateError):
+            LennyAPI.reupload(5, [upload_file()])
+    s3.delete_object.assert_not_called()
+
+
 def test_reupload_validates_before_deleting_the_stored_copy():
     from lenny.core.api import LennyAPI
     from lenny.core.exceptions import InvalidFileError

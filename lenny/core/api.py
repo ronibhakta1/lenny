@@ -941,6 +941,14 @@ class LennyAPI:
             # Upload first: the new file overwrites the old at the same key, so a
             # failed upload (validation, size or S3) leaves the stored copy alone.
             formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
+            try:
+                item.encrypted = encrypt
+                item.formats = FormatEnum(formats)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition} after reupload: {str(e)}.")
+
             written = {f"{openlibrary_edition}{ext}" for ext in cls.VALID_EXTS}
             for key in cls._item_s3_keys(openlibrary_edition):
                 if key in written:
@@ -949,15 +957,7 @@ class LennyAPI:
                     s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
                 except ClientError as e:
                     logger.warning(f"Could not delete stale S3 object '{key}' after reupload: {e}")
-
-            try:
-                item.encrypted = encrypt
-                item.formats = FormatEnum(formats)
-                db.commit()
-                return item
-            except Exception as e:
-                db.rollback()
-                raise DatabaseUpdateError(f"Failed to update item {openlibrary_edition} after reupload: {str(e)}.")
+            return item
         finally:
             db.rollback()
 
