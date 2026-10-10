@@ -929,26 +929,27 @@ class LennyAPI:
         only the S3 objects and the encrypted/formats flags change, so
         history/loans survive a wrong-file correction.
 
-        ponytail: deletes the old file(s) before uploading the new one(s)
-        rather than a zero-downtime swap — correct and simple beats a brief
-        (millisecond-scale) availability gap on a rare, human-triggered admin
-        action. Upgrade to copy-then-delete (like rename_item) if this ever
-        needs to be online-safe.
+        The new file is uploaded over the old one and only leftovers (e.g. the
+        `_encrypted` twin older versions wrote) are deleted afterwards, so a
+        failed replacement never costs the book its stored copy.
         """
         try:
             lock_editions(openlibrary_edition)
             item = Item.exists(openlibrary_edition)
             if not item:
                 raise ItemNotFoundError(f"Item '{openlibrary_edition}' not found.")
-            cls.validate_files(files)
-
+            # Upload first: the new file overwrites the old at the same key, so a
+            # failed upload (validation, size or S3) leaves the stored copy alone.
+            formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
+            written = {f"{openlibrary_edition}{ext}" for ext in cls.VALID_EXTS}
             for key in cls._item_s3_keys(openlibrary_edition):
+                if key in written:
+                    continue
                 try:
                     s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=key)
                 except ClientError as e:
-                    logger.warning(f"Could not delete old S3 object '{key}' before reupload: {e}")
+                    logger.warning(f"Could not delete stale S3 object '{key}' after reupload: {e}")
 
-            formats = cls.upload_files(files, openlibrary_edition, encrypt=encrypt)
             try:
                 item.encrypted = encrypt
                 item.formats = FormatEnum(formats)

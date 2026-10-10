@@ -115,6 +115,19 @@ def test_one_s3_object_per_book_whether_or_not_encrypted(encrypt):
     assert s3.upload_fileobj.call_args.args[2] == "777.epub"
 
 
+def test_reupload_keeps_the_stored_copy_when_the_upload_fails():
+    from lenny.core.api import LennyAPI
+    from botocore.exceptions import ClientError
+    from lenny.core.exceptions import S3UploadError
+    with patch("lenny.core.api.s3") as s3, \
+         patch("lenny.core.api.Item.exists", return_value=MagicMock()), \
+         patch.object(LennyAPI, "_item_s3_keys", return_value=["5.epub", "5_encrypted.epub"]):
+        s3.upload_fileobj.side_effect = ClientError({"Error": {"Message": "boom"}}, "put")
+        with pytest.raises(S3UploadError):
+            LennyAPI.reupload(5, [upload_file()])
+    s3.delete_object.assert_not_called()
+
+
 def test_reupload_validates_before_deleting_the_stored_copy():
     from lenny.core.api import LennyAPI
     from lenny.core.exceptions import InvalidFileError
