@@ -33,6 +33,32 @@ class FormatEnum(enum.Enum):
     PDF = 2
     EPUB_PDF = 3
 
+def _xact_lock(name: str) -> None:
+    """Hold an exclusive Postgres advisory lock named `name` until this transaction ends.
+
+    The key is derived from the name rather than passed through `hashtext()`, so
+    it does not depend on an undocumented server internal. A no-op on SQLite,
+    which serialises writers anyway, and where the test suite runs on a single
+    connection. Callers must end the transaction (commit or rollback) on every
+    path, or the lock outlives the request on a pooled connection.
+    """
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    key = int.from_bytes(
+        hashlib.sha256(name.encode("utf-8")).digest()[:8], "big", signed=True)
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
+def lock_editions(*olids: int) -> None:
+    """Serialise writers of the same Open Library editions.
+
+    Locks are taken in sorted order so two callers touching the same pair
+    (a rename and an upload) cannot deadlock. Different books never contend.
+    """
+    for olid in sorted(set(olids)):
+        _xact_lock(f"edition:{olid}")
+
+
 def _lock_patron(hashed_email: str) -> None:
     """Hold an exclusive lock on one patron for the rest of this transaction.
 
@@ -40,15 +66,8 @@ def _lock_patron(hashed_email: str) -> None:
     across rows that may not exist yet, which row locks cannot express. The key
     is derived from the patron hash rather than passed through `hashtext()`, so
     it does not depend on an undocumented server internal.
-
-    A no-op on SQLite, which serialises writers anyway, and where the test
-    suite runs on a single connection.
     """
-    if db.bind is None or db.bind.dialect.name != "postgresql":
-        return
-    key = int.from_bytes(
-        hashlib.sha256(hashed_email.encode("utf-8")).digest()[:8], "big", signed=True)
-    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    _xact_lock(hashed_email)
 
 
 class Item(Base):
@@ -100,6 +119,21 @@ class Item(Base):
             return max(0, int(available))
         except Exception:
             return int(getattr(self, "num_lendable_total", 1))
+
+    @classmethod
+    def available_map(cls, items) -> dict:
+        """{item id: copies available now} for many items in ONE query (the per-item
+        `available_copies` property asks the database once per book, too slow for a list)."""
+        items = [i for i in items if i is not None]
+        if not items:
+            return {}
+        try:
+            counts = dict(db.query(Loan.item_id, func.count(Loan.id)).filter(
+                Loan.item_id.in_([i.id for i in items]), *Loan._active_filters()).group_by(Loan.item_id).all())
+        except Exception:    # same fallback as the per-item property: show the copy as available
+            db.rollback()
+            return {}
+        return {i.id: max(0, int(getattr(i, "num_lendable_total", 1)) - counts.get(i.id, 0)) for i in items}
 
     @hybrid_property
     def is_borrowable(self):

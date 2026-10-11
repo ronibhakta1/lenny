@@ -93,6 +93,7 @@ def test_admin_search_scopes_query_to_local_editions():
     assert items == [{
         "id": 10, "edition_key": "OL10M", "title": "Dune", "author": "Frank Herbert",
         "encrypted": False, "formats": "EPUB", "created_at": "2026-01-01T00:00:00+00:00",
+        "num_lendable_total": 1, "available_copies": 1,       # the page asks for copies too; nothing on loan here
     }]
 
 

@@ -6,6 +6,47 @@ from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
+# Real EPUBs carry a few thousand entries at most. The cap exists because
+# zipfile loads the whole central directory into memory, so a hostile zip
+# claiming millions of entries could exhaust a small machine.
+EPUB_MAX_ENTRIES = 20_000
+EPUB_MIMETYPE = b"application/epub+zip"
+
+
+def is_valid_epub(fp) -> bool:
+    """True if `fp` (a seekable binary file) is a zip holding an EPUB `mimetype` entry.
+
+    Reads the 22-byte end-of-central-directory record first so the entry count
+    is checked before zipfile parses the directory, then reads at most
+    len(EPUB_MIMETYPE)+1 bytes of the `mimetype` entry. Leaves `fp` at 0.
+    """
+    import struct
+    import zipfile
+    import zlib
+    try:
+        fp.seek(0, 2)
+        size = fp.tell()
+        fp.seek(max(0, size - (22 + 65535)))
+        tail = fp.read()
+        eocd = tail.rfind(b"PK\x05\x06")
+        if eocd < 0 or len(tail) - eocd < 22:
+            return False
+        entries = struct.unpack("<H", tail[eocd + 10:eocd + 12])[0]
+        if entries == 0 or entries >= 0xFFFF or entries > EPUB_MAX_ENTRIES:
+            return False
+        fp.seek(0)
+        with zipfile.ZipFile(fp) as zf:
+            with zf.open("mimetype") as m:
+                return m.read(len(EPUB_MIMETYPE) + 1) == EPUB_MIMETYPE
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError, NotImplementedError,
+            RuntimeError, zlib.error, EOFError):
+        return False
+    finally:
+        try:
+            fp.seek(0)
+        except (OSError, ValueError):
+            pass
+
 def encode_book_path(book_id: str, format=".epub") -> str:
     """This should be moved to a general utils.py within core"""
     if not "." in book_id:

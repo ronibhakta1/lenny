@@ -11,6 +11,7 @@ import boto3
 from lenny.core.s3 import LennyS3
 from lenny.core import db as database
 from lenny.core import models
+from lenny.core import bulk_import  # registers its tables with Base.metadata
 
 db = database.init()
 s3 = LennyS3()

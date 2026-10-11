@@ -17,6 +17,7 @@ from lenny.core.db import Base
 import lenny.core.models  # noqa: F401
 import lenny.core.cache  # noqa: F401
 import lenny.core.oauth2  # noqa: F401
+import lenny.core.bulk_import  # noqa: F401
 
 # Alembic Config object — access to alembic.ini values
 config = context.config

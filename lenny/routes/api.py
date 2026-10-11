@@ -41,6 +41,8 @@ from fastapi import (
     Query,
 )
 from starlette.concurrency import run_in_threadpool
+import anyio
+from functools import partial
 from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
@@ -84,6 +86,24 @@ from lenny.core.models import Item, Loan
 from lenny.core.utils import parse_modified_since, to_iso_utc
 from lenny.core.db import session as db
 from urllib.parse import quote
+
+# Uploads write to S3 and Postgres synchronously. They run on their own small
+# pool, not the shared one every other sync endpoint uses, so a burst of
+# uploads cannot take the threads patrons need to read or borrow.
+_UPLOAD_LIMITER = anyio.CapacityLimiter(LennyAPI.UPLOAD_CONCURRENCY)
+
+
+def _run_upload(fn, *args, **kwargs):
+    """Call `fn` on an upload thread, then drop that thread's database session.
+
+    The app's per-request cleanup only removes the session of the thread that
+    handled the request; a worker thread's session would otherwise live as long
+    as the thread does, holding objects (and possibly a connection) with it.
+    """
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        db.remove()
 COOKIES_MAX_AGE = 604800  # 1 week
 
 def extract_session(request: Request, session: Optional[str] = None) -> Optional[str]:
@@ -550,7 +570,7 @@ async def upload(
     encrypted: bool = Form(
         False, description="Set to true if the file is encrypted"),
     file: UploadFile = File(
-        ..., description="The PDF or EPUB file to upload (max 50MB)")
+        ..., description="The EPUB file to upload (max 100MB)")
 ):
     """Create a new item from an uploaded file.
 
@@ -560,10 +580,15 @@ async def upload(
     _require_admin(request)
 
     try:
-        item = LennyAPI.add(
-            openlibrary_edition=openlibrary_edition,
-            files=[file],  # TODO expand to allow multiple
-            encrypt=encrypted,
+        item = await anyio.to_thread.run_sync(
+            partial(
+                _run_upload,
+                LennyAPI.add,
+                openlibrary_edition=openlibrary_edition,
+                files=[file],  # TODO expand to allow multiple
+                encrypt=encrypted,
+            ),
+            limiter=_UPLOAD_LIMITER,
         )
         return HTMLResponse(
             status_code=status.HTTP_200_OK,
@@ -613,10 +638,12 @@ async def admin_get_items(
     # stalling every other concurrent request on the worker, not just this
     # one — measured as the intermittent multi-second spikes on unrelated
     # admin routes. run_in_threadpool moves the blocking work off the loop.
-    return await run_in_threadpool(
+    enriched = await run_in_threadpool(
         LennyAPI.get_enriched_items,
         fields=fields, offset=offset, limit=limit, encrypted=encrypted,
     )
+    # Each record also says how many copies are free, so the admin list can show it.
+    return await run_in_threadpool(LennyAPI.with_availability, enriched)
 
 
 # Live-only admin search — no local title/author storage, no cache. See
@@ -799,7 +826,7 @@ async def reupload_item(
     request: Request,
     book_id: str,
     encrypted: bool = Form(False, description="Set to true if the file is encrypted"),
-    file: UploadFile = File(..., description="The PDF or EPUB file to upload (max 50MB)"),
+    file: UploadFile = File(..., description="The EPUB file to upload (max 100MB)"),
 ):
     """
     Replace an existing item's file (fixes a wrong-file import). Item id and
@@ -815,7 +842,10 @@ async def reupload_item(
     if book_id is None:
         raise HTTPException(status_code=400, detail="Invalid OLID or edition key")
     try:
-        LennyAPI.reupload(book_id, files=[file], encrypt=encrypted)
+        await anyio.to_thread.run_sync(
+            partial(_run_upload, LennyAPI.reupload, book_id, files=[file], encrypt=encrypted),
+            limiter=_UPLOAD_LIMITER,
+        )
         return HTMLResponse(status_code=status.HTTP_200_OK, content="File replaced successfully.")
     except ItemNotFoundError:
         raise HTTPException(status_code=404, detail="Item not found")

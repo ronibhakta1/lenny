@@ -19,6 +19,8 @@
 """
 
 import logging
+import re
+from urllib.parse import quote
 from io import BytesIO
 from typing import Optional
 
@@ -33,6 +35,22 @@ logger = logging.getLogger(__name__)
 
 SOURCE = "standardebooks"
 
+# A real Standard Ebooks id: author/title, plus translator or other contributors ("jane-austen/emma",
+# "fyodor-sologub/the-created-legend/john-cournos"); several authors or translators in one part are
+# joined with "_" ("karl-marx_friedrich-engels/the-communist-manifesto/samuel-moore"). Open Library's
+# id_standard_ebooks field also holds leading-slash forms ("/sophocles/antigone/francis-storr"), the
+# archive.org name with "_" for "/" ("james-joyce_dubliners"), and unrelated values (UUIDs of modern
+# novels) that are not Standard Ebooks at all.
+_PART = r"[a-z0-9][a-z0-9.\-]*(?:_[a-z0-9][a-z0-9.\-]*)*"
+_SE_ID = re.compile(rf"{_PART}(?:/{_PART}){{1,3}}")
+_SE_FLAT = re.compile(rf"[a-z0-9][a-z0-9.\-]*(?:_[a-z0-9][a-z0-9.\-]*)+")   # one part, but it needs a "_" (not a UUID)
+
+
+def clean_source_id(raw) -> Optional[str]:
+    """The Standard Ebooks id in `raw` without stray slashes, or None if it is not one."""
+    sid = str(raw or "").strip().strip("/").lower()
+    return sid if len(sid) <= 400 and (_SE_ID.fullmatch(sid) or _SE_FLAT.fullmatch(sid)) else None
+
 
 class StandardEbooks:
 
@@ -45,16 +63,72 @@ class StandardEbooks:
         return f"{cls.BASE_URL}/{identifier_file}.epub"
 
     @classmethod
+    def construct_item_url(cls, identifier: str) -> str:
+        """Some books are standalone archive.org items (`jane-austen_mansfield-park`) rather
+        than files in the preload item."""
+        name = identifier.replace("/", "_")
+        return f"https://archive.org/download/{name}/{name}.epub"
+
+    @classmethod
+    def find_item_epub_url(cls, identifier: str) -> Optional[str]:
+        """The EPUB's real address inside the book's own archive.org item, for items where it
+        is not named after the item (Standard Ebooks "_advanced.epub" files). One metadata call."""
+        name = identifier.replace("/", "_")
+        try:
+            resp = httpx.get(f"https://archive.org/metadata/{name}", timeout=cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
+            resp.raise_for_status()
+            files = [f["name"] for f in resp.json().get("files", []) if str(f.get("name", "")).lower().endswith(".epub")]
+        except (httpx.HTTPError, ValueError, KeyError):
+            return None
+        # Prefer the file called after the item, then the "advanced" one, then any original EPUB.
+        files.sort(key=lambda n: (n != f"{name}.epub", not n.endswith("_advanced.epub"), n))
+        return f"https://archive.org/download/{name}/{quote(files[0])}" if files else None
+
+    @classmethod
     def verify_download(cls, content: Optional[BytesIO]) -> Optional[BytesIO]:
         return verify_epub(content)
 
     @classmethod
     def download(cls, identifier: str, timeout: Optional[int] = None) -> Optional[BytesIO]:
-        return download_epub(
-            cls.construct_download_url(identifier),
-            timeout=timeout or cls.HTTP_TIMEOUT,
-            headers=LennyClient.HTTP_HEADERS,
-        )
+        """The preload item first, then the book's own archive.org item; None if neither has it."""
+        # The preload item first. The book's own item is tried twice: archive.org's file servers
+        # answer 500 or time out now and then, and a retry usually gets through.
+        for url in (cls.construct_download_url(identifier), cls.construct_item_url(identifier), cls.construct_item_url(identifier)):
+            epub = download_epub(url, timeout=timeout or cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
+            if epub is not None:
+                return epub
+        if (url := cls.find_item_epub_url(identifier)):       # the item exists but names its file differently
+            return download_epub(url, timeout=timeout or cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
+        return None
+
+
+UPLOADED, NOT_IN_SET, FAILED_ = "uploaded", "not_in_set", "failed"
+
+
+def import_one(olid: int, standardebooks_id: str, title: Optional[str] = None) -> str:
+    """Download, verify and upload one book; records its progress. Never raises.
+
+    Returns UPLOADED, NOT_IN_SET (the preload set has no file for it) or FAILED_.
+    """
+    try:
+        ImportJob.record(SOURCE, olid, DOWNLOADING, title=title)
+        epub = StandardEbooks.download(standardebooks_id)
+        if epub is None:
+            ImportJob.record(SOURCE, olid, FAILED, "Not in the preload set", title=title)
+            return NOT_IN_SET
+        if not StandardEbooks.verify_download(epub):
+            logger.warning(f"Skipping OLID {olid}: EPUB verification failed")
+            ImportJob.record(SOURCE, olid, FAILED, "EPUB verification failed", title=title)
+            return FAILED_
+        if LennyClient.upload(olid, epub, encrypted=False):
+            ImportJob.record(SOURCE, olid, DONE, title=title)
+            return UPLOADED
+        ImportJob.record(SOURCE, olid, FAILED, "Upload to Lenny failed", title=title)
+        return FAILED_
+    except Exception as e:
+        logger.error(f"Unexpected error processing OLID {olid}: {e}")
+        ImportJob.record(SOURCE, olid, FAILED, str(e), title=title)
+        return FAILED_
 
 
 def import_standardebooks(limit=None, offset=0):
@@ -82,41 +156,22 @@ def import_standardebooks(limit=None, offset=0):
                 stats["skipped"] += 1
                 continue
 
-            standardebooks_id = book.standardebooks_id
+            standardebooks_id = clean_source_id(book.standardebooks_id)
             if not standardebooks_id:
                 logger.warning(f"Skipping OLID {olid}: no Standard Ebooks ID in OL record")
                 stats["skipped"] += 1
                 continue
 
-            try:
-                ImportJob.record(SOURCE, olid, DOWNLOADING)
-                epub = StandardEbooks.download(standardebooks_id)
-                if epub is None:
-                    stats["not_in_set"] += 1
-                    ImportJob.record(SOURCE, olid, FAILED, "Not in the preload set")
-                    continue
-
-                if not StandardEbooks.verify_download(epub):
-                    logger.warning(f"Skipping OLID {olid}: EPUB verification failed")
-                    stats["failed"] += 1
-                    ImportJob.record(SOURCE, olid, FAILED, "EPUB verification failed")
-                    continue
-
-                uploaded = LennyClient.upload(olid, epub, encrypted=False)
-                if uploaded:
-                    stats["uploaded"] += 1
-                    existing.add(olid)
-                    ImportJob.record(SOURCE, olid, DONE)
-                    if limit is not None and stats["uploaded"] >= limit:
-                        break
-                else:
-                    stats["failed"] += 1
-                    ImportJob.record(SOURCE, olid, FAILED, "Upload to Lenny failed")
-
-            except Exception as e:
-                logger.error(f"Unexpected error processing OLID {olid}: {e}")
+            outcome = import_one(olid, standardebooks_id)
+            if outcome == UPLOADED:
+                stats["uploaded"] += 1
+                existing.add(olid)
+                if limit is not None and stats["uploaded"] >= limit:
+                    break
+            elif outcome == NOT_IN_SET:
+                stats["not_in_set"] += 1
+            else:
                 stats["failed"] += 1
-                ImportJob.record(SOURCE, olid, FAILED, str(e))
 
     except (httpx.HTTPError, ValueError) as e:
         logger.error(f"Open Library search failed: {e}")

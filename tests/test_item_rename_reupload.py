@@ -117,7 +117,7 @@ def test_rename_rolls_back_copies_on_db_failure():
 
         deleted = {c.kwargs["Key"] for c in mock_s3.delete_object.call_args_list}
         assert "456.epub" in deleted
-        mock_db.rollback.assert_called_once()
+        mock_db.rollback.assert_called()  # on the failure itself and again as the lock is released
 
 
 # --- reupload ------------------------------------------------------------
@@ -130,20 +130,21 @@ def test_reupload_raises_not_found_when_missing():
             LennyAPI.reupload(123, files=[MagicMock()])
 
 
-def test_reupload_deletes_old_keys_then_uploads_and_updates_flags():
+def test_reupload_uploads_first_then_removes_only_stale_keys():
     fake_item = MagicMock(openlibrary_edition=123)
 
     with patch("lenny.core.api.Item") as mock_item_cls, \
          patch("lenny.core.api.s3") as mock_s3, \
          patch("lenny.core.api.db"), \
-         patch.object(LennyAPI, "_item_s3_keys", return_value=["123.epub"]), \
+         patch.object(LennyAPI, "_item_s3_keys", return_value=["123.epub", "123_encrypted.epub"]), \
          patch.object(LennyAPI, "upload_files", return_value=1) as mock_upload:
         mock_item_cls.exists.return_value = fake_item
 
         result = LennyAPI.reupload(123, files=["fake-file"], encrypt=True)
 
+        # the new upload overwrites 123.epub; only the stale twin is removed
         mock_s3.delete_object.assert_called_once()
-        assert mock_s3.delete_object.call_args.kwargs["Key"] == "123.epub"
+        assert mock_s3.delete_object.call_args.kwargs["Key"] == "123_encrypted.epub"
         mock_upload.assert_called_once_with(["fake-file"], 123, encrypt=True)
         assert fake_item.encrypted is True
         assert result is fake_item
@@ -163,4 +164,4 @@ def test_reupload_db_failure_raises_database_update_error():
         with pytest.raises(DatabaseUpdateError):
             LennyAPI.reupload(123, files=["fake-file"], encrypt=False)
 
-        mock_db.rollback.assert_called_once()
+        mock_db.rollback.assert_called()
