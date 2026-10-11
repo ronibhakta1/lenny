@@ -435,6 +435,11 @@ class LennyAPI:
             logger.warning(f"Open Library unreachable during admin item search: {e}")
             return collected, True
 
+        # Copies, in one query for the whole page, so the list can show them like the full listing does.
+        available = Item.available_map([all_items[int(c["edition_key"][2:-1])] for c in collected])
+        for c in collected:
+            c["num_lendable_total"] = 1
+            c["available_copies"] = available.get(c["id"], 1)
         return collected, False
 
     @classmethod
@@ -450,6 +455,18 @@ class LennyAPI:
             offset=offset, limit=limit, encrypted=encrypted, modified_since=modified_since
         )
         return cls._enrich_items(items, fields=fields)
+
+    @classmethod
+    def with_availability(cls, enriched: dict) -> dict:
+        """Add `num_lendable_total` and `available_copies` to each enriched record (one query for all
+        of them), for admin lists. The `lenny` sub-record only carries the stored columns."""
+        records = {olid: book for olid, book in enriched.items() if isinstance(book, dict)}
+        available = Item.available_map([book.get("lenny") for book in records.values()])
+        for book in records.values():
+            lenny = book.get("lenny")
+            book["num_lendable_total"] = 1
+            book["available_copies"] = available.get(getattr(lenny, "id", None), 1)
+        return enriched
 
     @classmethod
     def _modified_map(cls, items) -> dict:

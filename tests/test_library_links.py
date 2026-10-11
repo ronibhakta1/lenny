@@ -1,4 +1,5 @@
-"""Share links for the library: the OPDS feed, a per-book OPDS address and the Book Server reader link."""
+"""Share links for the library: the OPDS feed, a per-book OPDS address and the Internet Archive reader link.
+They come from the configured public address (LENNY_PROXY, else host and port), never from the request."""
 
 import os
 from unittest.mock import patch
@@ -25,63 +26,51 @@ def headers():
         yield {"X-Admin-Internal-Secret": SECRET, "Authorization": f"Bearer {auth.issue_admin_token()}"}
 
 
-def links(app_module, headers, extra=None, base="http://testserver"):
+def links(app_module, headers, proxy="", scheme="http", host="localhost", port=8080, extra=None, base="http://testserver"):
+    """Ask for the links with the node configured as given (the way .env would)."""
+    import lenny.core.api as api
     from fastapi.testclient import TestClient
-    return TestClient(app_module, base_url=base, headers={**headers, **(extra or {})}).get(URL)
+    from lenny import configs
+    with patch.object(api, "PROXY", proxy), patch.object(api, "SCHEME", scheme), patch.object(api, "HOST", host), \
+         patch.object(api, "PORT", port), patch.object(configs, "PROXY", proxy):
+        return TestClient(app_module, base_url=base, headers={**headers, **(extra or {})}).get(URL)
 
 
-def test_links_come_from_the_address_the_admin_used(app_module, headers):
-    r = links(app_module, headers, base="https://library.example.org")
+def test_links_come_from_the_configured_domain(app_module, headers):
+    r = links(app_module, headers, proxy="https://lender.briet.app")
     body = r.json()
-    assert r.status_code == 200 and body["source"] == "request" and body["is_public"] is True
-    assert body["base_url"] == "https://library.example.org"
-    assert body["opds_feed"] == "https://library.example.org/v1/api/opds"
-    assert body["opds_book_template"] == "https://library.example.org/v1/api/opds/{olid}"
-    assert body["opds_search"] == "https://library.example.org/v1/api/opds/search?query={query}"
-    assert body["reader_url"] == "https://reader.archive.org/catalog?home=https%3A%2F%2Flibrary.example.org%2Fv1%2Fapi%2Fopds"
+    assert r.status_code == 200 and body["source"] == "configured" and body["is_public"] is True
+    assert body["base_url"] == "https://lender.briet.app"
+    assert body["opds_feed"] == "https://lender.briet.app/v1/api/opds"
+    assert body["opds_book_template"] == "https://lender.briet.app/v1/api/opds/{olid}"
+    assert body["opds_search"] == "https://lender.briet.app/v1/api/opds/search?query={query}"
+    assert body["reader_url"] == "https://reader.archive.org/?opds=https://lender.briet.app/v1/api/opds"       # the form the reader takes
 
 
-def test_a_proxy_in_front_is_followed_and_a_configured_address_wins(app_module, headers):
-    body = links(app_module, headers, {"X-Forwarded-Proto": "https", "X-Forwarded-Host": "tunnel.trycloudflare.com"}).json()
-    assert body["base_url"] == "https://tunnel.trycloudflare.com" and body["is_public"] is True
-    from lenny import configs
-    with patch.object(configs, "PUBLIC_URL", "https://mine.example.org"):
-        body = links(app_module, headers, {"X-Forwarded-Host": "other.example.org"}).json()
-    assert body["base_url"] == "https://mine.example.org" and body["source"] == "configured"
-    assert body["opds_feed"] == "https://mine.example.org/v1/api/opds"
+def test_without_a_domain_the_host_and_port_from_the_setup_are_used(app_module, headers):
+    body = links(app_module, headers, scheme="https", host="books.example.org", port=8443).json()
+    assert body["source"] == "host_and_port" and body["base_url"] == "https://books.example.org:8443" and body["is_public"] is True
+    body = links(app_module, headers, scheme="http", host="localhost", port=8080).json()
+    assert body["base_url"] == "http://localhost:8080" and body["is_public"] is False                           # only works on this machine
+    assert links(app_module, headers, scheme="https", host="books.example.org", port=443).json()["base_url"] == "https://books.example.org"
 
 
-@pytest.mark.parametrize("host", ["localhost:8080", "127.0.0.1:8080", "192.168.1.20", "10.0.0.5:1337", "raspberrypi.local", "lenny", "[::1]:8080"])
-def test_addresses_that_only_work_on_this_network_are_flagged(app_module, headers, host):
-    assert links(app_module, headers, {"X-Forwarded-Host": host}).json()["is_public"] is False
+def test_the_request_never_changes_the_links(app_module, headers):
+    """Host and forwarding headers are the caller's to set: they must not steer a link people will share."""
+    extra = {"X-Forwarded-Proto": "http", "X-Forwarded-Host": "evil.example.com", "Host": "evil.example.com"}
+    body = links(app_module, headers, proxy="https://lender.briet.app", extra=extra, base="http://evil.example.com").json()
+    assert body["base_url"] == "https://lender.briet.app" and "evil" not in body["reader_url"]
 
 
-@pytest.mark.parametrize("host", ["library.example.org", "8.8.8.8", "my-lib.trycloudflare.com:443"])
-def test_public_addresses_are_not_flagged(app_module, headers, host):
-    assert links(app_module, headers, {"X-Forwarded-Host": host}).json()["is_public"] is True
+@pytest.mark.parametrize("proxy", ["http://localhost:8097", "http://127.0.0.1:8080", "http://192.168.1.20", "http://10.0.0.5:1337",
+                                   "http://raspberrypi.local", "http://lenny", "http://[::1]:8080"])
+def test_addresses_that_only_work_on_this_network_are_flagged(app_module, headers, proxy):
+    assert links(app_module, headers, proxy=proxy).json()["is_public"] is False
 
 
-@pytest.mark.parametrize("host", ["evil.com/path", "a b", "user@evil.com", "x?y", ""])
-def test_a_hostile_forwarded_host_cannot_inject_into_the_links(app_module, headers, host):
-    body = links(app_module, headers, {"X-Forwarded-Host": host}).json()
-    assert body["base_url"].count("/") == 2 and "@" not in body["base_url"] and " " not in body["base_url"] and "?" not in body["base_url"]
-
-
-def test_a_junk_forwarded_scheme_falls_back(app_module, headers):
-    body = links(app_module, headers, {"X-Forwarded-Proto": "javascript", "X-Forwarded-Host": "library.example.org"}).json()
-    assert body["base_url"] == "http://localhost"
-
-
-def test_the_public_url_setting_is_cleaned():
-    import importlib
-    from lenny import configs
-    with patch.dict(os.environ, {"LENNY_PUBLIC_URL": " https://a.example.org/// "}):
-        importlib.reload(configs)
-        assert configs.PUBLIC_URL == "https://a.example.org"
-    with patch.dict(os.environ, {"LENNY_PUBLIC_URL": "  "}):
-        importlib.reload(configs)
-        assert configs.PUBLIC_URL is None
-    importlib.reload(configs)
+@pytest.mark.parametrize("proxy", ["https://lender.briet.app", "https://8.8.8.8", "https://my-lib.trycloudflare.com"])
+def test_public_addresses_are_not_flagged(app_module, headers, proxy):
+    assert links(app_module, headers, proxy=proxy).json()["is_public"] is True
 
 
 def test_links_require_admin(app_module):

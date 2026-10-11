@@ -120,6 +120,21 @@ class Item(Base):
         except Exception:
             return int(getattr(self, "num_lendable_total", 1))
 
+    @classmethod
+    def available_map(cls, items) -> dict:
+        """{item id: copies available now} for many items in ONE query (the per-item
+        `available_copies` property asks the database once per book, too slow for a list)."""
+        items = [i for i in items if i is not None]
+        if not items:
+            return {}
+        try:
+            counts = dict(db.query(Loan.item_id, func.count(Loan.id)).filter(
+                Loan.item_id.in_([i.id for i in items]), *Loan._active_filters()).group_by(Loan.item_id).all())
+        except Exception:    # same fallback as the per-item property: show the copy as available
+            db.rollback()
+            return {}
+        return {i.id: max(0, int(getattr(i, "num_lendable_total", 1)) - counts.get(i.id, 0)) for i in items}
+
     @hybrid_property
     def is_borrowable(self):
         """True if the item currently supports borrowing (has available copies).

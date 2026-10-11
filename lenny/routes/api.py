@@ -638,10 +638,12 @@ async def admin_get_items(
     # stalling every other concurrent request on the worker, not just this
     # one — measured as the intermittent multi-second spikes on unrelated
     # admin routes. run_in_threadpool moves the blocking work off the loop.
-    return await run_in_threadpool(
+    enriched = await run_in_threadpool(
         LennyAPI.get_enriched_items,
         fields=fields, offset=offset, limit=limit, encrypted=encrypted,
     )
+    # Each record also says how many copies are free, so the admin list can show it.
+    return await run_in_threadpool(LennyAPI.with_availability, enriched)
 
 
 # Live-only admin search — no local title/author storage, no cache. See

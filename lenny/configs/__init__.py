@@ -36,9 +36,6 @@ SSL_KEY = os.environ.get('LENNY_SSL_KEY')
 # is what earns the higher "identified client" rate limit.
 CONTACT_EMAIL = os.environ.get('LENNY_CONTACT_EMAIL') or None
 LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0" + (f" ({CONTACT_EMAIL})" if CONTACT_EMAIL else "")}
-# The address people outside reach this Lenny at (a domain or tunnel), used for the links the admin
-# page offers to share (OPDS feed, per-book links). Unset: taken from the request that asks.
-PUBLIC_URL = (os.environ.get('LENNY_PUBLIC_URL') or '').strip().rstrip('/') or None
 OTP_SERVER = os.environ.get('OTP_SERVER', 'https://openlibrary.org')
 # Demo marketplace: same API as production BRIET, throwaway codes.
 BRIET_REDEEM_URL = os.environ.get('BRIET_REDEEM_URL', 'https://demo.market.briet.app/api/redeem-lenny')
