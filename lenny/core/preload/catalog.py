@@ -61,6 +61,33 @@ def _archive_files() -> dict:
             for f in resp.json().get("files", []) if f.get("name", "").endswith(".epub")}
 
 
+ARCHIVE_SEARCH = "https://archive.org/advancedsearch.php"
+_ITEMS_QUERY = '(subject:"Standard eBooks" OR collection:standardebooks) AND mediatype:texts'
+
+
+def _archive_item_names() -> set:
+    """Identifiers of standalone archive.org items tagged Standard eBooks that carry an EPUB
+    (one search, a hundred or so). Their name is the Standard Ebooks id with / as _."""
+    resp = httpx.get(ARCHIVE_SEARCH, timeout=StandardEbooks.HTTP_TIMEOUT, headers=_headers(),
+                     params={"q": _ITEMS_QUERY, "fl[]": ["identifier", "format"], "rows": 1000, "output": "json"})
+    resp.raise_for_status()
+    docs = resp.json().get("response", {}).get("docs", [])
+    return {d["identifier"] for d in docs if d.get("identifier") and "EPUB" in (d.get("format") or [])}
+
+
+def available_files() -> dict:
+    """{name: size} of every EPUB archive.org can serve for a Standard Ebooks title: the files
+    of the preload item (size known) plus standalone items (size unknown, 0). The standalone
+    list is a bonus: if that search fails, the preload item alone is used."""
+    files = _archive_files()
+    try:
+        extra = _archive_item_names()
+    except (httpx.HTTPError, ValueError, OSError) as e:
+        logger.warning("Could not list standalone archive.org items (%s)", e)
+        extra = set()
+    return {**{name: 0 for name in extra}, **files}
+
+
 def _headers() -> dict:
     from lenny.core.client import LennyClient
     return LennyClient.HTTP_HEADERS
@@ -115,7 +142,7 @@ def _fetch_records() -> list:
 
 
 def _build() -> dict:
-    files = _archive_files()
+    files = available_files()
     books, known = [], 0
     for record in _fetch_records():
         known += 1

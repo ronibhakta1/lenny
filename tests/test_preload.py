@@ -54,6 +54,7 @@ def fakes():
         return [OpenLibraryRecord(d) for d in DOCS]
 
     with patch("lenny.core.preload.catalog._archive_files", archive), \
+         patch("lenny.core.preload.catalog._archive_item_names", lambda: set(calls.setdefault("items", set()))), \
          patch("lenny.core.preload.catalog._fetch_records", fetch):
         yield calls
 
@@ -418,3 +419,49 @@ def test_nothing_to_load_starts_nothing(client, fakes, db):
     with patch("lenny.core.preload.service.import_one") as imp:
         r = client.post(f"{P}/import", json={"olids": [1]})
     assert r.status_code == 202 and r.json()["queued"] == 0 and imp.call_count == 0
+
+
+# ─── more of Standard Ebooks than the preload item: standalone archive.org items ──
+
+def test_standalone_archive_items_are_added_to_the_catalog_with_unknown_size(fakes):
+    from lenny.core.preload import catalog
+    fakes["items"] = {"edgar-allan-poe_the-raven", "nobody_missing"}          # the raven also in the preload item; "missing" is extra
+    cat = catalog.get()
+    assert len(cat["books"]) == 4 and cat["known"] == 4                       # "Missing From Archive" is now downloadable
+    sizes = {b["title"]: b["size"] for b in cat["books"]}
+    assert sizes["The Raven"] == 1000                                         # the preload item's known size wins
+    assert sizes["Missing From Archive"] == 0                                 # unknown size from a standalone item
+
+
+def test_a_failed_standalone_search_falls_back_to_the_preload_item_alone(fakes):
+    import httpx
+    from lenny.core.preload import catalog
+    with patch("lenny.core.preload.catalog._archive_item_names", side_effect=httpx.ConnectError("down")):
+        assert len(catalog.get()["books"]) == 3
+
+
+def test_standalone_items_are_listed_with_one_search():
+    from lenny.core.preload import catalog
+    body = {"response": {"docs": [{"identifier": "a_b", "format": ["EPUB", "Text PDF"]},
+                                  {"identifier": "c_d", "format": ["Text PDF"]},          # no EPUB: not loadable
+                                  {"identifier": "e_f"}]}}
+    resp = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: body})()
+    with patch("lenny.core.preload.catalog.httpx.get", return_value=resp) as get:
+        assert catalog._archive_item_names() == {"a_b"}
+    assert get.call_count == 1 and "Standard eBooks" in get.call_args.kwargs["params"]["q"]
+
+
+def test_a_book_missing_from_the_preload_item_is_downloaded_from_its_own_item():
+    import io
+    from lenny.core.standardebooks import StandardEbooks
+    epub = io.BytesIO(b"PK\x03\x04" + b"0" * 50)
+    urls = []
+    def fake_download(url, timeout=None, headers=None):
+        urls.append(url)
+        return epub if "/jane-austen_emma/" in url else None
+    with patch("lenny.core.standardebooks.download_epub", fake_download):
+        assert StandardEbooks.download("jane-austen/emma") is epub
+        assert StandardEbooks.download("nobody/nothing") is None
+    assert urls[0].endswith("lenny-open-access-preloads/jane-austen_emma.epub")        # the preload item is tried first
+    assert urls[1] == "https://archive.org/download/jane-austen_emma/jane-austen_emma.epub"
+    assert urls[2:] == [StandardEbooks.construct_download_url("nobody/nothing"), StandardEbooks.construct_item_url("nobody/nothing")]

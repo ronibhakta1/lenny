@@ -45,16 +45,24 @@ class StandardEbooks:
         return f"{cls.BASE_URL}/{identifier_file}.epub"
 
     @classmethod
+    def construct_item_url(cls, identifier: str) -> str:
+        """Some books are standalone archive.org items (`jane-austen_mansfield-park`) rather
+        than files in the preload item."""
+        name = identifier.replace("/", "_")
+        return f"https://archive.org/download/{name}/{name}.epub"
+
+    @classmethod
     def verify_download(cls, content: Optional[BytesIO]) -> Optional[BytesIO]:
         return verify_epub(content)
 
     @classmethod
     def download(cls, identifier: str, timeout: Optional[int] = None) -> Optional[BytesIO]:
-        return download_epub(
-            cls.construct_download_url(identifier),
-            timeout=timeout or cls.HTTP_TIMEOUT,
-            headers=LennyClient.HTTP_HEADERS,
-        )
+        """The preload item first, then the book's own archive.org item; None if neither has it."""
+        for url in (cls.construct_download_url(identifier), cls.construct_item_url(identifier)):
+            epub = download_epub(url, timeout=timeout or cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
+            if epub is not None:
+                return epub
+        return None
 
 
 UPLOADED, NOT_IN_SET, FAILED_ = "uploaded", "not_in_set", "failed"
