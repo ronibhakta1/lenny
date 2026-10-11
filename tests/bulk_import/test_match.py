@@ -50,8 +50,10 @@ class FakeOL:
         if "q" in params and params["q"].startswith("isbn:"):
             wanted = set(params["q"].replace("isbn:", "").strip("()").replace(" OR ", " ").split())
             return [w for w in self.works if any(set(e["isbn"]) & wanted for e in w["editions"]["docs"])]
-        t = params.get("title", "").lower()
-        return [w for w in self.works if t and t.split(":")[0] in w["title"].lower()]
+        t, a = params.get("title", "").lower(), params.get("author", "").lower()
+        found = [w for w in self.works if t and t.split(":")[0] in w["title"].lower()]
+        # Like Open Library: an author term that matches no author empties the result.
+        return [w for w in found if not a or any(a in n.lower() for n in w["author_name"])]
 
 
 @pytest.fixture
@@ -118,6 +120,110 @@ def test_ties_prefer_the_files_language_then_an_isbn():
     assert order == [7, 5, 6]
 
 
+# ─── forgiving matches (the Defector Weekly Digest case) ─────────────────────
+
+MASTHEAD = ("Defector, Diana Moskovitz, Luis Paez-Pumar, Lauren Theisen, Patrick Redford, Matt Ribel, "
+            "David Roth, Dave McKenna, Abigail Segel")
+
+
+@pytest.fixture
+def defector():
+    fake = FakeOL(
+        work("Defector Weekly Digest: May 17-23, 2026", ["Tom Ley", "Diana Moskovitz", "Luis Paez-Pumar", "Lauren Theisen"],
+             (62576958, [], "eng"), year=2026),
+        work("The Suitors", ["Ben Ehrenreich"], (3413631, [], "eng")),
+        work("Database Internals", ["Alex Petrov"], (28933309, [], "eng")),
+    )
+    with patch("lenny.core.bulk_import.matcher.search", fake):
+        yield fake
+
+
+def test_a_long_author_list_does_not_empty_the_search(defector):
+    row = dict(id=1, isbn=None, title="Defector Weekly Digest", author=MASTHEAD, language=None,
+               path="ebooks/defector-weekly-digest_may_8-25-26.epub")
+    out = match([row])[1]
+    assert out["state"] == "matched" and out["olid"] == 62576958 and out["confidence"] >= 90
+    assert "author" not in defector.calls[0]            # a masthead is not a search term
+
+
+def test_a_publisher_as_author_widens_to_a_title_only_search(defector):
+    row = dict(id=1, isbn=None, title="Defector Weekly Digest", author="Defector", language=None, path=None)
+    out = match([row])[1]
+    assert [("author" in c) for c in defector.calls] == [True, False]      # tried with, then without
+    assert out["state"] in ("matched", "needs_review") and out["candidates_count"] == 1
+
+
+def test_a_clean_file_costs_one_request(defector):
+    out = match([dict(id=1, isbn=None, title="The Suitors", author="Ben Ehrenreich", language=None, path=None)])
+    assert out[1]["state"] == "matched" and len(defector.calls) == 1
+
+
+def test_file_name_is_used_when_metadata_is_missing(defector):
+    for path, olid in (("ebooks/ben-ehrenreich_the-suitors_9-17-26.epub", 3413631),
+                       ("ebooks/Database Internals (Alex Petrov) (Z-Library).epub", 28933309)):
+        out = match([dict(id=1, isbn=None, title=None, author=None, language=None, path=path)])[1]
+        assert out["state"] == "matched" and out["olid"] == olid, path
+
+
+def test_a_title_guessed_from_the_file_name_alone_is_never_auto_picked():
+    fake = FakeOL(work("1984", ["George Orwell"], (1891131, [], "eng")))
+    with patch("lenny.core.bulk_import.matcher.search", fake):
+        out = match([dict(id=1, isbn=None, title=None, author=None, language=None, path="ebooks/orwell_1984.epub")])[1]
+    assert out["state"] == "needs_review" and out["olid"] is None
+
+
+def test_a_row_with_neither_metadata_nor_a_usable_name_is_no_match(defector):
+    out = match([dict(id=1, isbn=None, title=None, author=None, language=None, path="x/_.epub")])[1]
+    assert out["state"] == "no_match" and defector.calls == []
+
+
+def test_the_file_having_a_subtitle_the_record_lacks_is_never_auto_picked(defector):
+    fake = FakeOL(work("Dune", ["Frank Herbert"], (101, [], "eng")))
+    with patch("lenny.core.bulk_import.matcher.search", fake):
+        out = match([dict(id=1, isbn=None, title="Dune: Messiah", author="Frank Herbert", language=None, path=None)])[1]
+    assert out["state"] == "needs_review"
+
+
+def test_candidates_for_tries_every_query_for_the_widest_list(defector):
+    from lenny.core.bulk_import import matcher as m
+    row = dict(isbn=None, title="Defector Weekly Digest", author="Defector", language=None,
+               path="ebooks/defector-weekly-digest_may_8.epub")
+    got = m.candidates_for(row)
+    assert [c["olid"] for c in got] == [62576958] and len(defector.calls) >= 3
+
+
+@pytest.mark.parametrize("author, names", [
+    ("Frank Herbert; Brian Herbert", ["Frank Herbert", "Brian Herbert"]),
+    ("Herbert, Frank", ["Frank Herbert"]),
+    ("A One & B Two and C Three", ["A One", "B Two", "C Three"]),
+    (MASTHEAD, ["Defector", "Diana Moskovitz", "Luis Paez-Pumar", "Lauren Theisen", "Patrick Redford",
+                "Matt Ribel", "David Roth", "Dave McKenna", "Abigail Segel"]),
+    (None, []), ("  ", []),
+])
+def test_author_parsing(author, names):
+    from lenny.core.bulk_import import matcher as m
+    assert m._split_names(author) == names
+
+
+def test_names_compare_ignoring_word_order():
+    from lenny.core.bulk_import import matcher as m
+    assert m._name_ratio("Moskovitz, Diana", "Diana Moskovitz") == 1.0
+    assert m._name_ratio("Diana Moskovitz", "Frank Herbert") < 0.5
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("a/b/ben-ehrenreich_the-suitors_9-17-26.epub", {"author": "ben ehrenreich", "title": "the suitors"}),
+    ("Database Internals (Alex Petrov) (Z-Library).epub", {"title": "Database Internals", "author": "Alex Petrov"}),
+    ("A Plain Title.EPUB", {"title": "A Plain Title"}),
+    ("defector-weekly-digest_may_8-25-26.epub", {"title": "defector-weekly-digest"}),
+    ("orwell_1984.epub", {"author": "orwell", "title": "1984"}),
+    ("", {"title": ""}),
+])
+def test_from_path(path, expected):
+    from lenny.core.bulk_import import matcher as m
+    assert m.from_path(path) == expected
+
+
 # ─── asking Open Library ─────────────────────────────────────────────────────
 
 def match(rowlist):
@@ -143,7 +249,7 @@ def test_unknown_isbn_falls_back_to_title_and_author(ol):
     out = match([dict(id=1, isbn="9789999999999", title="Dune", author="Frank Herbert", language="eng")])
     assert out[1]["state"] == "matched" and out[1]["olid"] == 101
     assert [("q" in c) for c in ol.calls] == [True, False]
-    assert ol.calls[1]["author"] == "Frank Herbert"
+    assert ol.calls[1]["author"] == "Frank Herbert" and ol.calls[1]["title"] == "Dune"
 
 
 def test_rows_without_metadata_do_not_cost_a_request(ol):
@@ -302,7 +408,7 @@ def test_job_matches_rows_and_saves_the_outcome(ol):
     assert got["9780441013593"]["state"] == "matched" and got["9780441013593"]["olid"] == 101
     assert got["Dune"]["auto_picked"] is True and got["Dune"]["decision"] == "auto"
     assert got["Zzz Unknown Thing"]["state"] == "no_match"
-    assert got["b3.epub"]["state"] == "no_match" and got["b3.epub"]["error"]
+    assert got["b3.epub"]["state"] == "no_match"      # nothing but a meaningless file name
 
 
 def test_job_never_touches_decided_skipped_or_settled_rows(ol):

@@ -260,7 +260,7 @@ thread per process, paced to Open Library's limit (1 request/s, 3/s when
 `LENNY_CONTACT_EMAIL` is set), ISBNs fifty to a query. Results are saved to rows as
 they arrive, so polling `GET /admin/import/batches/{id}` shows partial progress
 and a restart loses nothing (unmatched rows stay `queued`). Matching state is per process, so keep one worker for big imports or Open Library sees one paced stream per worker. Rows the admin has
-decided (picked an edition) or skipped are never overwritten.
+decided (picked an edition) or skipped are never overwritten. A row without an ISBN is searched by a widening ladder (title + first author, title alone, title without subtitle, then what the file name says), so a long author list or a publisher in the author field does not empty the search; titles compare forgivingly (subtitles, `Last, First`, bracketed noise like `(Z-Library)`). A title guessed from the file name alone goes to review, never auto-picked.
 
 - **POST /admin/import/batches/{id}/match** — `{state?: "queued"|"no_match"|"needs_review", row_ids?: [≤500]}` → `202` job `{id, status: queued|running|done|failed, total, done, error}`. `state: "no_match"` is the *Re-check* button. One active job per batch; asking again returns it.
 - **GET /admin/import/match/{job_id}** — job progress (`404` after a restart; use the batch summary then).

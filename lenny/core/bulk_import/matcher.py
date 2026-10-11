@@ -1,8 +1,12 @@
 """Match dropped EPUBs to Open Library editions.
 
 Rows with an ISBN go to Open Library fifty at a time (one query for fifty
-books). Rows without one, or whose ISBN found nothing, get one title/author
-query each. Every call is paced (limits.Pacer), retried politely on 429, and
+books). Rows without one, or whose ISBN found nothing, get a ladder of
+title/author queries, each tried only if the one before found nothing close:
+title + first author, title alone (an author list or a publisher's name can
+empty a search), the title without its subtitle, then what the file name says.
+Titles and names are compared forgivingly (subtitles, "Last, First" and word
+order, bracketed noise like "(Z-Library)"). Every call is paced (limits.Pacer), retried politely on 429, and
 goes through the shared circuit breaker (upstream.open_library) so a down
 Open Library costs nothing.
 
@@ -139,33 +143,64 @@ def _norm(text) -> str:
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
 
 
-SUBTITLE_CREDIT = 0.8  # "Dune: Messiah" is not "Dune": a subtitle-less match goes to review, never auto
+SUBTITLE_CREDIT = 0.8   # the FILE has a subtitle the record lacks ("Dune: Messiah" vs "Dune"): review, never auto
+LESS_SPECIFIC_CREDIT = 0.9  # the RECORD has a subtitle the file lacks ("Digest" vs "Digest: May 17-23"): likely the same series
+LONG_AUTHOR_LIST = 3    # a list this long is not a reliable search term
+
+
+def _clean_title(title) -> str:
+    """Drop (bracketed) noise: "(Z-Library)", "[epub]", "(Penguin Classics)"."""
+    return re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", " ", str(title or ""))
 
 
 def _main_title(title) -> str:
-    return _norm(re.split(r"[:–—]| - ", str(title or ""))[0])
+    return _norm(re.split(r"[:\u2013\u2014]| - ", _clean_title(title))[0])
+
+
+def _has_subtitle(title) -> bool:
+    return bool(re.search(r"[:\u2013\u2014]| - ", _clean_title(title)))
 
 
 def _title_ratio(wanted, have) -> float:
-    return max(_ratio(_norm(wanted), _norm(have)),
-               SUBTITLE_CREDIT * _ratio(_main_title(wanted), _main_title(have)))
+    full = _ratio(_norm(_clean_title(wanted)), _norm(_clean_title(have)))
+    credit = SUBTITLE_CREDIT if _has_subtitle(wanted) else LESS_SPECIFIC_CREDIT
+    return max(full, credit * _ratio(_main_title(wanted), _main_title(have)))
 
 
-def _names(author) -> list:
-    """Split "A; B", "A & B", "A and B"; flip "Last, First"."""
+def _split_names(author) -> list:
+    """Names as written, one per person.
+
+    "A; B", "A & B", "A and B" split; "Last, First" (one comma) is flipped; three
+    or more comma-separated parts are a list of "First Last" people, as EPUBs of
+    anthologies and magazines write them.
+    """
     names = []
     for part in re.split(r";|&|\band\b", str(author or "")):
         part = part.strip()
-        if "," in part:
+        if part.count(",") >= 2:
+            names += [p.strip() for p in part.split(",") if p.strip()]
+        elif "," in part:
             last, _, first = part.partition(",")
-            part = f"{first} {last}"
-        if _norm(part):
-            names.append(_norm(part))
-    return names
+            names.append(f"{first.strip()} {last.strip()}".strip())
+        elif part:
+            names.append(part)
+    return [n for n in names if _norm(n)]
+
+
+def _name_ratio(a: str, b: str) -> float:
+    """Names compare ignoring word order ("Moskovitz, Diana" is "Diana Moskovitz")."""
+    a, b = _norm(a), _norm(b)
+    return max(_ratio(a, b), _ratio(" ".join(sorted(a.split())), " ".join(sorted(b.split()))))
 
 
 def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio() if a and b else 0.0
+
+
+def _facts(row: dict) -> tuple:
+    """(title, author) to match on: the EPUB's own metadata, else what the file name says."""
+    guess = from_path(row.get("path")) if not (row.get("title") and row.get("author")) else {}
+    return (row.get("title") or guess.get("title") or "").strip(), row.get("author") or guess.get("author")
 
 
 def score(row: dict, cand: dict) -> int:
@@ -173,15 +208,18 @@ def score(row: dict, cand: dict) -> int:
     isbn = row.get("isbn")
     if isbn and isbn in cand.get("isbns", ()):
         return 100
-    if not row.get("title"):
+    wanted_title, author_text = _facts(row)
+    if not wanted_title:
         return 0
-    title = _title_ratio(row["title"], cand.get("title"))
-    wanted = _names(row.get("author"))
+    title = _title_ratio(wanted_title, cand.get("title"))
+    from_name_only = not row.get("title")  # a guess from the file name never auto-picks
+    wanted = _split_names(author_text)
     if not wanted:
-        return round(title * 100 * 0.9)  # title alone can say "review", rarely "sure"
-    have = [_norm(a) for a in cand.get("authors", [])]
-    author = max((_ratio(w, h) for w in wanted for h in have), default=0.0)
-    return round((0.7 * title + 0.3 * author) * 100)
+        return min(round(title * 100 * 0.9), AUTO_MIN - 1 if from_name_only else 100)  # title alone: review, rarely sure
+    # One shared author is strong evidence, so take the best pairing; a long
+    # list (a magazine's whole masthead) only needs one of its names to appear.
+    author = max((_name_ratio(w, h) for w in wanted for h in cand.get("authors", [])), default=0.0)
+    return min(round((0.7 * title + 0.3 * author) * 100), AUTO_MIN - 1 if from_name_only and author < 0.9 else 100)
 
 
 def rank(row: dict, cands: list) -> list:
@@ -214,23 +252,79 @@ def decide(ranked: list) -> dict:
 # ─── matching rows ──────────────────────────────────────────────────────────
 
 def _usable(row: dict) -> bool:
-    return bool(row.get("isbn") or row.get("title"))
+    return bool(row.get("isbn") or row.get("title") or from_path(row.get("path")).get("title"))
 
 
-def _by_title(row: dict, retries: int = RETRIES) -> list:
-    params = {"title": row["title"][:200], "limit": MAX_CANDIDATES}
-    if row.get("author"):
-        params["author"] = row["author"][:200]
-    return rank(row, candidates_from(search(params, retries)))
+_JUNK = re.compile(r"\b(z[- ]?library|libgen|1lib|epub|ebook|retail|vk\.com)\b", re.I)
+# A trailing date part of a file name ("9-17-26", "may"); a bare number ("1984") is a title.
+_DATEISH = re.compile(r"^\s*(\d{1,2}[-. ]\d{1,2}([-. ]\d{2,4})?|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)\s*$", re.I)
+
+
+def from_path(path: str) -> dict:
+    """Best-effort {title, author} from a file name, for books whose own
+    metadata is empty or misleading. Understands "author_title_date" (Standard
+    Ebooks style), "Title (Author) (site)" and falls back to the whole name."""
+    name = re.sub(r"\.epub$", "", str(path or "").rsplit("/", 1)[-1], flags=re.I)
+    parens = [p for p in re.findall(r"\(([^)]*)\)", name) if p.strip() and not _JUNK.search(p)]
+    base = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", " ", name).strip()
+    if "_" in base:
+        parts = [p for p in base.split("_") if p.strip() and not _DATEISH.match(p)]
+        if len(parts) >= 2:
+            return {"author": parts[0].replace("-", " ").strip(), "title": parts[1].replace("-", " ").strip()}
+        base = " ".join(parts) or base
+    out = {"title": " ".join(base.replace("_", " ").split())}
+    if parens:
+        out["author"] = parens[0].strip()
+    return out
+
+
+def _queries(row: dict) -> list:
+    """Search attempts, tightest first. Each is only tried if the one before
+    found nothing close, so a clean file costs one request."""
+    title, names = (row.get("title") or "").strip(), _split_names(row.get("author"))
+    guess = from_path(row.get("path"))
+    if not title:
+        title, names = guess.get("title", ""), _split_names(guess.get("author"))
+    out = []
+    def add(t, a=None):
+        t = " ".join(_clean_title(t).split())[:200]
+        if t:
+            q = {"title": t, "limit": MAX_CANDIDATES}
+            if a:
+                q["author"] = a[:200]
+            if q not in out:
+                out.append(q)
+    primary = names[0] if names and len(names) <= LONG_AUTHOR_LIST else None  # a masthead over-constrains the search
+    add(title, primary)
+    add(title)                                   # the author may be a publisher or spelled differently
+    add(re.split(r"[:\u2013\u2014]| - ", _clean_title(title))[0])   # without a subtitle
+    if guess.get("title"):
+        add(guess["title"], guess.get("author"))
+        add(guess["title"])
+    return out
+
+
+def _by_title(row: dict, retries: int = RETRIES, exhaustive: bool = False) -> list:
+    """Ranked candidates for a row without a (known) ISBN, widening the search
+    until something scores at least REVIEW_MIN (or, if exhaustive, trying all)."""
+    pool = {}
+    for params in _queries(row):
+        for c in candidates_from(search(params, retries)):
+            pool.setdefault(c["olid"], c)
+        ranked = rank(row, [dict(c) for c in pool.values()])
+        if ranked and ranked[0]["score"] >= REVIEW_MIN and not exhaustive:
+            return ranked
+    return rank(row, [dict(c) for c in pool.values()])
 
 
 def candidates_for(row: dict) -> list:
-    """Live, scored candidates for one row (what the "Change edition" list shows)."""
+    """Live, scored candidates for one row (what the "Change edition" list shows):
+    every query is tried, so the admin sees the widest sensible list."""
     cands = []
     if row.get("isbn"):
         cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}, retries=0))
-    if row.get("title"):
-        cands += _by_title(row, retries=0)
+    if row.get("title") or row.get("path"):
+        cands += _by_title(row, retries=0, exhaustive=True)
     merged = {c["olid"]: c for c in cands}
     return [public(c) for c in rank(row, list(merged.values()))]
 
@@ -253,7 +347,7 @@ def match_rows(rows: list):
             hits = rank(r, [dict(c) for c in cands if r["isbn"] in c["isbns"]])
             if hits:
                 yield r["id"], decide(hits)
-            elif r.get("title"):
+            elif _usable(r):
                 todo.append(r)  # ISBN unknown to Open Library: try the title
             else:
                 yield r["id"], decide([])
