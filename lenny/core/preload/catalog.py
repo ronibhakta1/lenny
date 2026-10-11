@@ -15,6 +15,7 @@ size. Move it into the Cache table if workers multiply or the catalog grows.
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -89,11 +90,34 @@ def _book(record, files: dict):
     }
 
 
+PAGE = 100
+FETCH_WORKERS = 3
+_FIELDS = ["title", "author_name", "first_publish_year", "subject", "id_standard_ebooks", "cover_i"]
+_QUERY = "id_standard_ebooks:*"
+
+
+def _records(pages: list) -> list:
+    from lenny.core.openlibrary import OpenLibraryRecord
+    return [OpenLibraryRecord(doc) for page in pages for doc in (page.get("docs", []) if isinstance(page, dict) else [])]
+
+
+def _fetch_records() -> list:
+    """Every Standard Ebooks record. The first page says how many there are, then the
+    rest are fetched a few at a time (each page takes seconds), roughly 3x quicker than in turn."""
+    first = OpenLibrary.search_json(_QUERY, fields=_FIELDS, page=1, limit=PAGE)
+    total = int(first.get("numFound") or 0) if isinstance(first, dict) else 0
+    pages = [first]
+    if total > PAGE:
+        with ThreadPoolExecutor(max_workers=FETCH_WORKERS, thread_name_prefix="preload-catalog") as pool:
+            pages += list(pool.map(lambda n: OpenLibrary.search_json(_QUERY, fields=_FIELDS, page=n, limit=PAGE),
+                                   range(2, (total + PAGE - 1) // PAGE + 1)))
+    return _records(pages)
+
+
 def _build() -> dict:
     files = _archive_files()
     books, known = [], 0
-    fields = ["title", "author_name", "first_publish_year", "subject", "id_standard_ebooks", "cover_i"]
-    for record in OpenLibrary.search("id_standard_ebooks:*", fields=fields):
+    for record in _fetch_records():
         known += 1
         if (book := _book(record, files)):
             books.append(book)
@@ -101,19 +125,53 @@ def _build() -> dict:
     return {"built": time.monotonic(), "books": books, "known": known}
 
 
+_refreshing = threading.Event()
+
+
+def _refresh_in_background() -> None:
+    """Rebuild without making anyone wait; the old catalog keeps being served meanwhile."""
+    if _refreshing.is_set():
+        return
+    _refreshing.set()
+
+    def work():
+        try:
+            fresh = _build()
+            with _lock:
+                _cached.update(fresh)
+        except (httpx.HTTPError, ValueError, OSError) as e:
+            logger.warning("Could not refresh the preload catalog (%s)", e)
+        finally:
+            _refreshing.clear()
+    threading.Thread(target=work, name="preload-catalog-refresh", daemon=True).start()
+
+
+def warm() -> None:
+    """Build the catalog ahead of the first visitor (called at startup, in a thread)."""
+    try:
+        get()
+    except CatalogUnavailable:
+        pass
+
+
 def get(now=time.monotonic) -> dict:
-    """The catalog: {books, known, built}. Rebuilt when older than CATALOG_TTL."""
-    if _cached["books"] and now() - _cached["built"] < CATALOG_TTL:
+    """The catalog: {books, known, built}.
+
+    Built on first use (and at startup, see warm). Once it is older than CATALOG_TTL
+    the old copy is still returned at once while a new one is built in the background,
+    so nobody waits 30+ seconds twice. Only when there is no copy at all does a caller wait."""
+    if _cached["books"]:
+        if now() - _cached["built"] >= CATALOG_TTL:
+            _refresh_in_background()
         return _cached
-    with _lock:  # one rebuild at a time; others wait and then reuse it
-        if _cached["books"] and now() - _cached["built"] < CATALOG_TTL:
+    with _lock:  # the first build: one at a time; others wait and then reuse it
+        if _cached["books"]:
             return _cached
         try:
             _cached.update(_build())
         except (httpx.HTTPError, ValueError, OSError) as e:
-            logger.warning("Could not rebuild the preload catalog (%s)", e)
-            if not _cached["books"]:
-                raise CatalogUnavailable("Open Library or archive.org is not answering; try again shortly.") from e
+            logger.warning("Could not build the preload catalog (%s)", e)
+            raise CatalogUnavailable("Open Library or archive.org is not answering; try again shortly.") from e
         return _cached
 
 

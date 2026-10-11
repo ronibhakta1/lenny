@@ -33,8 +33,10 @@ FILES = {"jane-austen_pride-and-prejudice": 3000, "bram-stoker_dracula": 2000, "
 def fresh_catalog():
     from lenny.core.preload import catalog
     catalog._cached.update(built=0.0, books=[], known=0)
+    catalog._refreshing.clear()
     yield
     catalog._cached.update(built=0.0, books=[], known=0)
+    catalog._refreshing.clear()
 
 
 @pytest.fixture
@@ -47,12 +49,12 @@ def fakes():
         calls["archive"] += 1
         return dict(FILES)
 
-    def search(*a, **k):
+    def fetch():
         calls["search"] += 1
-        return iter([OpenLibraryRecord(d) for d in DOCS])
+        return [OpenLibraryRecord(d) for d in DOCS]
 
     with patch("lenny.core.preload.catalog._archive_files", archive), \
-         patch("lenny.core.preload.catalog.OpenLibrary.search", search):
+         patch("lenny.core.preload.catalog._fetch_records", fetch):
         yield calls
 
 
@@ -98,17 +100,25 @@ def test_a_record_without_editions_or_an_id_is_skipped_not_fatal(fakes):
     broken = [OpenLibraryRecord({"title": "No editions", "id_standard_ebooks": ["bram-stoker/dracula"], "editions": {"docs": []}}),
               OpenLibraryRecord({"title": "No id", "editions": {"docs": [{"key": "/books/OL9M"}]}}),
               OpenLibraryRecord(DOCS[1])]
-    with patch("lenny.core.preload.catalog.OpenLibrary.search", return_value=iter(broken)):
+    with patch("lenny.core.preload.catalog._fetch_records", return_value=broken):
         assert [b["olid"] for b in catalog.get()["books"]] == [1]
 
 
-def test_the_catalog_is_built_once_then_reused_until_it_expires(fakes):
+def test_the_catalog_is_built_once_then_reused(fakes):
     from lenny.core.preload import catalog
     now = [1000.0]
     catalog.get(now=lambda: now[0]); catalog.get(now=lambda: now[0] + 10)
     assert fakes["search"] == 1
-    catalog.get(now=lambda: time.monotonic() + catalog.CATALOG_TTL + 1)
-    assert fakes["search"] == 2
+
+
+def test_warm_builds_ahead_of_the_first_visitor_and_never_raises(fakes):
+    import httpx
+    from lenny.core.preload import catalog
+    catalog.warm()
+    assert fakes["search"] == 1 and len(catalog._cached["books"]) == 3
+    catalog._cached.update(books=[], built=0.0)
+    with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
+        catalog.warm()                                                    # down at start-up: no crash, built on first use instead
 
 
 def test_many_requests_at_once_build_it_once(fakes):
@@ -121,6 +131,29 @@ def test_many_requests_at_once_build_it_once(fakes):
     assert fakes["search"] == 1
 
 
+def test_an_expired_catalog_is_served_at_once_while_a_new_one_builds_in_the_background(fakes):
+    from lenny.core.preload import catalog
+    catalog.get()
+    catalog._cached["built"] = time.monotonic() - catalog.CATALOG_TTL - 1
+    release, started = threading.Event(), threading.Event()
+    real_fetch = catalog._fetch_records
+    def slow_fetch():
+        started.set(); release.wait(5)
+        return real_fetch()
+    with patch("lenny.core.preload.catalog._fetch_records", slow_fetch):
+        began = time.monotonic()
+        got = catalog.get()                                               # not blocked by the rebuild
+        assert time.monotonic() - began < 1 and len(got["books"]) == 3
+        assert started.wait(2) and catalog._refreshing.is_set()
+        catalog.get()                                                     # a second call does not start a second rebuild
+        release.set()
+        for _ in range(50):
+            if not catalog._refreshing.is_set():
+                break
+            time.sleep(0.05)
+    assert fakes["search"] == 2 and catalog._cached["built"] > time.monotonic() - 5
+
+
 def test_a_failed_rebuild_keeps_serving_the_old_catalog(fakes):
     import httpx
     from lenny.core.preload import catalog
@@ -128,6 +161,11 @@ def test_a_failed_rebuild_keeps_serving_the_old_catalog(fakes):
     catalog._cached["built"] = time.monotonic() - catalog.CATALOG_TTL - 1
     with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
         assert len(catalog.get()["books"]) == 3
+        for _ in range(50):
+            if not catalog._refreshing.is_set():
+                break
+            time.sleep(0.05)
+        assert len(catalog.get()["books"]) == 3 and not catalog._refreshing.is_set()
 
 
 def test_no_catalog_and_no_upstream_is_a_clear_error():
@@ -136,6 +174,26 @@ def test_no_catalog_and_no_upstream_is_a_clear_error():
     with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
         with pytest.raises(catalog.CatalogUnavailable):
             catalog.get()
+
+
+def test_all_pages_are_fetched_and_the_extra_pages_in_parallel():
+    from lenny.core.preload import catalog
+    calls, lock, live, peak = [], threading.Lock(), [0], [0]
+    def page(query, fields=None, page=1, limit=100):
+        with lock:
+            calls.append(page); live[0] += 1; peak[0] = max(peak[0], live[0])
+        time.sleep(0.05)
+        with lock:
+            live[0] -= 1
+        return {"numFound": 450, "docs": [DOCS[0]] if page == 1 else [DOCS[page % 3]]}
+    with patch("lenny.core.preload.catalog.OpenLibrary.search_json", page):
+        records = catalog._fetch_records()
+    assert sorted(calls) == [1, 2, 3, 4, 5] and len(records) == 5          # 450 results = 5 pages of 100
+    assert 1 < peak[0] <= catalog.FETCH_WORKERS                            # pages 2..5 ran together, bounded
+    with patch("lenny.core.preload.catalog.OpenLibrary.search_json", lambda *a, **k: {"numFound": 1, "docs": [DOCS[0]]}):
+        assert len(catalog._fetch_records()) == 1                           # one page: no pool needed
+    with patch("lenny.core.preload.catalog.OpenLibrary.search_json", lambda *a, **k: "garbage"):
+        assert catalog._fetch_records() == []
 
 
 # ─── search, collections, picking ────────────────────────────────────────────

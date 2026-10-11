@@ -35,6 +35,17 @@ app = FastAPI(
 )
 
 @app.on_event("startup")
+def _warm_preload_catalog() -> None:
+    """Build the free-books catalog in the background so the first admin visit is instant.
+    Never delays or breaks start-up."""
+    if os.environ.get("TESTING"):
+        return
+    import threading
+    from lenny.core.preload import catalog
+    threading.Thread(target=catalog.warm, name="preload-catalog-warm", daemon=True).start()
+
+
+@app.on_event("startup")
 def _seed_default_oauth_clients() -> None:
     """Make a fresh node trust the consumers Lenny ships with (Book Server).
 
