@@ -53,6 +53,7 @@ def upgrade() -> None:
         sa.Column('publisher', sa.String(200), nullable=True),
         sa.Column('year', sa.SmallInteger, nullable=True),
         sa.Column('error', sa.String(200), nullable=True),
+        sa.Column('claimed_at', sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint('batch_id', 'row_key', name='uq_import_rows_batch_key'),
     )
     op.create_index('idx_import_rows_batch_state', 'import_rows', ['batch_id', 'state', 'id'])
