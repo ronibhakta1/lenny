@@ -17,7 +17,9 @@ size. Move it into the Cache table if workers multiply or the catalog grows.
 """
 
 import logging
+import re
 import threading
+from html import unescape
 import time
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -376,8 +378,9 @@ def _text(value) -> str | None:
     """Open Library descriptions are a string or {"type": ..., "value": ...}."""
     if isinstance(value, dict):
         value = value.get("value")
-    value = " ".join(str(value or "").split())
-    return value[:2000] or None
+    text = unescape(re.sub(r"<[^>]*>", " ", str(value or "")))     # Standard Ebooks blurbs carry HTML
+    text = " ".join(text.split())
+    return text[:2000] or None
 
 
 def details(olid: int) -> dict | None:

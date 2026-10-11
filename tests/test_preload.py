@@ -763,3 +763,11 @@ def test_details_over_http(client, fakes, db, clear_details):
 def test_the_details_route_requires_admin(app_module):
     from fastapi.testclient import TestClient
     assert TestClient(app_module).get(f"{P}/books/3").status_code == 403
+
+
+def test_descriptions_lose_their_html_and_keep_their_text():
+    from lenny.core.preload import catalog
+    assert catalog._text("<p><i>Pride and Prejudice</i> may be one of <a href=\"x\">Austen\u2019s</a> novels &amp; more.</p>") == \
+        "Pride and Prejudice may be one of Austen\u2019s novels & more."
+    assert catalog._text({"value": "<br>Plain"}) == "Plain" and catalog._text(None) is None and catalog._text("  ") is None
+    assert len(catalog._text("x" * 5000)) == 2000
