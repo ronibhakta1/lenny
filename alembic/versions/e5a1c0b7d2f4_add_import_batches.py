@@ -32,7 +32,7 @@ def upgrade() -> None:
         'import_rows',
         sa.Column('id', sa.BigInteger, primary_key=True),
         sa.Column('batch_id', sa.BigInteger, sa.ForeignKey('import_batches.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('row_key', sa.String(40), nullable=False),
+        sa.Column('row_key', sa.String(64), nullable=False),
         sa.Column('path', sa.String(1024), nullable=False),
         sa.Column('size', sa.BigInteger, nullable=False),
         sa.Column('mtime', sa.BigInteger, nullable=False),
@@ -55,6 +55,7 @@ def upgrade() -> None:
         sa.Column('error', sa.String(200), nullable=True),
         sa.Column('claimed_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('staged', sa.Boolean, nullable=False, server_default=sa.false()),
+        sa.Column('imported_at', sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint('batch_id', 'row_key', name='uq_import_rows_batch_key'),
     )
     op.create_index('idx_import_rows_batch_state', 'import_rows', ['batch_id', 'state', 'id'])

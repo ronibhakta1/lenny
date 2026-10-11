@@ -109,13 +109,15 @@ async def get_rows(
     state: Optional[str] = None, q: Optional[str] = None,
     cursor: Optional[int] = None, limit: int = 100, offset: Optional[int] = None, total: bool = False,
     skipped: Optional[bool] = None, auto_picked: Optional[bool] = None, staged: Optional[bool] = None,
+    exclude_state: Optional[str] = None, order: str = "id",
 ):
     _require_admin(request)
     if state is not None and state not in batches.STATES:
         raise HTTPException(status_code=400, detail=f"'state' must be one of {', '.join(batches.STATES)}")
     return await _run(
         batches.list_rows, batch_id, state=state, q=q, cursor=cursor, limit=limit,
-        skipped=skipped, auto_picked=auto_picked, staged=staged, offset=offset, with_total=total)
+        skipped=skipped, auto_picked=auto_picked, staged=staged, offset=offset, with_total=total,
+        exclude_state=exclude_state, order=order)
 
 
 @router.patch("/admin/import/batches/{batch_id}/rows/{row_id}")
@@ -163,5 +165,6 @@ async def post_action(request: Request, batch_id: int, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail=str(e))
     updated = await _run(
         batches.bulk_update, batch_id, body.get("action"), state=state, q=body.get("q"),
-        value=body.get("value"), skipped=skipped, auto_picked=auto_picked, row_ids=body.get("row_ids"))
+        value=body.get("value"), skipped=skipped, auto_picked=auto_picked, row_ids=body.get("row_ids"),
+        exclude_state=body.get("exclude_state"))
     return {"updated": updated}
