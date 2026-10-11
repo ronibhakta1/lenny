@@ -317,7 +317,7 @@ def upsert_rows(batch_id: int, raw_rows: list) -> dict:
 
 
 def _filtered(batch_id: int, state: str | None, q: str | None,
-              skipped: bool | None = None, auto_picked: bool | None = None):
+              skipped: bool | None = None, auto_picked: bool | None = None, staged: bool | None = None):
     query = db.query(ImportRow).filter(ImportRow.batch_id == batch_id)
     if state:
         query = query.filter(ImportRow.state == state)
@@ -325,6 +325,8 @@ def _filtered(batch_id: int, state: str | None, q: str | None,
         query = query.filter(ImportRow.skipped.is_(skipped))
     if auto_picked is not None:
         query = query.filter(ImportRow.auto_picked.is_(auto_picked))
+    if staged is not None:
+        query = query.filter(ImportRow.staged.is_(staged))
     if q:
         like = "%" + q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         query = query.filter(or_(*[
@@ -339,11 +341,12 @@ def _row_dict(row: ImportRow) -> dict:
 
 def list_rows(batch_id: int, state: str | None = None, q: str | None = None,
               cursor: int | None = None, limit: int = 100,
-              skipped: bool | None = None, auto_picked: bool | None = None) -> dict:
+              skipped: bool | None = None, auto_picked: bool | None = None,
+              staged: bool | None = None) -> dict:
     limit = max(1, min(limit, MAX_PAGE))
     try:
         _get(batch_id)
-        query = _filtered(batch_id, state, q, skipped, auto_picked)
+        query = _filtered(batch_id, state, q, skipped, auto_picked, staged)
         if cursor:
             query = query.filter(ImportRow.id > cursor)
         rows = query.order_by(ImportRow.id).limit(limit + 1).all()

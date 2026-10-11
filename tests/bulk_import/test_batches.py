@@ -804,3 +804,14 @@ def test_stage_over_http(client, fake_s3):
     assert ok.status_code == 200 and ok.json()["staged"] is True
     assert client.get(f"{API}/{bid}").json()["staged"] == 1
     assert client.put(f"{API}/{bid}/rows/999/staged", files=files(b"x")).status_code == 404
+
+
+def test_rows_can_be_filtered_by_whether_their_file_is_on_the_server(client):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path=f"{i}.epub", size=i + 1, mtime=1) for i in range(4)]})
+    ids = [r["id"] for r in client.get(f"{API}/{bid}/rows").json()["rows"]]
+    set_state(bid, **{str(ids[0]): dict(staged=True), str(ids[1]): dict(staged=True)})
+    got = lambda **p: [r["id"] for r in client.get(f"{API}/{bid}/rows", params=p).json()["rows"]]
+    assert got(staged="true") == ids[:2] and got(staged="false") == ids[2:] and len(got()) == 4
+    set_state(bid, **{str(i): dict(state="matched") for i in ids})
+    assert got(staged="false", state="matched") == ids[2:]

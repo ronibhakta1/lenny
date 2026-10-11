@@ -121,14 +121,14 @@ async def get_rows(
     request: Request, batch_id: int,
     state: Optional[str] = None, q: Optional[str] = None,
     cursor: Optional[int] = None, limit: int = 100,
-    skipped: Optional[bool] = None, auto_picked: Optional[bool] = None,
+    skipped: Optional[bool] = None, auto_picked: Optional[bool] = None, staged: Optional[bool] = None,
 ):
     _require_admin(request)
     if state is not None and state not in batches.STATES:
         raise HTTPException(status_code=400, detail=f"'state' must be one of {', '.join(batches.STATES)}")
     return await _run(
         batches.list_rows, batch_id, state=state, q=q, cursor=cursor, limit=limit,
-        skipped=skipped, auto_picked=auto_picked)
+        skipped=skipped, auto_picked=auto_picked, staged=staged)
 
 
 @router.patch("/admin/import/batches/{batch_id}/rows/{row_id}")
