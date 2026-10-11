@@ -254,6 +254,7 @@ rows instead of duplicating them.
 - **GET /admin/import/batches/{id}/rows** — `?state=&q=&skipped=&auto_picked=&cursor=&limit=` (limit up to 200). Returns `{rows, next_cursor}`.
 - **PATCH /admin/import/batches/{id}/rows/{row_id}** — `{skipped?, olid?, encrypted?}`. A new `olid` on an already imported row moves the stored book to that edition; loans stay with it.
 - **DELETE /admin/import/batches/{id}/rows/{row_id}** — remove the row from the batch (an imported book stays in the library); returns the batch summary. `404` if the row is gone, `409` while it is being imported. A removed row comes back if the same file is dropped again.
+- **PUT /admin/import/batches/{id}/rows/{row_id}/staged** — multipart `file`: keep the book's file on the server (a matched, unskipped row; EPUB checked like any import; `400` otherwise, `413` too large). The row comes back with `staged: true`; the summary counts `staged` and `unstaged` (matched, not skipped, file not sent yet). Send files as rows match, then importing a staged row needs no browser at all, so a reload, a backgrounded phone browser or a lost folder handle loses nothing. Staged copies (`import-staging/{batch}/{row}.epub` in the bookshelf bucket) are deleted with their row, their batch, or when the batch expires.
 - **POST /admin/import/batches/{id}/actions** — `{action: "skip"|"unskip"|"set_encrypted"|"remove", value?, state?, q?, skipped?, auto_picked?}` applied to every row matching the filter. Returns `{updated}`.
 
 ## Authentication

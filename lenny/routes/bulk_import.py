@@ -11,6 +11,7 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     GET    /admin/import/batches/{id}/rows
     PATCH  /admin/import/batches/{id}/rows/{row_id}
     DELETE /admin/import/batches/{id}/rows/{row_id}
+    PUT    /admin/import/batches/{id}/rows/{row_id}/staged   keep the file on the server
     POST   /admin/import/batches/{id}/actions
 
 Every route is admin-only, same credential pair as the other /admin/ routes.
@@ -18,20 +19,22 @@ Database work runs on a worker thread and drops that thread's session after,
 since the app's per-request cleanup only reaches the event loop's own thread.
 """
 
+import anyio
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, File, HTTPException, Request, Response, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 
-from lenny.core.bulk_import import batches
+from lenny.core.bulk_import import batches, staging
 from lenny.core.db import session as db
-from lenny.core.exceptions import ItemExistsError, ItemNotFoundError, S3UploadError, DatabaseUpdateError
-from lenny.routes.api import _require_admin
+from lenny.core.exceptions import (
+    DatabaseUpdateError, FileTooLargeError, InvalidFileError, ItemExistsError, ItemNotFoundError, S3UploadError)
+from lenny.routes.api import _UPLOAD_LIMITER, _require_admin
 
 router = APIRouter()
 
 
-async def _run(fn, *args, **kwargs):
+async def _run(fn, *args, _limiter=None, **kwargs):
     def call():
         try:
             return fn(*args, **kwargs)
@@ -45,12 +48,18 @@ async def _run(fn, *args, **kwargs):
             raise HTTPException(status_code=409, detail=str(e))
         except ItemNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
+        except FileTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        except InvalidFileError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (S3UploadError, DatabaseUpdateError):
             raise HTTPException(status_code=500, detail="Internal server error")
         finally:
             db.remove()
+    if _limiter is not None:
+        return await anyio.to_thread.run_sync(call, limiter=_limiter)
     return await run_in_threadpool(call)
 
 
@@ -130,6 +139,16 @@ async def delete_row(request: Request, batch_id: int, row_id: int):
     row is gone, 409 while it is being imported. An imported book stays in the library."""
     _require_admin(request)
     return await _run(batches.delete_row, batch_id, row_id)
+
+
+@router.put("/admin/import/batches/{batch_id}/rows/{row_id}/staged")
+async def stage_file(request: Request, batch_id: int, row_id: int,
+                     file: UploadFile = File(..., description="The row's EPUB file")):
+    """Keep this book's file on the server so importing it later needs no browser.
+    Idempotent (a second upload replaces the first). Runs under the same bounded
+    upload pool as other uploads. Returns the row, with `staged: true`."""
+    _require_admin(request)
+    return await _run(staging.stage, batch_id, row_id, file, _limiter=_UPLOAD_LIMITER)
 
 
 @router.post("/admin/import/batches/{batch_id}/actions")

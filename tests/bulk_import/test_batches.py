@@ -662,3 +662,145 @@ def test_the_migration_matches_the_models(pg):
         left = c.exec_driver_sql(
             "select count(*) from information_schema.tables where table_name in ('import_rows','import_batches')").scalar()
     assert left == 0
+
+
+# ─── staging: the file lives on the server, so nothing has to stay connected ──
+
+def epub_upload(data=None):
+    import io, zipfile
+    from starlette.datastructures import Headers, UploadFile
+    if data is None:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+            z.writestr("META-INF/container.xml", "<container/>")
+        data = buf.getvalue()
+    return UploadFile(filename="b.epub", file=io.BytesIO(data), size=len(data),
+                      headers=Headers({"content-type": "application/epub+zip"}))
+
+
+@pytest.fixture
+def fake_s3():
+    """Stands in for the object store: remembers what was uploaded and deleted."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.BOOKSHELF_BUCKET = "bookshelf"
+    store.objects = set()
+    store.upload_fileobj.side_effect = lambda f, bucket, key, **k: store.objects.add(key)
+    store.delete_object.side_effect = lambda Bucket, Key: store.objects.discard(Key)
+    store.get_keys.side_effect = lambda prefix="", **k: [o for o in sorted(store.objects) if o.startswith(prefix)]
+    with patch("lenny.core.bulk_import.staging.s3", store):
+        yield store
+
+
+def matched_rows(n):
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(n))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    set_state(bid, **{str(i): dict(state="matched", olid=100 + i) for i in ids})
+    return bid, ids
+
+
+def test_staging_keeps_the_file_and_marks_the_row(fake_s3):
+    from lenny.core.bulk_import import batches as b, staging
+    bid, ids = matched_rows(2)
+    row = staging.stage(bid, ids[0], epub_upload())
+    assert row["staged"] is True and fake_s3.objects == {f"import-staging/{bid}/{ids[0]}.epub"}
+    summary = b.get_summary(bid)
+    assert summary["staged"] == 1 and summary["unstaged"] == 1           # one more still to send
+    assert staging.stage(bid, ids[0], epub_upload())["staged"] is True    # idempotent
+    assert len(fake_s3.objects) == 1
+
+
+def test_staging_checks_the_file_before_storing_anything(fake_s3):
+    from lenny.core.bulk_import import staging
+    from lenny.core.exceptions import InvalidFileError
+    bid, ids = matched_rows(1)
+    with pytest.raises(InvalidFileError):
+        staging.stage(bid, ids[0], epub_upload(b"%PDF-1.4 not an epub"))
+    assert fake_s3.objects == set() and fake_s3.upload_fileobj.call_count == 0
+
+
+@pytest.mark.parametrize("fields", [dict(state="queued"), dict(state="no_match"), dict(skipped=True), dict(state="imported")])
+def test_only_matched_unskipped_rows_can_be_staged(fake_s3, fields):
+    from lenny.core.bulk_import import batches as b, staging
+    bid, ids = matched_rows(1)
+    set_state(bid, **{str(ids[0]): fields})
+    with pytest.raises(ValueError):
+        staging.stage(bid, ids[0], epub_upload())
+    with pytest.raises(b.ImportRowNotFound):
+        staging.stage(bid, ids[0] + 99, epub_upload())
+    assert fake_s3.objects == set()
+
+
+def test_a_failed_store_leaves_the_row_unstaged(fake_s3):
+    from lenny.core.bulk_import import batches as b, staging
+    from lenny.core.exceptions import S3UploadError
+    bid, ids = matched_rows(1)
+    fake_s3.upload_fileobj.side_effect = RuntimeError("garage down")
+    with pytest.raises(S3UploadError):
+        staging.stage(bid, ids[0], epub_upload())
+    assert b.list_rows(bid)["rows"][0]["staged"] is False
+
+
+def test_a_row_removed_while_its_file_uploads_leaves_no_orphan(fake_s3):
+    from lenny.core.bulk_import import batches as b, staging
+    from lenny.core.db import session as db
+    bid, ids = matched_rows(1)
+    def upload_then_row_vanishes(f, bucket, key, **k):
+        fake_s3.objects.add(key)
+        db.query(b.ImportRow).filter(b.ImportRow.id == ids[0]).delete(); db.commit()
+    fake_s3.upload_fileobj.side_effect = upload_then_row_vanishes
+    with pytest.raises(b.ImportRowNotFound):
+        staging.stage(bid, ids[0], epub_upload())
+    assert fake_s3.objects == set()
+
+
+def test_staged_files_go_with_their_row_batch_and_expiry(fake_s3):
+    from datetime import datetime, timedelta, timezone
+    from lenny.core.bulk_import import batches as b, staging
+    from lenny.core.db import session as db
+    one, a = matched_rows(3)
+    for i in a:
+        staging.stage(one, i, epub_upload())
+    assert len(fake_s3.objects) == 3
+    b.delete_row(one, a[0])                                                  # one row
+    assert len(fake_s3.objects) == 2
+    b.bulk_update(one, "remove", state="matched")                            # a filter (staged rows included)
+    assert fake_s3.objects == set()
+    two, c = matched_rows(2)
+    for i in c:
+        staging.stage(two, i, epub_upload())
+    b.delete_batch(two)                                                      # the whole batch
+    assert fake_s3.objects == set()
+    three, d = matched_rows(1)
+    staging.stage(three, d[0], epub_upload())
+    db.query(b.ImportBatch).filter(b.ImportBatch.id == three).update(
+        {"expires_at": datetime.now(timezone.utc) - timedelta(days=1)}); db.commit()
+    b.list_batches()                                                         # lazy purge
+    assert fake_s3.objects == set()
+
+
+def test_cleanup_failures_never_break_a_delete(fake_s3):
+    from lenny.core.bulk_import import batches as b, staging
+    bid, ids = matched_rows(2)
+    staging.stage(bid, ids[0], epub_upload())
+    fake_s3.delete_object.side_effect = RuntimeError("garage down")
+    fake_s3.get_keys.side_effect = RuntimeError("garage down")
+    assert b.delete_row(bid, ids[0])["total"] == 1
+    b.delete_batch(bid)
+
+
+def test_stage_over_http(client, fake_s3):
+    import io
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=3, mtime=1)]})
+    rid = client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+    files = lambda data: {"file": ("a.epub", io.BytesIO(data), "application/epub+zip")}
+    assert client.put(f"{API}/{bid}/rows/{rid}/staged", files=files(b"abc")).status_code == 400   # not matched yet
+    client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 101})
+    assert client.put(f"{API}/{bid}/rows/{rid}/staged", files=files(b"%PDF nope")).status_code == 400
+    ok = client.put(f"{API}/{bid}/rows/{rid}/staged", files=files(epub_upload().file.read()))
+    assert ok.status_code == 200 and ok.json()["staged"] is True
+    assert client.get(f"{API}/{bid}").json()["staged"] == 1
+    assert client.put(f"{API}/{bid}/rows/999/staged", files=files(b"x")).status_code == 404
