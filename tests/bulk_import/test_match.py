@@ -50,6 +50,8 @@ class FakeOL:
         if "q" in params and params["q"].startswith("isbn:"):
             wanted = set(params["q"].replace("isbn:", "").strip("()").replace(" OR ", " ").split())
             return [w for w in self.works if any(set(e["isbn"]) & wanted for e in w["editions"]["docs"])]
+        if "publisher:" in params.get("q", "") or "publish_year:" in params.get("q", ""):
+            return []    # this fake has no per-edition data to filter on: like Open Library with no such edition
         if "q" in params and 'title:"' not in params["q"]:   # free words, like the search box
             words = params["q"].lower().split()
             return [w for w in self.works if all(x in (w["title"] + " " + " ".join(w["author_name"])).lower() for x in words)]
@@ -1482,32 +1484,67 @@ def editions_of_dune():
             mk(3, 2019, "Ace", "eng", "Paperback"), mk(4, 2019, "Penguin", "eng", "Ebook"), mk(5, 2019, "Ace", "fre", "Ebook")]
 
 
-def refined(row_extra, editions=None, search_olid=1):
+class TargetedOL(FakeOL):
+    """FakeOL that also answers the refine step's `(title:"T" AND author:"A") AND publisher:"P" AND publish_year:Y [AND language:L]`
+    from a list of edition dicts, the way Open Library returns the matching edition in the work."""
+
+    def __init__(self, *works, editions=()):
+        super().__init__(*works)
+        self.editions = list(editions)
+
+    def __call__(self, params, retries=3, fresh=False):
+        q = params.get("q", "")
+        if "publisher:" not in q and "publish_year:" not in q:
+            return super().__call__(params, retries, fresh)
+        import re
+        self.calls.append(dict(params))
+        pub = re.search(r'publisher:"([^"]*)"', q)
+        year = re.search(r"publish_year:(\d+)", q)
+        lang = re.search(r"language:(\w+)", q)
+        for e in self.editions:
+            if pub and pub.group(1).lower() not in (e["publisher"] or "").lower():
+                continue
+            if year and int(year.group(1)) != e["year"]:
+                continue
+            if lang and lang.group(1) != e["language"]:
+                continue
+            return [{"key": "/works/OL1W", "title": "Dune", "author_name": ["Frank Herbert"],
+                     "editions": {"docs": [{"key": f"/books/OL{e['olid']}M", "title": "Dune", "publisher": [e["publisher"]],
+                                            "language": [e["language"]], "publish_year": [e["year"]], "isbn": []}]}}]
+        return []
+
+
+def refined(row_extra, editions=None, search_olid=1, targeted=False):
     """Match one Dune row whose search pick is `search_olid`, with the work's editions available."""
     from lenny.core.bulk_import import matcher as m
-    fake = FakeOL(work("Dune", ["Frank Herbert"], (search_olid, [], "eng")))
+    fake = (TargetedOL(work("Dune", ["Frank Herbert"], (search_olid, [], "eng")), editions=editions_of_dune()) if targeted
+            else FakeOL(work("Dune", ["Frank Herbert"], (search_olid, [], "eng"))))
     row = dict(id=1, isbn=None, title="Dune", author="Frank Herbert", language="en", publisher=None, year=None, path=None)
     row.update(row_extra)
     with patch("lenny.core.bulk_import.matcher.search", fake), \
          patch("lenny.core.bulk_import.matcher.work_editions", return_value=editions or editions_of_dune()) as we:
-        return dict(m.match_rows([row]))[1], we
+        return dict(m.match_rows([row]))[1], (we, fake)
 
 
 def test_the_best_edition_of_the_work_replaces_search_s_pick_using_the_files_year_and_publisher():
-    out, we = refined(dict(year=2019, publisher="Ace Books"))
+    out, (we, _) = refined(dict(year=2019, publisher="Ace Books"), targeted=True)
     assert out["state"] == "matched" and out["olid"] == 3 and out["match_year"] == 2019      # Ace + 2019, not the 1965 print search showed
-    assert we.call_args.kwargs["limit"] == 100
+    # and when the direct ask finds nothing, the scan (100 editions) picks the closest fit instead
+    out, (we, _) = refined(dict(year=2019, publisher="Ace Books"))
+    assert out["olid"] == 3 and we.call_args.kwargs["limit"] == 100
 
 
 def test_the_year_alone_picks_the_right_edition_and_an_ebook_wins_a_tie():
-    out, _ = refined(dict(year=2019))
-    assert out["olid"] in (4, 5) and out["olid"] != 5                                         # eng e-book 2019 (5 is French: penalised)
+    out, _ = refined(dict(year=2019))                                                         # the scan: eng e-book 2019 (5 is French: penalised)
+    assert out["olid"] == 4
+    out, _ = refined(dict(year=2019), targeted=True)                                          # the direct ask: an English 2019 edition
+    assert out["olid"] in (3, 4)
     out, _ = refined(dict(year=1990))
     assert out["olid"] == 2
 
 
 def test_without_year_or_publisher_there_is_nothing_to_refine_and_no_extra_request():
-    out, we = refined(dict())
+    out, (we, _) = refined(dict())
     assert out["olid"] == 1 and we.call_count == 0
 
 
@@ -1536,9 +1573,11 @@ def test_refined_twins_share_the_better_edition_and_get_their_own_copy():
     from lenny.core.bulk_import import matcher as m
     fake = FakeOL(work("Dune", ["Frank Herbert"], (1, [], "eng")))
     rows_ = [dict(id=i, isbn=None, title="Dune", author="Frank Herbert", language="en", publisher="Ace", year=2019, path=None) for i in (1, 2)]
+    fake = TargetedOL(work("Dune", ["Frank Herbert"], (1, [], "eng")), editions=editions_of_dune())
     with patch("lenny.core.bulk_import.matcher.search", fake), patch("lenny.core.bulk_import.matcher.work_editions", return_value=editions_of_dune()) as we:
         out = dict(m.match_rows(rows_))
-    assert out[1]["olid"] == out[2]["olid"] == 3 and out[1] is not out[2] and we.call_count == 1
+    asks = [c for c in fake.calls if "publish_year" in c.get("q", "")]
+    assert out[1]["olid"] == out[2]["olid"] == 3 and out[1] is not out[2] and len(asks) == 1   # asked once for both
 
 
 def test_a_tie_prefers_the_newer_record_not_the_old_print_edition():
@@ -1561,3 +1600,33 @@ def test_an_old_edition_year_can_no_longer_win_a_close_call_but_never_hides_the_
     from lenny.core.bulk_import import matcher as m
     c = dict(olid=1, title="Dune", authors=["Frank Herbert"], isbns=[], language="eng", publisher=None, year=1920)
     assert m.score(dict(title="Dune", author="Frank Herbert", year=2019, language="en"), c) >= m.AUTO_MIN      # still the same book
+
+
+def test_the_edition_with_the_files_publisher_and_year_is_asked_for_directly():
+    out, (we, fake) = refined(dict(year=2019, publisher="Ace Books"), targeted=True)
+    assert out["olid"] == 3 and out["match_year"] == 2019
+    asked = [c["q"] for c in fake.calls if "publish_year" in c.get("q", "")]
+    assert asked[0] == '(title:"Dune" AND author:"Frank Herbert") AND publisher:"Ace Books" AND publish_year:2019'
+    assert we.call_count == 0                                                               # found directly: the scan never ran
+
+
+def test_the_direct_asks_widen_from_publisher_and_year_to_year_to_publisher():
+    out, (we, fake) = refined(dict(year=2019, publisher="No Such Press", language="en"), targeted=True)
+    qs = [c["q"] for c in fake.calls if "publish_year" in c.get("q", "") or "publisher:" in c.get("q", "")]
+    assert qs[0].endswith("publish_year:2019") and 'publisher:"No Such Press"' in qs[0]
+    assert qs[1].endswith("publish_year:2019 AND language:eng")                              # then the year, with the language
+    assert out["olid"] in (3, 4)                                                              # a 2019 English edition, not the 1965 print
+    out, (we, fake) = refined(dict(publisher="Chilton"), targeted=True)
+    assert out["olid"] == 1 and [c["q"] for c in fake.calls if "publisher:" in c.get("q", "")] == [
+        '(title:"Dune" AND author:"Frank Herbert") AND publisher:"Chilton"']
+
+
+def test_a_publisher_with_quotes_cannot_break_the_direct_question():
+    out, (we, fake) = refined(dict(year=2019, publisher='Ace "Special" \\ Books'), targeted=True)
+    q = [c["q"] for c in fake.calls if "publish_year" in c.get("q", "")][0]
+    assert q.count('"') == 6 and "\\" not in q                                               # title, author, publisher: three quoted phrases
+
+
+def test_when_nothing_matches_the_scan_still_finds_the_closest_year():
+    out, (we, fake) = refined(dict(year=1991), targeted=True)                                 # no 1991 edition: 1990 is closest
+    assert out["olid"] == 2 and we.call_count == 1

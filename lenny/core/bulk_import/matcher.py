@@ -654,23 +654,59 @@ def _refinable(row: dict, update: dict) -> bool:
             and bool(row.get("year") or row.get("publisher")))
 
 
+def _targeted(row: dict, work_key: str) -> dict | None:
+    """Ask Open Library for the edition that has the file's publisher and year, which it
+    answers with that very edition (one request, however many editions exist). The ask is
+    by the file's title and first author, not the work's key, because Open Library often
+    has the same book under several works. Tries the most specific question first:
+    publisher + year, then year (+ language), then publisher. Returns the best-scoring
+    edition candidate, or None."""
+    clause = _clause(row)
+    publisher = _lucene(" ".join(str(row.get("publisher") or "").split()))[:80]
+    year = row.get("year") if isinstance(row.get("year"), int) else None
+    lang = _lang(row.get("language"))
+    if not clause:
+        clause = f"key:{work_key}"
+    asks = []
+    if publisher and year:
+        asks.append(f'{clause} AND publisher:"{publisher}" AND publish_year:{year}')
+    if year:
+        asks.append(f"{clause} AND publish_year:{year}" + (f" AND language:{lang}" if lang else ""))
+    if publisher:
+        asks.append(f'{clause} AND publisher:"{publisher}"')
+    for q in asks:
+        try:
+            found = candidates_from(search({"q": q, "limit": MAX_CANDIDATES}, retries=RETRIES))
+        except UpstreamError:
+            return None
+        ranked = [c for c in rank(row, found) if c["score"] >= REVIEW_MIN]
+        if ranked:
+            return ranked[0]
+    return None
+
+
 def _refine(row: dict, update: dict) -> dict:
     """Pick the best edition of the matched work for this file.
 
-    Search shows one edition per work, often an old print one. Here all of the work's
-    editions are scored on what the file says (year, publisher, language, e-book format)
-    and the best replaces the pick, only when it is a clear improvement. A failed
-    lookup keeps the original pick."""
-    try:
-        editions = work_editions(update["_work"], limit=REFINE_EDITIONS, retries=RETRIES)
-    except UpstreamError:
-        return update
-    if not editions:
-        return update
-    editions.sort(key=lambda e: (-_delta(row, e), not _is_ebook(e), not e.get("isbn"), -(e.get("year") or 0), e["olid"]))
-    best = editions[0]
-    current = next((e for e in editions if e["olid"] == update["olid"]), None)
-    if best["olid"] == update["olid"] or (current is not None and _delta(row, best) <= _delta(row, current)):
+    Search shows one edition per work, often an old print one. Here the work's edition
+    that has the file's publisher and year is asked for directly; failing that, up to
+    REFINE_EDITIONS of its editions are scored on year, publisher, language and e-book
+    format. The new pick must be a clear improvement. A failed lookup keeps the original."""
+    work = update["_work"]
+    best = _targeted(row, work)
+    if best is None:
+        try:
+            editions = work_editions(work, limit=REFINE_EDITIONS, retries=RETRIES)
+        except UpstreamError:
+            return update
+        if not editions:
+            return update
+        editions.sort(key=lambda e: (-_delta(row, e), not _is_ebook(e), not e.get("isbn"), -(e.get("year") or 0), e["olid"]))
+        best = editions[0]
+        current = next((e for e in editions if e["olid"] == update["olid"]), None)
+        if current is not None and _delta(row, best) <= _delta(row, current):
+            return update
+    if best["olid"] == update["olid"]:
         return update
     return dict(update, olid=best["olid"], match_title=(best.get("title") or update.get("match_title") or "")[:300] or None,
                 match_year=best.get("year"))
