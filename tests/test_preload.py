@@ -29,13 +29,26 @@ DOCS = [
 FILES = {"jane-austen_pride-and-prejudice": 3000, "bram-stoker_dracula": 2000, "edgar-allan-poe_the-raven": 1000}
 
 
+def _background_threads_done(seconds=5):
+    """The catalog refreshes and probes in daemon threads; a test must not leave one running, or it
+    could write its fake catalog into the next test (which only shows up on a slower machine)."""
+    import threading
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not any(t.name.startswith("preload-catalog") and t.is_alive() for t in threading.enumerate()):
+            return
+        time.sleep(0.02)
+
+
 @pytest.fixture(autouse=True)
 def fresh_catalog():
     from lenny.core.preload import catalog
     reset = dict(built=0.0, books=[], known=0, updated=None, probed=0.0)
+    _background_threads_done()
     catalog._cached.update(reset)
     catalog._refreshing.clear(); catalog._probing.clear()
     yield
+    _background_threads_done()
     catalog._cached.update(reset)
     catalog._refreshing.clear(); catalog._probing.clear()
 
@@ -262,8 +275,8 @@ def test_plan_refuses_a_huge_pick(fakes):
 
 def test_load_queues_everything_then_continues_past_a_failure(fakes, db):
     from lenny.core.imports import ImportJob
-    from lenny.core.preload import catalog, service
-    books = catalog.get()["books"]
+    from lenny.core.preload import service
+    books = [dict(olid=o, source_id=f"a/b{o}", title=t) for o, t in ((1, "Dracula"), (2, "Pride and Prejudice"), (3, "The Raven"))]
     seen = []
     def fake_import(olid, source_id, title=None):
         seen.append((olid, [r["status"] for r in ImportJob.list() if r["olid"] == olid]))
@@ -276,8 +289,8 @@ def test_load_queues_everything_then_continues_past_a_failure(fakes, db):
 
 
 def test_a_second_load_while_one_runs_does_nothing(fakes, db):
-    from lenny.core.preload import catalog, service
-    books = catalog.get()["books"]
+    from lenny.core.preload import service
+    books = [dict(olid=o, source_id=f"a/b{o}", title=f"T{o}") for o in (1, 2, 3)]
     started, release, results = threading.Event(), threading.Event(), []
     def slow(*a, **k):
         started.set(); release.wait(5); return "uploaded"
