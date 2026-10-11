@@ -94,6 +94,17 @@ async def delete_batch(request: Request, batch_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/admin/import/batches/{batch_id}/sync")
+async def sync_batch(request: Request, batch_id: int):
+    """Check the saved list against the live library. `reverted`: rows that were `duplicate`
+    but whose book has since been deleted, now `matched` again (their files can be sent
+    again). `released`: older imported rows whose key was freed so a re-dropped file becomes
+    a new row. `removed_from_library`: imported rows whose book is no longer in the library.
+    Dropping files does this by itself; call it when the page opens to refresh the counts."""
+    _require_admin(request)
+    return await _run(batches.reconcile, batch_id)
+
+
 @router.put("/admin/import/batches/{batch_id}/rows")
 async def put_rows(request: Request, batch_id: int, body: dict = Body(...)):
     _require_admin(request)

@@ -515,7 +515,7 @@ API = "/v1/api/admin/import/batches"
 @pytest.mark.parametrize("method, path", [
     ("post", API), ("get", API), ("get", f"{API}/1"), ("delete", f"{API}/1"),
     ("put", f"{API}/1/rows"), ("get", f"{API}/1/rows"),
-    ("patch", f"{API}/1/rows/1"), ("delete", f"{API}/1/rows/1"), ("post", f"{API}/1/actions"),
+    ("patch", f"{API}/1/rows/1"), ("delete", f"{API}/1/rows/1"), ("post", f"{API}/1/actions"), ("post", f"{API}/1/sync"),
 ])
 def test_every_route_requires_the_admin_credentials(app_module, method, path):
     from fastapi.testclient import TestClient
@@ -909,9 +909,9 @@ def test_dropping_the_same_folder_again_says_what_was_already_there():
     set_state(bid, **{str(i): dict(state="imported", olid=100 + i) for i in ids[:3]},
               **{str(i): dict(state="matched", olid=200 + i) for i in ids[3:5]})
     again = b.upsert_rows(bid, rows(8))                                          # the same six plus two new files
-    assert again == {"created": 2, "existing": 6,
-                     "existing_states": {"imported": 3, "matched": 2, "queued": 1}}
-    assert all(r["state"] == "imported" for r in b.list_rows(bid, state="imported")["rows"])   # nothing was reset
+    # imported files come back as new rows (their old rows stay in the history); the rest are recognised
+    assert again == {"created": 5, "existing": 3, "existing_states": {"matched": 2, "queued": 1}}
+    assert len(b.list_rows(bid, state="imported")["rows"]) == 3                  # the history is untouched
 
 
 # ─── loaded vs imported (history) ────────────────────────────────────────────
@@ -1041,3 +1041,95 @@ def test_other_changes_to_a_row_keep_its_match_details():
     set_state(bid, **{str(rid): dict(state="matched", olid=5, match_title="Keep Me", match_year=2001)})
     out = b.update_row(bid, rid, encrypted=True)
     assert out["match_title"] == "Keep Me" and out["match_year"] == 2001 and out["encrypted"] is True
+
+
+# ─── the saved list vs the live library ──────────────────────────────────────
+
+@pytest.fixture
+def library():
+    """The real items table (SQLite), cleaned up after."""
+    from lenny.core.cache import CacheEntry
+    from lenny.core.db import Base, engine, session
+    from lenny.core.models import Item
+    Base.metadata.create_all(engine)
+    session.remove()
+    yield session
+    session.rollback()
+    session.query(Item).delete(); session.query(CacheEntry).delete(); session.commit()
+    session.remove()
+
+
+def put_in_library(db, *olids):
+    from lenny.core.models import FormatEnum, Item
+    for o in olids:
+        db.add(Item(openlibrary_edition=o, formats=FormatEnum.EPUB))
+    db.commit()
+
+
+def test_a_duplicate_whose_book_was_deleted_becomes_importable_again(library):
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.models import Item
+    bid = new_batch(); b.upsert_rows(bid, rows(3))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    put_in_library(library, 101, 102)
+    set_state(bid, **{str(ids[0]): dict(state="duplicate", olid=101), str(ids[1]): dict(state="duplicate", olid=102),
+                      str(ids[2]): dict(state="duplicate", olid=103, error="x")})        # 103 was never/no longer in the library
+    out = b.reconcile(bid)
+    assert out["reverted"] == 1
+    got = {r["id"]: r for r in b.list_rows(bid)["rows"]}
+    assert [got[i]["state"] for i in ids] == ["duplicate", "duplicate", "matched"] and got[ids[2]]["error"] is None
+    library.query(Item).filter(Item.openlibrary_edition == 101).delete(); library.commit()   # the admin deletes a book
+    assert b.reconcile(bid)["reverted"] == 1
+    assert {r["id"]: r["state"] for r in b.list_rows(bid)["rows"]}[ids[0]] == "matched"
+    assert b.reconcile(bid)["reverted"] == 0                                                  # idempotent
+
+
+def test_dropping_files_again_after_deleting_their_books_loads_them(library):
+    """The reported case: import, delete the books from the library, drop the same folder again."""
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.models import Item
+    bid = new_batch(); b.upsert_rows(bid, rows(4, title="Dune"))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    put_in_library(library, 100 + ids[0], 100 + ids[1])
+    set_state(bid, **{str(ids[0]): dict(state="duplicate", olid=100 + ids[0]),
+                      str(ids[1]): dict(state="imported", olid=100 + ids[1]),
+                      str(ids[2]): dict(state="imported", olid=100 + ids[2])})            # imported earlier, book since deleted
+    library.query(Item).delete(); library.commit()                                         # the admin deleted everything
+    again = b.upsert_rows(bid, rows(4, title="Dune"))
+    assert again["created"] == 2 and again["existing"] == 2                                # the two imported files are new rows
+    got = b.list_rows(bid, limit=200)["rows"]
+    by_state = {}
+    for r in got:
+        by_state.setdefault(r["state"], []).append(r)
+    assert len(by_state["imported"]) == 2 and len(by_state["queued"]) == 3 and len(by_state["matched"]) == 1   # the duplicate is matched again
+    assert all(r["in_library"] is False for r in got)
+
+
+def test_older_imported_rows_release_their_key_once(library):
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(2))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    set_state(bid, **{str(ids[0]): dict(state="imported", olid=5)})
+    assert b.reconcile(bid)["released"] == 1 and b.reconcile(bid)["released"] == 0
+    assert b.upsert_rows(bid, rows(2)) == {"created": 1, "existing": 1, "existing_states": {"queued": 1}}
+
+
+def test_rows_say_whether_their_book_is_in_the_library_now(library):
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(3))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    put_in_library(library, 11, 12)
+    set_state(bid, **{str(ids[0]): dict(state="imported", olid=11), str(ids[1]): dict(state="imported", olid=99)})
+    got = {r["id"]: r["in_library"] for r in b.list_rows(bid)["rows"]}
+    assert got == {ids[0]: True, ids[1]: False, ids[2]: False}
+    assert b.reconcile(bid)["removed_from_library"] == 1                                   # the one whose book was deleted
+
+
+def test_sync_over_http(client, library):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1)]})
+    rid = client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+    set_state(bid, **{str(rid): dict(state="duplicate", olid=555)})
+    assert client.post(f"{API}/{bid}/sync").json() == {"reverted": 1, "released": 0, "removed_from_library": 0}
+    assert client.get(f"{API}/{bid}/rows").json()["rows"][0]["state"] == "matched"
+    assert client.post(f"{API}/{bid + 99}/sync").status_code == 404
