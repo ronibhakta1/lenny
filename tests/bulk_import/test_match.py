@@ -45,7 +45,7 @@ class FakeOL:
     def __init__(self, *works):
         self.works, self.calls = list(works), []
 
-    def __call__(self, params, retries=3):
+    def __call__(self, params, retries=3, fresh=False):
         self.calls.append(dict(params))
         if "q" in params and params["q"].startswith("isbn:"):
             wanted = set(params["q"].replace("isbn:", "").strip("()").replace(" OR ", " ").split())
@@ -237,6 +237,106 @@ def test_from_path(path, expected):
     assert m.from_path(path) == expected
 
 
+# ─── speed: dedupe, cache, bulk save ─────────────────────────────────────────
+
+@pytest.fixture
+def clear_cache():
+    from lenny.core.bulk_import import matcher as m
+    m._cache.clear()
+    yield
+    m._cache.clear()
+
+
+def test_identical_rows_are_looked_up_once_and_share_the_answer(ol):
+    from lenny.core.bulk_import import matcher as m
+    rows = [titled(i, "Dune", "Frank Herbert") for i in range(5)] + [titled(9, "The Left Hand of Darkness", "Ursula K. Le Guin")]
+    out = dict(m.match_rows(rows))
+    assert len(out) == 6 and {out[i]["olid"] for i in range(5)} == {101} and out[9]["olid"] == 201
+    assert len(ol.calls) <= 2                               # not 6
+    out[0]["state"] = "changed"
+    assert out[1]["state"] == "matched"                      # each row got its own copy
+
+
+def test_rows_that_differ_in_language_are_not_merged(ol):
+    from lenny.core.bulk_import import matcher as m
+    en, fr = titled(1, "Dune", "Frank Herbert"), titled(2, "Dune", "Frank Herbert")
+    en["language"], fr["language"] = "en", "fr"
+    assert m._same_book(en) != m._same_book(fr)
+    assert len(dict(m.match_rows([en, fr]))) == 2
+
+
+def test_search_answers_are_cached_but_empty_ones_and_fresh_calls_are_not(clear_cache, fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    body = {"docs": [{"key": "/works/OL1W"}]}
+    with patch("requests.get", side_effect=[resp(200, body), resp(200, {"docs": []}), resp(200, {"docs": []}), resp(200, body)]) as get:
+        assert m.search({"title": "a"}) and m.search({"title": "a"})          # second is a hit
+        assert get.call_count == 1
+        assert m.search({"title": "b"}) == [] and m.search({"title": "b"}) == []   # empty: asked again
+        assert get.call_count == 3
+        m.search({"title": "a"}, fresh=True)                                    # Re-check: skips the cache
+        assert get.call_count == 4
+
+
+def test_the_cache_is_bounded_and_expires(clear_cache, fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    body = {"docs": [{"key": "/works/OL1W"}]}
+    with patch("requests.get", return_value=resp(200, body)) as get, patch.object(m, "CACHE_MAX", 3):
+        for i in range(6):
+            m.search({"title": str(i)})
+        assert len(m._cache) == 3
+        before = get.call_count
+        m.search({"title": "5"}); assert get.call_count == before          # newest kept
+        m.search({"title": "0"}); assert get.call_count == before + 1      # oldest evicted
+        with patch.object(m, "CACHE_TTL", -1):
+            m.search({"title": "5"}); assert get.call_count == before + 2  # expired
+
+
+def test_a_recheck_job_and_the_candidates_list_bypass_the_cache(clear_cache, fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    seen = []
+    def spy(params, retries=3, fresh=False):
+        seen.append(fresh); return []
+    with patch("lenny.core.bulk_import.matcher.search", spy):
+        list(m.match_rows([titled(1, "x")], fresh=True))
+        list(m.match_rows([titled(2, "y")]))
+        m.candidates_for(dict(isbn=None, title="z", author=None, language=None, path=None))
+    assert seen[0] is True and seen[-1] is True and seen[1:2] == [False] * len(seen[1:2])
+
+
+def test_bulk_save_writes_many_rows_and_skips_decided_ones(ol):
+    from lenny.core.bulk_import import batches as b, jobs
+    bid = batch_with(*[dict(title=f"T{i}") for i in range(6)])
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    b.update_row(bid, ids[0], olid=999)                                         # decided: untouched
+    results = [(i, dict(state="matched", olid=1000 + i, auto_picked=True, candidates_count=1, confidence=95,
+                        match_title="M", match_author="A", error=None)) for i in ids[:5]]
+    results.append((ids[5], dict(state="no_match", candidates_count=0, confidence=10, error="nope")))
+    jobs._save(bid, results, "queued")
+    got = {r["id"]: r for r in b.list_rows(bid)["rows"]}
+    assert got[ids[0]]["olid"] == 999 and got[ids[0]]["decision"] == "user"
+    assert [got[i]["olid"] for i in ids[1:5]] == [1000 + i for i in ids[1:5]] and got[ids[1]]["match_title"] == "M"
+    assert got[ids[5]]["state"] == "no_match" and got[ids[5]]["olid"] is None and got[ids[5]]["error"] == "nope"
+
+
+def test_bulk_save_of_many_rows_is_a_handful_of_statements(ol):
+    from sqlalchemy import event
+    from lenny.core.bulk_import import batches as b, jobs
+    from lenny.core.db import engine
+    bid = new_batch(); b.upsert_rows(bid, rows(300, title="x"))
+    ids = [r["id"] for r in b.list_rows(bid, limit=200)["rows"]] + [r["id"] for r in b.list_rows(bid, cursor=200, limit=200)["rows"]]
+    statements = []
+    results = [(i, dict(state="matched", olid=i, confidence=90)) for i in ids]
+    def record(conn, cursor, statement, *rest):
+        statements.append(statement)
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        jobs._save(bid, results, "queued")
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    updates = [x for x in statements if x.startswith("UPDATE import_rows")]
+    assert len(updates) <= 2                                                      # one executemany, not 300 UPDATEs
+
+
 # ─── speed: several rows per request, a few requests at once ─────────────────
 
 def titled(i, title, author=None, **extra):
@@ -262,8 +362,8 @@ def test_a_row_the_batch_misses_is_still_found_by_the_ladder():
     from lenny.core.bulk_import import matcher as m
     fake = FakeOL(*[work(f"Title {i}", [f"A {i}"], (500 + i, [], "eng")) for i in range(4)])
     real = fake.__call__
-    def forgetful(params, retries=3):
-        out = real(params, retries)
+    def forgetful(params, retries=3, fresh=False):
+        out = real(params, retries, fresh)
         return [w for w in out if w["title"] != "Title 2"] if "q" in params else out   # batch drops one
     with patch("lenny.core.bulk_import.matcher.search", forgetful):
         out = dict(m.match_rows([titled(i, f"Title {i}", f"A {i}") for i in range(4)]))
@@ -280,7 +380,7 @@ def test_batched_clauses_escape_quotes_and_skip_a_masthead():
 def test_the_ladder_runs_several_searches_at_once():
     from lenny.core.bulk_import import matcher as m
     live, peak, lock = [0], [0], threading.Lock()
-    def slow(params, retries=3):
+    def slow(params, retries=3, fresh=False):
         with lock:
             live[0] += 1; peak[0] = max(peak[0], live[0])
         time.sleep(0.05)
@@ -449,13 +549,23 @@ def test_429_waits_for_retry_after_then_succeeds(fresh_guard):
     assert get.call_count == 2 and sleep.call_args[0][0] == 7
 
 
-def test_retry_after_is_capped_and_persistent_429_gives_up(fresh_guard):
+def test_a_long_retry_after_is_reported_not_slept_through(fresh_guard):
+    """The old behaviour slept up to a minute per try, silently."""
     from lenny.core.bulk_import import matcher as m
-    with patch("requests.get", return_value=resp(429, headers={"Retry-After": "99999"})) as get, \
+    with patch("requests.get", return_value=resp(429, headers={"Retry-After": "300"})) as get, \
+         patch("lenny.core.bulk_import.matcher.time.sleep") as sleep:
+        with pytest.raises(m.UpstreamError, match="about 300 seconds") as e:
+            m.search({"title": "x"})
+    assert get.call_count == 1 and sleep.call_count == 0 and e.value.retry_after == 300
+
+
+def test_a_short_retry_after_is_waited_out_a_few_times_then_reported(fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    with patch("requests.get", return_value=resp(429, headers={"Retry-After": "5"})) as get, \
          patch("lenny.core.bulk_import.matcher.time.sleep") as sleep:
         with pytest.raises(m.UpstreamError, match="rate limiting"):
             m.search({"title": "x"})
-    assert get.call_count == m.RETRIES + 1
+    assert get.call_count == m.RETRIES + 1 and sleep.call_count == m.RETRIES
     assert all(c[0][0] <= m.MAX_RETRY_WAIT for c in sleep.call_args_list)
 
 
@@ -589,8 +699,8 @@ def test_a_choice_made_while_the_job_runs_wins(ol):
     bid = batch_with(dict(title="Dune", author="Frank Herbert"))
     row = b.list_rows(bid)["rows"][0]["id"]
     real = ol.__call__
-    def search_then_admin_picks(params, retries=3):
-        out = real(params, retries)
+    def search_then_admin_picks(params, retries=3, fresh=False):
+        out = real(params, retries, fresh)
         b.update_row(bid, row, olid=777)                    # lands between the answer and the save
         return out
     with patch("lenny.core.bulk_import.matcher.search", search_then_admin_picks):
@@ -631,6 +741,19 @@ def test_open_library_failure_fails_the_job_and_keeps_rows_queued():
         job = run_job(bid)
     assert job["status"] == "failed" and "not answering" in job["error"]
     assert {r["state"] for r in states(bid).values()} == {"queued"}
+
+
+def test_a_rate_limited_job_says_so_in_the_batch_summary(client):
+    from lenny.core.bulk_import import jobs, matcher as m
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1, title="Dune")]})
+    assert client.get(f"{API}/{bid}").json()["match"] is None
+    err = m.UpstreamError("Open Library is rate limiting this server. Try again in about 90 seconds.", retry_after=90)
+    with patch("lenny.core.bulk_import.matcher.search", side_effect=err), patch.object(jobs, "_executor", Inline()):
+        client.post(f"{API}/{bid}/match")
+    got = client.get(f"{API}/{bid}").json()
+    assert got["match"]["status"] == "failed" and got["match"]["retry_after"] == 90 and "90 seconds" in got["match"]["error"]
+    assert got["counts"] == {"queued": 1}                       # the row waits for a retry, it is not lost
 
 
 def test_an_unexpected_error_does_not_leak_details():

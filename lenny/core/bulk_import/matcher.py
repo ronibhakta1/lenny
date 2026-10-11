@@ -21,9 +21,13 @@ ISBN, then the older record. ponytail: one edition per work is what search
 returns; asking for more editions per work is the upgrade if choices are thin.
 """
 
+import logging
 import re
+import threading
 import time
 import unicodedata
+from collections import OrderedDict
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 
@@ -35,8 +39,10 @@ from lenny.core.upstream import OL_TIMEOUT, open_library
 AUTO_MIN = 90
 REVIEW_MIN = 60
 MAX_CANDIDATES = 10
-MAX_RETRY_WAIT = 60
-RETRIES = 3
+MAX_RETRY_WAIT = 20    # a longer Retry-After is reported, not slept through
+RETRIES = 2
+CACHE_TTL = 1800       # seconds a non-empty search answer is reused
+CACHE_MAX = 512
 TITLE_BATCH = 10       # rows per batched title query
 BATCH_MIN = 3          # fewer than this are cheaper searched one by one
 EDITION_WORKS = 2      # works whose editions the "Change edition" list expands
@@ -46,11 +52,18 @@ _FIELDS = ("key,title,author_name,first_publish_year,editions,editions.key,editi
            "editions.isbn,editions.publisher,editions.language,editions.publish_year")
 _OLID = re.compile(r"/books/OL(\d+)M$")
 
+logger = logging.getLogger(__name__)
 pacer = Pacer()
 
 
 class UpstreamError(Exception):
-    """Open Library could not answer (down, breaker open, or still rate limiting)."""
+    """Open Library could not answer (down, breaker open, or still rate limiting).
+
+    `retry_after` is the number of seconds Open Library asked us to wait, if it did."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 # ─── talking to Open Library ────────────────────────────────────────────────
@@ -65,19 +78,25 @@ def _get(url: str, params: dict | None = None, retries: int = RETRIES):
 
     Interactive calls (an admin waiting on a click) pass retries=0: fail at the
     first 429 instead of sleeping up to a minute."""
+    wait = None
     for attempt in range(retries + 1):
         pacer.wait()
+        started = time.monotonic()
         resp = requests.get(url, params=params, headers=_headers(), timeout=OL_TIMEOUT)
+        logger.debug("Open Library %s -> %s in %.2fs", url.rsplit("/", 1)[-1], resp.status_code, time.monotonic() - started)
         if resp.status_code != 429:
             return resp
-        if attempt == retries:
-            break
         try:
             wait = float(resp.headers.get("Retry-After", 2 ** attempt))
         except ValueError:
-            wait = 2 ** attempt
-        time.sleep(min(max(wait, 1), MAX_RETRY_WAIT))
-    raise UpstreamError("Open Library is rate limiting this server; try again in a few minutes.")
+            wait = float(2 ** attempt)
+        logger.warning("Open Library is rate limiting us (429, Retry-After %ss, attempt %s)", wait, attempt + 1)
+        # Too long a wait is not worth blocking a worker for: report it and let the admin retry.
+        if attempt == retries or wait > MAX_RETRY_WAIT:
+            break
+        time.sleep(max(wait, 1))
+    when = f" Try again in about {int(wait)} seconds." if wait else ""
+    raise UpstreamError("Open Library is rate limiting this server." + when, retry_after=wait)
 
 
 def _call(key, url, params=None, retries=RETRIES):
@@ -91,9 +110,32 @@ def _call(key, url, params=None, retries=RETRIES):
         raise UpstreamError("Open Library is not answering; try again shortly.") from e
 
 
-def search(params: dict, retries: int = RETRIES) -> list:
+_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def search(params: dict, retries: int = RETRIES, fresh: bool = False) -> list:
+    """Works matching `params`. Non-empty answers are reused for CACHE_TTL (a
+    re-dropped library, the same title in two batches); `fresh` skips the cache,
+    for a Re-check (the admin may just have added the record) and for the
+    interactive candidates list. Empty answers are never cached."""
     params = dict(params, fields=_FIELDS)
-    return _call(("search", tuple(sorted(params.items()))), SEARCH_URL, params, retries).get("docs", [])
+    key = ("search", tuple(sorted(params.items())))
+    now = time.monotonic()
+    if not fresh:
+        with _cache_lock:
+            hit = _cache.get(key)
+            if hit and now - hit[0] < CACHE_TTL:
+                _cache.move_to_end(key)
+                return hit[1]
+    docs = _call(key, SEARCH_URL, params, retries).get("docs", [])
+    if docs:
+        with _cache_lock:
+            _cache[key] = (now, docs)
+            _cache.move_to_end(key)
+            while len(_cache) > CACHE_MAX:
+                _cache.popitem(last=False)
+    return docs
 
 
 def lookup_edition(olid: int) -> dict | None:
@@ -142,6 +184,7 @@ def candidates_from(docs: list) -> list:
     return out
 
 
+@lru_cache(maxsize=8192)
 def _norm(text) -> str:
     text = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode()
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
@@ -359,12 +402,12 @@ def _queries(row: dict) -> list:
     return out
 
 
-def _by_title(row: dict, retries: int = RETRIES, exhaustive: bool = False) -> list:
+def _by_title(row: dict, retries: int = RETRIES, exhaustive: bool = False, fresh: bool = False) -> list:
     """Ranked candidates for a row without a (known) ISBN, widening the search
     until something scores at least REVIEW_MIN (or, if exhaustive, trying all)."""
     pool = {}
     for params in _queries(row):
-        for c in candidates_from(search(params, retries)):
+        for c in candidates_from(search(params, retries, fresh=fresh)):
             pool.setdefault(c["olid"], c)
         ranked = rank(row, [dict(c) for c in pool.values()])
         if ranked and ranked[0]["score"] >= REVIEW_MIN and not exhaustive:
@@ -390,7 +433,7 @@ def _clause(row: dict) -> str | None:
     return f"({clause})"
 
 
-def _batched(rows: list) -> tuple:
+def _batched(rows: list, fresh: bool = False) -> tuple:
     """Look up several rows in one query. Returns (decided {row_id: update}, rest).
 
     Open Library ORs the clauses and returns the best hundred works, so a row
@@ -403,7 +446,7 @@ def _batched(rows: list) -> tuple:
     asked = [r for r in rows if clauses[r["id"]]]
     if len(asked) < BATCH_MIN:
         return {}, rows
-    pool = candidates_from(search({"q": " OR ".join(clauses[r["id"]] for r in asked), "limit": 100}))
+    pool = candidates_from(search({"q": " OR ".join(clauses[r["id"]] for r in asked), "limit": 100}, fresh=fresh))
     decided = {}
     for r in asked:
         ranked = rank(r, [dict(c) for c in pool])
@@ -446,9 +489,9 @@ def candidates_for(row: dict) -> list:
     be picked, not just the one search happened to show."""
     cands = []
     if row.get("isbn"):
-        cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}, retries=0))
+        cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}, retries=0, fresh=True))
     if row.get("title") or row.get("path"):
-        cands += _by_title(row, retries=0, exhaustive=True)
+        cands += _by_title(row, retries=0, exhaustive=True, fresh=True)
     merged = {c["olid"]: c for c in cands}
     ranked = rank(row, list(merged.values()))
     seen = set()
@@ -467,12 +510,33 @@ def candidates_for(row: dict) -> list:
     return [public(c) for c in rank(row, list(merged.values()))]
 
 
-def _ladder(row: dict):
-    return row["id"], decide(_by_title(row))
+def _ladder(row: dict, fresh: bool = False):
+    return row["id"], decide(_by_title(row, fresh=fresh))
 
 
-def match_rows(rows: list):
-    """Yield (row_id, column updates) as answers arrive, so callers can save in steps."""
+def _same_book(row: dict) -> tuple:
+    """Rows that say the same thing about a book get one lookup between them."""
+    title, author = _facts(row)
+    return (row.get("isbn"), _norm(title), _norm(author), _lang(row.get("language")),
+            _norm(row.get("publisher")), row.get("year"))
+
+
+def match_rows(rows: list, fresh: bool = False):
+    """Yield (row_id, column updates) as answers arrive, so callers can save in steps.
+
+    Identical rows (two copies of a book, a library with duplicates) are looked up
+    once and share the answer. `fresh` bypasses the search cache (a Re-check)."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(_same_book(r), []).append(r)
+    twins = {g[0]["id"]: [t["id"] for t in g[1:]] for g in groups.values() if len(g) > 1}
+    for rid, update in _match_unique([g[0] for g in groups.values()], fresh):
+        yield rid, update
+        for twin in twins.get(rid, ()):
+            yield twin, dict(update)
+
+
+def _match_unique(rows: list, fresh: bool = False):
     todo, with_isbn = [], [r for r in rows if r.get("isbn")]
     for r in rows:
         if not _usable(r):
@@ -483,7 +547,7 @@ def match_rows(rows: list):
 
     for i in range(0, len(with_isbn), ISBN_BATCH):
         chunk = with_isbn[i:i + ISBN_BATCH]
-        docs = search({"q": "isbn:(" + " OR ".join(sorted({r["isbn"] for r in chunk})) + ")", "limit": 100})
+        docs = search({"q": "isbn:(" + " OR ".join(sorted({r["isbn"] for r in chunk})) + ")", "limit": 100}, fresh=fresh)
         cands = candidates_from(docs)
         for r in chunk:
             hits = rank(r, [dict(c) for c in cands if r["isbn"] in c["isbns"]])
@@ -503,13 +567,13 @@ def match_rows(rows: list):
     with ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="import-ol") as pool:
         futures = []
         try:
-            futures = [pool.submit(_batched, g) for g in groups]
+            futures = [pool.submit(_batched, g, fresh) for g in groups]
             rest = []
             for f in as_completed(futures):
                 decided, left = f.result()
                 yield from decided.items()
                 rest += left
-            futures = [pool.submit(_ladder, r) for r in rest]
+            futures = [pool.submit(_ladder, r, fresh) for r in rest]
             for f in as_completed(futures):
                 yield f.result()
         finally:

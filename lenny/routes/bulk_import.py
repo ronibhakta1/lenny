@@ -87,7 +87,9 @@ async def list_batches(request: Request):
 @router.get("/admin/import/batches/{batch_id}")
 async def get_batch(request: Request, batch_id: int):
     _require_admin(request)
-    return await _run(batches.get_summary, batch_id)
+    summary = await _run(batches.get_summary, batch_id)
+    summary["match"] = jobs.latest(batch_id)   # newest match job, or None (this process only)
+    return summary
 
 
 @router.delete("/admin/import/batches/{batch_id}", status_code=status.HTTP_204_NO_CONTENT)

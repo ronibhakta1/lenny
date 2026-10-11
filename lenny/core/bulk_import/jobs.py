@@ -21,6 +21,8 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
+from sqlalchemy import bindparam
+
 from lenny.core.bulk_import import batches, matcher
 from lenny.core.bulk_import.batches import (
     AUTO, DUPLICATE, MATCHED, NEEDS_REVIEW, NO_MATCH, QUEUED, ImportRow, _now)
@@ -67,7 +69,7 @@ def start(batch_id: int, state: str = QUEUED, row_ids: list | None = None) -> di
             if job["batch_id"] == batch_id and job["status"] in ("queued", "running"):
                 return dict(job)
         job = {"id": uuid.uuid4().hex, "batch_id": batch_id, "status": "queued",
-               "total": total, "done": 0, "error": None}
+               "total": total, "done": 0, "error": None, "retry_after": None}
         _jobs[job["id"]] = job
         while len(_jobs) > MAX_JOBS:
             _jobs.popitem(last=False)
@@ -81,18 +83,40 @@ def get(job_id: str) -> dict | None:
         return dict(job) if job else None
 
 
+def latest(batch_id: int) -> dict | None:
+    """The newest match job for the batch (this process only), so the page can show
+    "rate limited, retry in N s" instead of rows that stay queued with no reason."""
+    with _lock:
+        for job in reversed(_jobs.values()):
+            if job["batch_id"] == batch_id:
+                return dict(job)
+    return None
+
+
+_SAVED = ("state", "olid", "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "error")
+
+
 def _save(batch_id: int, results: list, state: str) -> None:
-    """Write answers; rows decided or moved on in the meantime are left alone."""
+    """Write answers in one executemany; rows decided or moved on in the meantime
+    (decision no longer auto, or no longer in `state`) are left alone."""
     olids = [u["olid"] for _, u in results if u.get("state") == MATCHED]
     have = {o for (o,) in db.query(Item.openlibrary_edition).filter(
         Item.openlibrary_edition.in_(olids)).all()} if olids else set()
+    params = []
     for row_id, update in results:
         if update.get("olid") in have:
             update = dict(update, state=DUPLICATE)
-        db.query(ImportRow).filter(
-            ImportRow.id == row_id, ImportRow.batch_id == batch_id,
-            ImportRow.decision == AUTO, ImportRow.state == state,
-        ).update(update, synchronize_session=False)
+        # Every row sets every column, so one statement serves them all.
+        full = {"auto_picked": False, "candidates_count": 0, "confidence": 0, "olid": None,
+                "match_title": None, "match_author": None, "error": None}
+        full.update(update)
+        params.append({"b_id": row_id, **{f"v_{k}": full[k] for k in _SAVED}})
+    if params:
+        stmt = (ImportRow.__table__.update()
+                .where(ImportRow.id == bindparam("b_id"), ImportRow.batch_id == batch_id,
+                       ImportRow.decision == AUTO, ImportRow.state == state)
+                .values({k: bindparam(f"v_{k}") for k in _SAVED}))
+        db.execute(stmt, params)
     now = _now()
     db.query(batches.ImportBatch).filter(batches.ImportBatch.id == batch_id).update(
         {"updated_at": now, "expires_at": now + batches.RETENTION}, synchronize_session=False)
@@ -113,7 +137,7 @@ def _run(job: dict, state: str, row_ids) -> None:
             if not chunk:
                 break
             buffer = []
-            for item in matcher.match_rows(chunk):
+            for item in matcher.match_rows(chunk, fresh=state != QUEUED):
                 buffer.append(item)
                 job["done"] += 1
                 if len(buffer) >= FLUSH_EVERY:
@@ -124,7 +148,7 @@ def _run(job: dict, state: str, row_ids) -> None:
             cursor = chunk[-1]["id"]
         job["status"] = "done"
     except matcher.UpstreamError as e:
-        job["status"], job["error"] = "failed", str(e)
+        job["status"], job["error"], job["retry_after"] = "failed", str(e), e.retry_after
     except Exception:
         logger.exception("import match job failed")
         job["status"], job["error"] = "failed", "Matching stopped unexpectedly."
