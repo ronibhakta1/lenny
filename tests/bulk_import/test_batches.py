@@ -871,3 +871,32 @@ def test_offset_and_total_over_http(client):
     assert client.get(f"{API}/{bid}/rows").json()["total"] is None
     assert client.get(f"{API}/{bid}/rows", params={"offset": -1}).status_code == 400
     assert client.get(f"{API}/{bid}/rows", params={"offset": 1, "cursor": 2}).status_code == 400
+
+
+def test_remove_takes_a_list_of_ticked_rows_and_nothing_else_does():
+    from lenny.core.bulk_import import batches as b
+    one, two = new_batch(), new_batch()
+    b.upsert_rows(one, rows(6)); b.upsert_rows(two, rows(2))
+    ids = [r["id"] for r in b.list_rows(one)["rows"]]
+    other = b.list_rows(two)["rows"][0]["id"]
+    set_state(one, **{str(ids[0]): dict(state="importing")})
+    assert b.bulk_update(one, "remove", row_ids=[ids[0], ids[1], ids[2], other, 99999]) == 2   # importing, foreign and unknown ids ignored
+    assert sorted(r["id"] for r in b.list_rows(one)["rows"]) == [ids[0], ids[3], ids[4], ids[5]]
+    assert b.get_summary(two)["total"] == 2
+    set_state(one, **{str(ids[3]): dict(state="matched")})
+    assert b.bulk_update(one, "remove", row_ids=[ids[3], ids[4]], state="matched") == 1         # combined with a filter
+    for bad in ([], "1", [True], [1.5], list(range(501))):
+        with pytest.raises(ValueError):
+            b.bulk_update(one, "remove", row_ids=bad)
+    with pytest.raises(ValueError):
+        b.bulk_update(one, "skip", row_ids=[ids[5]])
+
+
+def test_remove_by_ids_over_http(client):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path=f"r{i}.epub", size=i + 1, mtime=1) for i in range(5)]})
+    ids = [r["id"] for r in client.get(f"{API}/{bid}/rows").json()["rows"]]
+    assert client.post(f"{API}/{bid}/actions", json={"action": "remove", "row_ids": ids[:3]}).json() == {"updated": 3}
+    assert client.get(f"{API}/{bid}").json()["total"] == 2
+    assert client.post(f"{API}/{bid}/actions", json={"action": "remove", "row_ids": []}).status_code == 400
+    assert client.post(f"{API}/{bid}/actions", json={"action": "skip", "row_ids": ids}).status_code == 400

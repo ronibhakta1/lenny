@@ -182,7 +182,7 @@ async def post_action(request: Request, batch_id: int, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail=str(e))
     updated = await _run(
         batches.bulk_update, batch_id, body.get("action"), state=state, q=body.get("q"),
-        value=body.get("value"), skipped=skipped, auto_picked=auto_picked)
+        value=body.get("value"), skipped=skipped, auto_picked=auto_picked, row_ids=body.get("row_ids"))
     if body.get("action") == "remove":
         matcher.clear_cache()                            # many rows went; cheaper than finding each one's entries
     return {"updated": updated}
