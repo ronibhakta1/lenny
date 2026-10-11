@@ -495,7 +495,7 @@ def test_work_editions_parsing():
         got = m.work_editions("/works/OL1W")
     assert [e["olid"] for e in got] == [7, 8]
     assert got[0] == {"olid": 7, "title": "Dune", "authors": [], "year": 1990, "publisher": "Ace", "language": "eng",
-                      "isbn": "9780441013593", "isbns": ["9780441013593", "0441013597"], "work": "/works/OL1W"}
+                      "isbn": "9780441013593", "isbns": ["9780441013593", "0441013597"], "work": "/works/OL1W", "format": None}
     assert got[1]["year"] is None and got[1]["language"] is None
     assert m.work_editions("../etc/passwd") == []                       # only real work keys are fetched
 
@@ -1446,3 +1446,118 @@ def test_edition_facts_raise_when_open_library_is_down(fresh_guard):
     with patch("requests.get", side_effect=requests.ConnectionError("down")):
         with pytest.raises(m.UpstreamError):
             m.edition_facts(5)
+
+
+# ─── the exact edition: every ISBN, the year, the publisher ──────────────────
+
+def test_isbn_forms_convert_between_10_and_13():
+    from lenny.core.bulk_import import matcher as m
+    assert m.isbn_forms("0441013597") == {"0441013597", "9780441013593"}
+    assert m.isbn_forms("9780441013593") == {"9780441013593", "0441013597"}
+    assert m.isbn_forms("9791000000000") == {"9791000000000"}                          # 979- has no 10-digit form
+    assert m.isbn_forms("12345") == set() and m.isbn_forms(None) == set()
+    assert m.isbn_forms("080442957X") == {"080442957X", "9780804429573"}           # an X check digit
+
+
+def test_any_of_a_files_isbns_identifies_the_edition(ol):
+    from lenny.core.bulk_import import matcher as m
+    row = dict(id=1, isbn="9789999999999", isbn_alt="0441013597 9780140328721", title=None, author=None,
+               language=None, publisher=None, year=None, path=None)
+    out = dict(m.match_rows([row]))
+    assert out[1]["state"] == "matched" and out[1]["olid"] == 101 and out[1]["confidence"] == 100   # the second ISBN hit (ISBN-10 form)
+    assert "isbn:(" in ol.calls[0]["q"] and "0441013597" in ol.calls[0]["q"] and "9789999999999" in ol.calls[0]["q"]
+    assert "9780441013593" not in ol.calls[0]["q"]                                                 # forms are not sent twice
+
+
+def test_a_row_with_only_alternate_isbns_is_still_matched_by_them(ol):
+    from lenny.core.bulk_import import matcher as m
+    row = dict(id=1, isbn=None, isbn_alt="9780140328721", title=None, author=None, language=None, publisher=None, year=None, path=None)
+    assert m._usable(row) and m.row_isbns(row) >= {"9780140328721"}
+
+
+def editions_of_dune():
+    mk = lambda olid, year, pub, lang, fmt: dict(olid=olid, title="Dune", authors=[], year=year, publisher=pub, language=lang,
+                                                 isbn=f"97800000{olid:05d}", isbns=[f"97800000{olid:05d}"], work="/works/OL1W", format=fmt)
+    return [mk(1, 1965, "Chilton", "eng", "Hardcover"), mk(2, 1990, "Ace", "eng", "Paperback"),
+            mk(3, 2019, "Ace", "eng", "Paperback"), mk(4, 2019, "Penguin", "eng", "Ebook"), mk(5, 2019, "Ace", "fre", "Ebook")]
+
+
+def refined(row_extra, editions=None, search_olid=1):
+    """Match one Dune row whose search pick is `search_olid`, with the work's editions available."""
+    from lenny.core.bulk_import import matcher as m
+    fake = FakeOL(work("Dune", ["Frank Herbert"], (search_olid, [], "eng")))
+    row = dict(id=1, isbn=None, title="Dune", author="Frank Herbert", language="en", publisher=None, year=None, path=None)
+    row.update(row_extra)
+    with patch("lenny.core.bulk_import.matcher.search", fake), \
+         patch("lenny.core.bulk_import.matcher.work_editions", return_value=editions or editions_of_dune()) as we:
+        return dict(m.match_rows([row]))[1], we
+
+
+def test_the_best_edition_of_the_work_replaces_search_s_pick_using_the_files_year_and_publisher():
+    out, we = refined(dict(year=2019, publisher="Ace Books"))
+    assert out["state"] == "matched" and out["olid"] == 3 and out["match_year"] == 2019      # Ace + 2019, not the 1965 print search showed
+    assert we.call_args.kwargs["limit"] == 100
+
+
+def test_the_year_alone_picks_the_right_edition_and_an_ebook_wins_a_tie():
+    out, _ = refined(dict(year=2019))
+    assert out["olid"] in (4, 5) and out["olid"] != 5                                         # eng e-book 2019 (5 is French: penalised)
+    out, _ = refined(dict(year=1990))
+    assert out["olid"] == 2
+
+
+def test_without_year_or_publisher_there_is_nothing_to_refine_and_no_extra_request():
+    out, we = refined(dict())
+    assert out["olid"] == 1 and we.call_count == 0
+
+
+def test_an_isbn_match_is_already_exact_and_never_refined(ol):
+    from lenny.core.bulk_import import matcher as m
+    row = dict(id=1, isbn="9780593099322", title=None, author=None, language=None, publisher="Ace", year=2019, path=None)
+    with patch("lenny.core.bulk_import.matcher.work_editions") as we:
+        out = dict(m.match_rows([row]))[1]
+    assert out["olid"] == 102 and we.call_count == 0
+
+
+def test_refinement_keeps_the_pick_when_lookup_fails_or_nothing_is_better():
+    from lenny.core.bulk_import import matcher as m
+    from lenny.core.bulk_import.matcher import UpstreamError
+    fake = FakeOL(work("Dune", ["Frank Herbert"], (2, [], "eng")))
+    row = dict(id=1, isbn=None, title="Dune", author="Frank Herbert", language="en", publisher=None, year=1990, path=None)
+    for kwargs in (dict(side_effect=UpstreamError("down")), dict(return_value=[])):
+        with patch("lenny.core.bulk_import.matcher.search", fake), patch("lenny.core.bulk_import.matcher.work_editions", **kwargs):
+            out = dict(m.match_rows([row]))[1]
+        assert out["state"] == "matched" and out["olid"] == 2 and "_work" not in out
+    out, _ = refined(dict(year=1990), search_olid=2)                                           # already the best: unchanged
+    assert out["olid"] == 2
+
+
+def test_refined_twins_share_the_better_edition_and_get_their_own_copy():
+    from lenny.core.bulk_import import matcher as m
+    fake = FakeOL(work("Dune", ["Frank Herbert"], (1, [], "eng")))
+    rows_ = [dict(id=i, isbn=None, title="Dune", author="Frank Herbert", language="en", publisher="Ace", year=2019, path=None) for i in (1, 2)]
+    with patch("lenny.core.bulk_import.matcher.search", fake), patch("lenny.core.bulk_import.matcher.work_editions", return_value=editions_of_dune()) as we:
+        out = dict(m.match_rows(rows_))
+    assert out[1]["olid"] == out[2]["olid"] == 3 and out[1] is not out[2] and we.call_count == 1
+
+
+def test_a_tie_prefers_the_newer_record_not_the_old_print_edition():
+    from lenny.core.bulk_import import matcher as m
+    cands = [dict(olid=10, title="Dune", authors=["Frank Herbert"], isbns=[], language="eng", publisher=None, year=1965, work="w", isbn=None),
+             dict(olid=20, title="Dune", authors=["Frank Herbert"], isbns=[], language="eng", publisher=None, year=2019, work="w", isbn=None)]
+    ranked = m.rank(dict(title="Dune", author="Frank Herbert", language=None, publisher=None, year=None, path=None), cands)
+    assert [c["olid"] for c in ranked] == [20, 10]
+
+
+def test_year_closeness_is_graded():
+    from lenny.core.bulk_import import matcher as m
+    cand = lambda y: dict(year=y, language=None, publisher=None, format=None)
+    row = dict(year=2019, language=None, publisher=None)
+    assert [m._delta(row, cand(y)) for y in (2019, 2018, 2016, 2009, 1995, 1980)] == [4, 3, 1, 0, -2, -4]
+    assert m._delta(row, dict(cand(2019), format="Ebook")) == 6 and m._delta(row, dict(cand(2019), format="Hardcover")) == 4
+
+
+def test_an_old_edition_year_can_no_longer_win_a_close_call_but_never_hides_the_book():
+    from lenny.core.bulk_import import matcher as m
+    c = dict(olid=1, title="Dune", authors=["Frank Herbert"], isbns=[], language="eng", publisher=None, year=1920)
+    assert m.score(dict(title="Dune", author="Frank Herbert", year=2019, language="en"), c) >= m.AUTO_MIN      # still the same book

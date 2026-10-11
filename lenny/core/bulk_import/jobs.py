@@ -128,7 +128,7 @@ def _save(batch_id: int, results: list, state: str) -> None:
 def _run(job: dict, state: str, row_ids) -> None:
     job["status"] = "running"
     cursor = 0
-    cols = ("id", "isbn", "title", "author", "language", "publisher", "year", "path")
+    cols = ("id", "isbn", "isbn_alt", "title", "author", "language", "publisher", "year", "path")
     try:
         while True:
             chunk = [dict(zip(cols, r)) for r in

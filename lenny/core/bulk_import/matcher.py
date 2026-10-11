@@ -271,6 +271,49 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio() if a and b else 0.0
 
 
+def _isbn13(isbn10: str) -> str | None:
+    body = "978" + isbn10[:9]
+    if not body.isdigit():
+        return None
+    check = (10 - sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(body)) % 10) % 10
+    return body + str(check)
+
+
+def _isbn10(isbn13: str) -> str | None:
+    if not (isbn13.startswith("978") and isbn13.isdigit()):
+        return None
+    body = isbn13[3:12]
+    total = sum((10 - i) * int(d) for i, d in enumerate(body))
+    check = (11 - total % 11) % 11
+    return body + ("X" if check == 10 else str(check))
+
+
+def isbn_forms(isbn: str | None) -> set:
+    """An ISBN as written and as its other form (10 <-> 13); Open Library lists whichever it was given."""
+    isbn = str(isbn or "").upper()
+    if len(isbn) == 10:
+        other = _isbn13(isbn)
+    elif len(isbn) == 13:
+        other = _isbn10(isbn)
+    else:
+        return set()
+    return {isbn} | ({other} if other else set())
+
+
+def asked_isbns(row: dict) -> set:
+    """The ISBNs to put in a query: as the file wrote them. Open Library indexes an
+    edition's 10- and 13-digit forms together, so asking with both would only double the query."""
+    return {i for i in ([row.get("isbn")] + str(row.get("isbn_alt") or "").split()) if i}
+
+
+def row_isbns(row: dict) -> set:
+    """Every ISBN the file mentions (the main one and the others), in both forms."""
+    out = set(isbn_forms(row.get("isbn")))
+    for alt in str(row.get("isbn_alt") or "").split():
+        out |= isbn_forms(alt)
+    return out
+
+
 # EPUB metadata says "en"/"en-US"; Open Library says "eng". The common ones; others compare as written.
 _LANG = {"en": "eng", "fr": "fre", "de": "ger", "es": "spa", "it": "ita", "pt": "por", "nl": "dut", "ru": "rus",
          "zh": "chi", "ja": "jpn", "ko": "kor", "ar": "ara", "hi": "hin", "pl": "pol", "sv": "swe", "da": "dan",
@@ -288,6 +331,10 @@ def _same_publisher(a: str, b: str) -> bool:
     return bool(a and b) and (_ratio(a, b) >= 0.8 or f" {a} " in f" {b} " or f" {b} " in f" {a} ")
 
 
+def _is_ebook(cand: dict) -> bool:
+    return bool(re.search(r"e-?book|electronic|epub|digital", str(cand.get("format") or ""), re.I))
+
+
 def _delta(row: dict, cand: dict) -> int:
     """What else the file says about the edition: the same language and publisher
     raise the score, a different language lowers it (a French edition of an
@@ -300,7 +347,11 @@ def _delta(row: dict, cand: dict) -> int:
         delta += 3
     year, have_year = row.get("year"), cand.get("year")
     if isinstance(year, int) and isinstance(have_year, int):
-        delta += 2 if year == have_year else 1 if abs(year - have_year) <= 2 else 0
+        gap = abs(year - have_year)
+        # The file's year is the closest hint to *which* edition it is; a very different one is unlikely.
+        delta += 4 if gap == 0 else 3 if gap <= 1 else 1 if gap <= 3 else 0 if gap <= 10 else -2 if gap <= 30 else -4
+    if _is_ebook(cand):
+        delta += 2   # an EPUB is made from an e-book edition, or at least not a rare print
     return delta
 
 
@@ -320,8 +371,7 @@ def _facts(row: dict) -> tuple:
 
 def score(row: dict, cand: dict) -> int:
     """0-100: how sure we are that `cand` is the book in `row`."""
-    isbn = row.get("isbn")
-    if isbn and isbn in cand.get("isbns", ()):
+    if row_isbns(row) & set(cand.get("isbns", ())):
         return 100
     wanted_title, author_text = _facts(row)
     if not wanted_title:
@@ -345,8 +395,9 @@ def rank(row: dict, cands: list) -> list:
         c["score"] = score(row, c)
     # Several editions of one book all score 100; the extra metadata then decides
     # which one comes first (a capped score cannot).
+    # Still tied: the file is a modern e-book, so prefer the newer record over an old print edition.
     cands.sort(key=lambda c: (-c["score"], -(_delta(row, c) if c["score"] >= REVIEW_MIN else 0),
-                              c.get("language") != lang, not c.get("isbn"), c["olid"]))
+                              c.get("language") != lang, not c.get("isbn"), -(c.get("year") or 0), c["olid"]))
     return cands[:MAX_CANDIDATES]
 
 
@@ -361,7 +412,7 @@ def decide(ranked: list) -> dict:
     if top >= AUTO_MIN:
         best = ranked[0]
         year = best.get("year")
-        return dict(base, state="matched", olid=best["olid"], auto_picked=True,
+        return dict(base, _work=best.get("work"), state="matched", olid=best["olid"], auto_picked=True,
                     match_title=(best["title"] or "")[:300] or None,
                     match_author=", ".join(best["authors"])[:200] or None,
                     match_year=year if isinstance(year, int) else None)
@@ -373,7 +424,7 @@ def decide(ranked: list) -> dict:
 # ─── matching rows ──────────────────────────────────────────────────────────
 
 def _usable(row: dict) -> bool:
-    return bool(row.get("isbn") or row.get("title") or from_path(row.get("path")).get("title"))
+    return bool(row_isbns(row) or row.get("title") or from_path(row.get("path")).get("title"))
 
 
 _JUNK = re.compile(r"\b(z[- ]?library|libgen|1lib|epub|ebook|retail|vk\.com)\b", re.I)
@@ -483,14 +534,14 @@ def _workers() -> int:
     return max(2, min(4, round(ol_rps()) + 1))
 
 
-def work_editions(work_key: str, limit: int = 50) -> list:
+def work_editions(work_key: str, limit: int = 50, retries: int = 0) -> list:
     """Candidates for the editions of one work, so a book with 150 editions can be
     matched on language, publisher and year, not just whichever edition search
     happened to show. Interactive only (one request per work)."""
     if not re.fullmatch(r"/works/OL\d+W", work_key or ""):
         return []
     data = _call(("editions", work_key), f"https://openlibrary.org{work_key}/editions.json",
-                 {"limit": limit}, retries=0)
+                 {"limit": limit}, retries=retries)
     out = []
     for e in data.get("entries", []):
         m = _OLID.search(e.get("key") or "")
@@ -501,7 +552,8 @@ def work_editions(work_key: str, limit: int = 50) -> list:
         langs = [l.get("key", "").rsplit("/", 1)[-1] for l in e.get("languages") or []]
         out.append({"olid": int(m.group(1)), "title": e.get("title"), "authors": [], "year": int(year.group(1)) if year else None,
                     "publisher": _first(e.get("publishers") or []), "language": _first(langs),
-                    "isbn": _first(isbns), "isbns": isbns, "work": work_key})
+                    "isbn": _first(isbns), "isbns": isbns, "work": work_key,
+                    "format": e.get("physical_format")})
     return out
 
 
@@ -511,8 +563,9 @@ def candidates_for(row: dict) -> list:
     works are added so the right edition (language, publisher, year, ISBN) can
     be picked, not just the one search happened to show."""
     cands = []
-    if row.get("isbn"):
-        cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}, retries=0, fresh=True))
+    if row_isbns(row):
+        q = "isbn:(" + " OR ".join(sorted(asked_isbns(row))) + ")"
+        cands += candidates_from(search({"q": q, "limit": MAX_CANDIDATES}, retries=0, fresh=True))
     if row.get("title") or row.get("path"):
         cands += _by_title(row, retries=0, exhaustive=True, fresh=True)
     merged = {c["olid"]: c for c in cands}
@@ -587,42 +640,110 @@ def _ladder(row: dict, fresh: bool = False):
 def _same_book(row: dict) -> tuple:
     """Rows that say the same thing about a book get one lookup between them."""
     title, author = _facts(row)
-    return (row.get("isbn"), _norm(title), _norm(author), _lang(row.get("language")),
+    return (tuple(sorted(row_isbns(row))), _norm(title), _norm(author), _lang(row.get("language")),
             _norm(row.get("publisher")), row.get("year"))
+
+
+REFINE_EDITIONS = 100  # how many of a work's editions are compared when choosing the exact one
+
+
+def _refinable(row: dict, update: dict) -> bool:
+    """Worth a second look at the work's editions: an automatic title match (an ISBN hit
+    already names the edition) for a file that says when or by whom it was published."""
+    return (update.get("state") == "matched" and not update.get("_isbn") and bool(update.get("_work"))
+            and bool(row.get("year") or row.get("publisher")))
+
+
+def _refine(row: dict, update: dict) -> dict:
+    """Pick the best edition of the matched work for this file.
+
+    Search shows one edition per work, often an old print one. Here all of the work's
+    editions are scored on what the file says (year, publisher, language, e-book format)
+    and the best replaces the pick, only when it is a clear improvement. A failed
+    lookup keeps the original pick."""
+    try:
+        editions = work_editions(update["_work"], limit=REFINE_EDITIONS, retries=RETRIES)
+    except UpstreamError:
+        return update
+    if not editions:
+        return update
+    editions.sort(key=lambda e: (-_delta(row, e), not _is_ebook(e), not e.get("isbn"), -(e.get("year") or 0), e["olid"]))
+    best = editions[0]
+    current = next((e for e in editions if e["olid"] == update["olid"]), None)
+    if best["olid"] == update["olid"] or (current is not None and _delta(row, best) <= _delta(row, current)):
+        return update
+    return dict(update, olid=best["olid"], match_title=(best.get("title") or update.get("match_title") or "")[:300] or None,
+                match_year=best.get("year"))
 
 
 def match_rows(rows: list, fresh: bool = False):
     """Yield (row_id, column updates) as answers arrive, so callers can save in steps.
 
     Identical rows (two copies of a book, a library with duplicates) are looked up
-    once and share the answer. `fresh` bypasses the search cache (a Re-check)."""
+    once and share the answer. `fresh` bypasses the search cache (a Re-check). A title
+    match for a file that carries a year or publisher is then refined to the work's
+    best-fitting edition (extra requests, a few at a time)."""
     groups = {}
     for r in rows:
         groups.setdefault(_same_book(r), []).append(r)
     twins = {g[0]["id"]: [t["id"] for t in g[1:]] for g in groups.values() if len(g) > 1}
-    for rid, update in _match_unique([g[0] for g in groups.values()], fresh):
+    by_id = {g[0]["id"]: g[0] for g in groups.values()}
+
+    def emit(rid, update):
+        update = {k: v for k, v in update.items() if k not in ("_work", "_isbn")}
         yield rid, update
         for twin in twins.get(rid, ()):
             yield twin, dict(update)
 
+    pending = []
+    for rid, update in _match_unique(list(by_id.values()), fresh):
+        if _refinable(by_id[rid], update):
+            pending.append((rid, update))
+        else:
+            yield from emit(rid, update)
+    if pending:
+        with ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="import-ol-refine") as pool:
+            futures = {pool.submit(_refine, by_id[rid], update): rid for rid, update in pending}
+            try:
+                for f in as_completed(futures):
+                    yield from emit(futures[f], f.result())
+            finally:
+                for f in futures:
+                    f.cancel()
+
+
+def _isbn_chunks(rows: list):
+    """Rows grouped so each group asks Open Library about at most ISBN_BATCH ISBNs."""
+    chunk, count = [], 0
+    for r in rows:
+        n = len(asked_isbns(r))
+        if chunk and count + n > ISBN_BATCH:
+            yield chunk
+            chunk, count = [], 0
+        chunk.append(r)
+        count += n
+    if chunk:
+        yield chunk
+
 
 def _match_unique(rows: list, fresh: bool = False):
-    todo, with_isbn = [], [r for r in rows if r.get("isbn")]
+    todo, with_isbn = [], [r for r in rows if row_isbns(r)]
     for r in rows:
         if not _usable(r):
             yield r["id"], {"state": "no_match", "candidates_count": 0, "confidence": 0,
                             "error": "No ISBN or title to match on."}
-        elif not r.get("isbn"):
+        elif not row_isbns(r):
             todo.append(r)
 
-    for i in range(0, len(with_isbn), ISBN_BATCH):
-        chunk = with_isbn[i:i + ISBN_BATCH]
-        docs = search({"q": "isbn:(" + " OR ".join(sorted({r["isbn"] for r in chunk})) + ")", "limit": 100}, fresh=fresh)
+    for chunk in _isbn_chunks(with_isbn):
+        asked = sorted({i for r in chunk for i in asked_isbns(r)})
+        docs = search({"q": "isbn:(" + " OR ".join(asked) + ")", "limit": 100}, fresh=fresh)
         cands = candidates_from(docs)
         for r in chunk:
-            hits = rank(r, [dict(c) for c in cands if r["isbn"] in c["isbns"]])
+            mine = row_isbns(r)
+            hits = rank(r, [dict(c) for c in cands if mine & set(c["isbns"])])
             if hits:
-                yield r["id"], decide(hits)
+                yield r["id"], dict(decide(hits), _isbn=True)   # an ISBN names the edition: nothing to refine
             elif _usable(r):
                 todo.append(r)  # ISBN unknown to Open Library: try the title
             else:
