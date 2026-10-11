@@ -531,6 +531,37 @@ def candidates_for(row: dict) -> list:
     return [public(c) for c in rank(row, list(merged.values()))]
 
 
+_KEY = re.compile(r"OL(\d{1,10})M", re.I)
+
+
+def search_books(q: str, row: dict | None = None) -> list:
+    """What the admin typed into the "find the right edition" box: an Open Library
+    edition key or link (OL123M, openlibrary.org/books/OL123M/...), an ISBN, or
+    words (title, author, both). Live and fresh, never cached. Scored against the
+    row if given (language, publisher, year help rank editions), else against the words."""
+    q = " ".join(str(q or "").split())[:200]
+    if len(q) < 2:
+        return []
+    if (m := _KEY.search(q)):
+        e = lookup_edition(int(m.group(1)))
+        if not e:
+            return []
+        year = re.search(r"\b(1\d{3}|20\d{2})\b", str(e.get("year") or ""))
+        cands = [{"olid": e["olid"], "title": e["title"], "authors": [], "year": int(year.group(1)) if year else None,
+                  "publisher": e.get("publisher"), "language": None, "isbn": e.get("isbn"),
+                  "isbns": [e["isbn"]] if e.get("isbn") else [], "work": None}]
+    else:
+        digits = re.sub(r"[\s-]", "", q)
+        query = f"isbn:{digits.upper()}" if re.fullmatch(r"\d{9}[\dXx]|\d{13}", digits) else q
+        cands = candidates_from(search({"q": query, "limit": MAX_CANDIDATES}, retries=0, fresh=True))
+    target = row or {"title": q, "isbn": None, "author": None, "language": None, "publisher": None, "year": None, "path": None}
+    for c in cands:
+        c["score"] = score(target, c)
+    if row is None:
+        return [public(c) for c in cands]                    # Open Library's own relevance order
+    return [public(c) for c in rank(row, cands)]
+
+
 def _ladder(row: dict, fresh: bool = False):
     return row["id"], decide(_by_title(row, fresh=fresh))
 

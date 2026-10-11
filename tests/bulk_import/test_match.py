@@ -50,6 +50,9 @@ class FakeOL:
         if "q" in params and params["q"].startswith("isbn:"):
             wanted = set(params["q"].replace("isbn:", "").strip("()").replace(" OR ", " ").split())
             return [w for w in self.works if any(set(e["isbn"]) & wanted for e in w["editions"]["docs"])]
+        if "q" in params and 'title:"' not in params["q"]:   # free words, like the search box
+            words = params["q"].lower().split()
+            return [w for w in self.works if all(x in (w["title"] + " " + " ".join(w["author_name"])).lower() for x in words)]
         if "q" in params:   # a batched query: (title:"X" AND author:"Y") OR (...)
             import re
             asks = [(t, a) for t, a in re.findall(r'title:"([^"]*)"(?: AND author:"([^"]*)")?', params["q"])]
@@ -999,7 +1002,7 @@ def test_match_flow_over_http(client, ol):
     row = client.get(f"{API}/{bid}/rows", params={"state": "matched"}).json()["rows"][0]
     cands = client.get(f"{API}/{bid}/rows/{row['id']}/candidates").json()["candidates"]
     assert cands[0]["olid"] == 101 and cands[0]["score"] == 100 and "isbns" not in cands[0]
-    assert set(cands[0]) == {"olid", "title", "authors", "year", "publisher", "language", "isbn", "score"}
+    assert set(cands[0]) == {"olid", "title", "authors", "year", "publisher", "language", "isbn", "score", "in_library"}
     assert client.get(f"{API}/{bid}/rows/99999/candidates").status_code == 404
 
     assert client.post(f"{API}/{bid}/match", json={"state": "bogus"}).status_code == 400
@@ -1238,3 +1241,69 @@ def test_two_staged_copies_of_one_edition_import_once(pg, staged_s3):
     assert sorted(out) == ["duplicate"] * 5 + ["imported"]
     assert session.query(Item).filter(Item.openlibrary_edition == 101).count() == 1
     assert [k for k in staged_s3.objects if k.startswith("import-staging/")] == []
+
+
+# ─── the "find it yourself" box ──────────────────────────────────────────────
+
+def one_row_batch(client, **row):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1, **row)]})
+    return bid, client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+
+
+def test_search_by_words_returns_scored_candidates_with_library_flag(client, ol, db_items):
+    from lenny.core.models import FormatEnum, Item
+    db_items.add(Item(openlibrary_edition=101, formats=FormatEnum.EPUB)); db_items.commit()
+    bid, rid = one_row_batch(client, title="something else")
+    got = client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": "dune"}).json()["candidates"]
+    assert [(c["olid"], c["in_library"]) for c in got][:1] == [(101, True)] or got[0]["olid"] in (101, 102)
+    assert {"olid", "title", "authors", "year", "publisher", "language", "isbn", "score", "in_library"} <= set(got[0])
+    assert "isbns" not in got[0] and "work" not in got[0]
+    assert ol.calls[-1]["q"] == "dune"                                          # live words, as typed
+
+
+def test_search_accepts_a_pasted_key_or_link_and_an_isbn(client, ol):
+    bid, rid = one_row_batch(client, title="Dune")
+    edition = {"olid": 101, "title": "Dune", "publisher": "Ace", "year": "Oct 1, 1990", "isbn": "9780441013593"}
+    for q in ("OL101M", "https://openlibrary.org/books/OL101M/Dune", "/books/ol101m"):
+        with patch("lenny.core.bulk_import.matcher.lookup_edition", return_value=edition) as lookup:
+            got = client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": q}).json()["candidates"]
+        assert [c["olid"] for c in got] == [101] and got[0]["year"] == 1990 and lookup.call_args.args == (101,)
+    with patch("lenny.core.bulk_import.matcher.lookup_edition", return_value=None):
+        assert client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": "OL5M"}).json() == {"candidates": []}
+    client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": "978-0-441-01359-3"})
+    assert ol.calls[-1]["q"] == "isbn:9780441013593"                            # an ISBN, dashes and all
+
+
+def test_search_ranks_by_the_row_so_the_right_language_comes_first(client):
+    fake = FakeOL(work("Dune", ["Frank Herbert"], (1, [], "fre")), work("Dune", ["Frank Herbert"], (2, [], "eng")))
+    with patch("lenny.core.bulk_import.matcher.search", fake):
+        bid, rid = one_row_batch(client, title="Dune", author="Frank Herbert", language="en")
+        with patch("lenny.core.bulk_import.matcher.search", lambda *a, **k: fake.works):
+            got = client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": "dune"}).json()["candidates"]
+    assert [c["olid"] for c in got] == [2, 1]
+
+
+def test_search_input_is_checked_and_errors_are_clean(client, ol):
+    from lenny.core.bulk_import import matcher as m
+    bid, rid = one_row_batch(client, title="Dune")
+    assert client.get(f"{API}/{bid}/rows/{rid}/search").status_code == 400
+    assert client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": " a "}).status_code == 400
+    assert client.get(f"{API}/{bid}/rows/999/search", params={"q": "dune"}).status_code == 404
+    with patch("lenny.core.bulk_import.matcher.search", side_effect=m.UpstreamError("down", retry_after=30)):
+        r = client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": "dune"})
+    assert r.status_code == 502
+    long = "x" * 500
+    client.get(f"{API}/{bid}/rows/{rid}/search", params={"q": long})
+    assert len(ol.calls[-1]["q"]) <= 200                                         # never an unbounded query
+
+
+def test_candidates_also_carry_the_library_flag(client, ol, db_items):
+    bid, rid = one_row_batch(client, title="Dune", author="Frank Herbert")
+    got = client.get(f"{API}/{bid}/rows/{rid}/candidates").json()["candidates"]
+    assert got and all(c["in_library"] is False for c in got)
+
+
+def test_the_search_route_requires_admin(app_module):
+    from fastapi.testclient import TestClient
+    assert TestClient(app_module).get(f"{API}/1/rows/1/search", params={"q": "dune"}).status_code == 403

@@ -16,6 +16,7 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     POST   /admin/import/batches/{id}/match           start matching (queued rows, or state=no_match to re-check)
     GET    /admin/import/match/{job_id}               progress of a match job
     GET    /admin/import/batches/{id}/rows/{row}/candidates
+    GET    /admin/import/batches/{id}/rows/{row}/search?q=    find an edition by words, ISBN or OL key
     POST   /admin/import/batches/{id}/rows/{row}/file import one matched row (multipart `file`)
     POST   /admin/import/batches/{id}/rows/{row}/import import a row whose file was staged (no upload)
     GET    /admin/import/editions/lookup?key=OL123M   check a pasted edition key
@@ -213,7 +214,29 @@ async def get_match(request: Request, job_id: str):
 async def row_candidates(request: Request, batch_id: int, row_id: int):
     _require_admin(request)
     def work():
-        return {"candidates": matcher.candidates_for(batches.get_row(batch_id, row_id))}
+        found = matcher.candidates_for(batches.get_row(batch_id, row_id))
+        return {"candidates": _mark_owned(found)}
+    return await _run(work)
+
+
+def _mark_owned(candidates: list) -> list:
+    """Say which candidates are already in the library, so the page can show it."""
+    owned = set(batches.existing_olids([c["olid"] for c in candidates]))
+    return [dict(c, in_library=c["olid"] in owned) for c in candidates]
+
+
+@router.get("/admin/import/batches/{batch_id}/rows/{row_id}/search")
+async def search_row_editions(request: Request, batch_id: int, row_id: int, q: str = ""):
+    """The "find it yourself" box: `q` is a title and/or author, an ISBN, or an Open
+    Library edition key or link. Returns {candidates: [...]} in the candidates shape
+    plus `in_library`, best match to this row first. `400` if `q` is under 2 characters,
+    `502` if Open Library is unreachable."""
+    _require_admin(request)
+    if len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Type at least 2 characters.")
+    def work():
+        row = batches.get_row(batch_id, row_id)
+        return {"candidates": _mark_owned(matcher.search_books(q, row))}
     return await _run(work)
 
 
