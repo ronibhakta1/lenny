@@ -1163,3 +1163,54 @@ def test_a_re_dropped_file_gains_isbns_it_did_not_have_before():
     b.upsert_rows(bid, [dict(rows(1)[0], isbn="9780441013593", isbns=["9780140328721"])])
     row = b.list_rows(bid)["rows"][0]
     assert (row["isbn"], row["isbn_alt"]) == ("9780441013593", "9780140328721")
+
+
+# ─── an imported row's stored book moves with its edition, even if a later step fails ───
+
+def imported_row(olid=10):
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1))
+    rid = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(rid): dict(state="imported", olid=olid, match_title="Old", encrypted=False)})
+    return bid, rid
+
+
+def test_the_row_follows_the_stored_book_even_when_the_flag_update_fails():
+    from lenny.core.api import LennyAPI
+    from lenny.core.bulk_import import batches as b
+    bid, rid = imported_row(10)
+    with patch.object(LennyAPI, "rename_item") as rename, patch.object(LennyAPI, "update_item", side_effect=RuntimeError("db down")):
+        with pytest.raises(RuntimeError):
+            b.update_row(bid, rid, olid=11, encrypted=True, match={"title": "New", "author": "A", "year": 2020})
+    row = b.list_rows(bid)["rows"][0]
+    assert rename.call_count == 1
+    assert (row["olid"], row["match_title"], row["match_year"], row["decision"]) == (11, "New", 2020, "user")   # the book moved: the row says so
+    assert row["encrypted"] is False and row["state"] == "imported"                                              # the failed flag was not recorded
+
+
+def test_a_row_removed_while_the_stored_book_is_moving_is_a_clean_not_found():
+    from lenny.core.api import LennyAPI
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.db import session as db
+    bid, rid = imported_row(10)
+    def rename_and_row_vanishes(old, new):
+        db.query(b.ImportRow).filter(b.ImportRow.id == rid).delete(); db.commit()
+    with patch.object(LennyAPI, "rename_item", rename_and_row_vanishes), patch.object(LennyAPI, "update_item"):
+        with pytest.raises(b.ImportRowNotFound):
+            b.update_row(bid, rid, olid=11)
+    bid2, rid2 = imported_row(20)
+    def flag_and_row_vanishes(*a, **k):
+        db.query(b.ImportRow).filter(b.ImportRow.id == rid2).delete(); db.commit()
+    with patch.object(LennyAPI, "update_item", flag_and_row_vanishes):
+        with pytest.raises(b.ImportRowNotFound):
+            b.update_row(bid2, rid2, encrypted=True)
+
+
+def test_rename_and_flag_together_apply_both_when_all_goes_well():
+    from lenny.core.api import LennyAPI
+    from lenny.core.bulk_import import batches as b
+    bid, rid = imported_row(10)
+    with patch.object(LennyAPI, "rename_item") as rename, patch.object(LennyAPI, "update_item") as flag:
+        out = b.update_row(bid, rid, olid=11, encrypted=True, match={"title": "New"})
+    assert (out["olid"], out["encrypted"], out["match_title"]) == (11, True, "New")
+    assert rename.call_args.args == (10, 11) and flag.call_args.args == (11,) and flag.call_args.kwargs == {"encrypted": True}

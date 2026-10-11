@@ -511,6 +511,26 @@ def _set_match(row: ImportRow, match: dict | None) -> None:
     row.match_year = year if isinstance(year, int) and not isinstance(year, bool) and 0 < year < 10000 else None
 
 
+def _apply_edition(row: ImportRow, olid: int, match: dict | None) -> None:
+    """The row now stands for edition `olid`, chosen by the admin."""
+    if row.state != IMPORTED:
+        row.state = MATCHED
+    row.olid, row.decision, row.auto_picked, row.error = olid, USER, False, None
+    # The row must show the edition that was chosen, not the one it was matched to first.
+    row.confidence = 0
+    _set_match(row, match)
+
+
+def _locked_row(batch_id: int, row_id: int) -> tuple:
+    """(batch, row) under the batch lock, or ImportRowNotFound if the row was removed meanwhile."""
+    _xact_lock(f"import_batch:{batch_id}")
+    batch = _get(batch_id)
+    row = db.query(ImportRow).filter(ImportRow.batch_id == batch_id, ImportRow.id == row_id).one_or_none()
+    if row is None:
+        raise ImportRowNotFound(f"Row {row_id} not found.")
+    return batch, row
+
+
 def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
                olid: int | None = None, encrypted: bool | None = None, match: dict | None = None) -> dict:
     """Apply one admin decision to one row.
@@ -541,20 +561,19 @@ def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
             db.rollback()
             if rename:
                 LennyAPI.rename_item(current, olid)
+                # The stored book now lives under the new edition. Record that at once, before
+                # the next call can fail, so the row never points at an edition that is gone.
+                batch, row = _locked_row(batch_id, row_id)
+                _apply_edition(row, olid, match)
+                _touch(batch)
+                db.commit()
                 current = olid
             if reflag:
                 LennyAPI.update_item(current, encrypted=encrypted)
-            _xact_lock(f"import_batch:{batch_id}")
-            batch = _get(batch_id)
-            row = db.query(ImportRow).filter(ImportRow.id == row_id).one()
+            batch, row = _locked_row(batch_id, row_id)
 
         if olid is not None and olid != row.olid:
-            if row.state != IMPORTED:
-                row.state = MATCHED
-            row.olid, row.decision, row.auto_picked, row.error = olid, USER, False, None
-            # The row must show the edition that was chosen, not the one it was matched to first.
-            row.confidence = 0
-            _set_match(row, match)
+            _apply_edition(row, olid, match)
         elif olid is not None and match and row.match_title is None:
             _set_match(row, match)    # same edition re-sent: fills in details an older choice never stored
         if skipped is not None:
