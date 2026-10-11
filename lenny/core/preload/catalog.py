@@ -348,3 +348,89 @@ def find(olids=(), source_ids=(), collection: str | None = None) -> tuple:
             if in_collection(b, collection):
                 picked[b["olid"]] = b
     return list(picked.values()), unknown
+
+
+# ─── one book's full details ─────────────────────────────────────────────────
+
+DETAILS_TTL = 6 * 3600
+DETAILS_MAX = 256
+_details: "dict[int, tuple]" = {}
+_details_lock = threading.Lock()
+
+
+def _get_json(url: str):
+    """One Open Library JSON document, through the shared circuit breaker. Raises httpx errors."""
+    from lenny.core.upstream import open_library
+
+    def fetch():
+        resp = httpx.get(url, timeout=StandardEbooks.HTTP_TIMEOUT, headers=_headers(), follow_redirects=True)
+        resp.raise_for_status()
+        return resp.json()
+    try:
+        return open_library.call(("preload-details", url), fetch)
+    except Exception as e:                       # the breaker raises its own error type when open
+        raise httpx.HTTPError(str(e)) from e
+
+
+def _text(value) -> str | None:
+    """Open Library descriptions are a string or {"type": ..., "value": ...}."""
+    if isinstance(value, dict):
+        value = value.get("value")
+    value = " ".join(str(value or "").split())
+    return value[:2000] or None
+
+
+def details(olid: int) -> dict | None:
+    """Everything worth showing about one catalog book, or None if it is not in the catalog.
+
+    The catalog row (title, authors, cover, size, how it was added) plus the edition and its work
+    from Open Library (publisher, date, pages, ISBN, languages, description, all subjects), cached for
+    DETAILS_TTL. If Open Library cannot answer, the catalog row is returned with `details_loaded: False`
+    rather than an error: the sheet is still useful."""
+    book = next((b for b in get()["books"] if b["olid"] == olid), None)
+    if book is None:
+        return None
+    now = time.monotonic()
+    with _details_lock:
+        hit = _details.get(olid)
+    if hit and now - hit[0] < DETAILS_TTL:
+        extra = hit[1]
+    else:
+        extra = _fetch_details(olid)
+        if extra.get("details_loaded"):
+            with _details_lock:
+                _details[olid] = (now, extra)
+                while len(_details) > DETAILS_MAX:
+                    _details.pop(next(iter(_details)))
+    sid = book["source_id"]
+    cover = book.get("cover_url")
+    return {
+        **book, **extra,
+        "cover_url_large": cover.replace("-M.jpg", "-L.jpg") if cover else None,
+        "links": {"open_library": f"https://openlibrary.org/books/OL{olid}M",
+                  "standard_ebooks": f"https://standardebooks.org/ebooks/{sid}",
+                  "archive_org": f"https://archive.org/details/{sid.replace('/', '_')}"},
+    }
+
+
+def _fetch_details(olid: int) -> dict:
+    try:
+        edition = _get_json(f"https://openlibrary.org/books/OL{olid}M.json")
+    except (httpx.HTTPError, ValueError):
+        return {"details_loaded": False}
+    langs = [str(l.get("key", "")).rsplit("/", 1)[-1] for l in edition.get("languages") or [] if isinstance(l, dict)]
+    out = {
+        "details_loaded": True, "publisher": (edition.get("publishers") or [None])[0],
+        "publish_date": edition.get("publish_date"), "pages": edition.get("number_of_pages"),
+        "isbn": (edition.get("isbn_13") or edition.get("isbn_10") or [None])[0], "languages": [l for l in langs if l],
+        "description": _text(edition.get("description")), "all_subjects": [],
+    }
+    work_key = ((edition.get("works") or [{}])[0] or {}).get("key", "")
+    if work_key.startswith("/works/OL") and work_key.endswith("W"):
+        try:
+            work = _get_json(f"https://openlibrary.org{work_key}.json")
+            out["description"] = out["description"] or _text(work.get("description"))
+            out["all_subjects"] = [str(x) for x in (work.get("subjects") or [])][:30]
+        except (httpx.HTTPError, ValueError):
+            pass                                  # the edition's own facts are still worth showing
+    return out

@@ -668,3 +668,98 @@ def test_refresh_and_the_new_filters_over_http(client, fakes, db):
 def test_the_refresh_route_requires_admin(app_module):
     from fastapi.testclient import TestClient
     assert TestClient(app_module).post(f"{P}/refresh").status_code == 403
+
+
+# ─── one book's details ──────────────────────────────────────────────────────
+
+EDITION = {"publishers": ["Standard Ebooks"], "publish_date": "Jan 5, 2021", "number_of_pages": 412,
+           "isbn_13": ["9781234567890"], "languages": [{"key": "/languages/eng"}], "works": [{"key": "/works/OL3W"}]}
+WORK = {"description": {"type": "/type/text", "value": "A  novel\nof manners."}, "subjects": ["Fiction", "Marriage", "Manners and customs"]}
+
+
+def fake_json(responses):
+    calls = []
+    def get(url):
+        calls.append(url)
+        r = responses[url]
+        if isinstance(r, Exception):
+            raise r
+        return r
+    get.calls = calls
+    return get
+
+
+@pytest.fixture
+def clear_details():
+    from lenny.core.preload import catalog
+    catalog._details.clear()
+    yield
+    catalog._details.clear()
+
+
+def test_details_join_the_catalog_row_with_the_edition_and_its_work(fakes, clear_details):
+    from lenny.core.preload import catalog
+    get = fake_json({"https://openlibrary.org/books/OL3M.json": EDITION, "https://openlibrary.org/works/OL3W.json": WORK})
+    with patch("lenny.core.preload.catalog._get_json", get):
+        d = catalog.details(3)
+    assert d["title"] == "Pride and Prejudice" and d["authors"] == ["Jane Austen"] and d["size"] == 3000
+    assert (d["publisher"], d["publish_date"], d["pages"], d["isbn"], d["languages"]) == ("Standard Ebooks", "Jan 5, 2021", 412, "9781234567890", ["eng"])
+    assert d["description"] == "A novel of manners." and d["all_subjects"] == ["Fiction", "Marriage", "Manners and customs"]
+    assert d["cover_url_large"].endswith("/3-L.jpg") and d["details_loaded"] is True
+    assert d["links"] == {"open_library": "https://openlibrary.org/books/OL3M",
+                          "standard_ebooks": "https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice",
+                          "archive_org": "https://archive.org/details/jane-austen_pride-and-prejudice"}
+
+
+def test_details_are_cached_and_a_book_not_in_the_catalog_is_none(fakes, clear_details):
+    from lenny.core.preload import catalog
+    get = fake_json({"https://openlibrary.org/books/OL3M.json": EDITION, "https://openlibrary.org/works/OL3W.json": WORK})
+    with patch("lenny.core.preload.catalog._get_json", get):
+        catalog.details(3); catalog.details(3)
+        assert len(get.calls) == 2                                           # edition + work, once
+        assert catalog.details(999999) is None and len(get.calls) == 2       # nothing fetched for an unknown book
+
+
+def test_details_degrade_when_open_library_is_down_and_are_not_cached_then(fakes, clear_details):
+    import httpx
+    from lenny.core.preload import catalog
+    down = fake_json({"https://openlibrary.org/books/OL3M.json": httpx.ConnectError("down")})
+    with patch("lenny.core.preload.catalog._get_json", down):
+        d = catalog.details(3)
+    assert d["details_loaded"] is False and d["title"] == "Pride and Prejudice" and "publisher" not in d     # the sheet still has something
+    ok = fake_json({"https://openlibrary.org/books/OL3M.json": EDITION, "https://openlibrary.org/works/OL3W.json": WORK})
+    with patch("lenny.core.preload.catalog._get_json", ok):
+        assert catalog.details(3)["details_loaded"] is True                  # the failure was not remembered
+
+
+def test_a_failed_work_lookup_keeps_the_editions_own_facts(fakes, clear_details):
+    import httpx
+    from lenny.core.preload import catalog
+    get = fake_json({"https://openlibrary.org/books/OL3M.json": dict(EDITION, description="Edition blurb"),
+                     "https://openlibrary.org/works/OL3W.json": httpx.ConnectError("x")})
+    with patch("lenny.core.preload.catalog._get_json", get):
+        d = catalog.details(3)
+    assert d["details_loaded"] is True and d["publisher"] == "Standard Ebooks" and d["description"] == "Edition blurb" and d["all_subjects"] == []
+
+
+def test_odd_open_library_values_do_not_break_details(fakes, clear_details):
+    from lenny.core.preload import catalog
+    odd = {"publishers": None, "languages": ["not-a-dict", {"key": "/languages/fre"}], "works": [{"key": "../../etc"}], "description": None}
+    get = fake_json({"https://openlibrary.org/books/OL3M.json": odd})
+    with patch("lenny.core.preload.catalog._get_json", get):
+        d = catalog.details(3)
+    assert d["languages"] == ["fre"] and d["publisher"] is None and d["all_subjects"] == [] and len(get.calls) == 1      # a bad work key is not fetched
+
+
+def test_details_over_http(client, fakes, db, clear_details):
+    own(db, 3)
+    get = fake_json({"https://openlibrary.org/books/OL3M.json": EDITION, "https://openlibrary.org/works/OL3W.json": WORK})
+    with patch("lenny.core.preload.catalog._get_json", get):
+        body = client.get(f"{P}/books/3").json()
+        assert client.get(f"{P}/books/999999").status_code == 404
+    assert body["title"] == "Pride and Prejudice" and body["in_library"] is True and body["is_new"] is False and body["publisher"] == "Standard Ebooks"
+
+
+def test_the_details_route_requires_admin(app_module):
+    from fastapi.testclient import TestClient
+    assert TestClient(app_module).get(f"{P}/books/3").status_code == 403

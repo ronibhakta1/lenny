@@ -4,6 +4,7 @@
 Admin endpoints for preloading free books (see lenny/core/preload/).
 
     GET  /admin/preload/catalog      ?q=&collection=&hide_owned=&sort=&new_only=&cursor=&limit=
+    GET  /admin/preload/books/{olid}
     POST /admin/preload/refresh
     GET  /admin/preload/collections
     POST /admin/preload/import       {olids?, source_ids?, collection?}
@@ -53,6 +54,21 @@ def refresh_catalog(request: Request):
     until the new one is ready; `refreshing` in the catalog response says when it is."""
     _require_admin(request)
     return {"started": catalog.refresh()}
+
+
+@router.get("/admin/preload/books/{olid}")
+def get_book(request: Request, olid: int):
+    """Everything about one catalog book, for a details sheet: the catalog fields plus publisher,
+    publish date, pages, ISBN, languages, description and all subjects from Open Library, and links
+    to its Open Library, Standard Ebooks and archive.org pages. `details_loaded: false` means Open
+    Library did not answer and only the catalog fields are present. `404` if it is not in the catalog."""
+    _require_admin(request)
+    book = _catalog_call(catalog.details, olid)
+    if book is None:
+        raise HTTPException(status_code=404, detail="That book is not in the free-books catalog.")
+    book["in_library"] = bool(service.existing_among([olid]))
+    book["is_new"] = catalog.is_new(book)
+    return book
 
 
 @router.get("/admin/preload/collections")
