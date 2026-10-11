@@ -8,14 +8,17 @@ once the book is in.
 
 The outcome is on the returned row's `state`, not the HTTP status: `imported`,
 `duplicate` (already in the library, which is fine), `not_epub`, or `failed`.
-A row left `importing` by a crash is simply claimed again by the next attempt.
+A row left `importing` by a crash or closed tab is claimed again once its claim is
+older than CLAIM_TTL; before that a second attempt is refused as busy.
 """
 
 import logging
+from datetime import timedelta
 
 from lenny.core.bulk_import import batches
 from lenny.core.bulk_import.batches import (
-    FAILED, IMPORTED, IMPORTING, MATCHED, NOT_EPUB, DUPLICATE, ImportRow, ImportRowNotFound, _row_dict, _touch)
+    FAILED, IMPORTED, IMPORTING, MATCHED, NOT_EPUB, DUPLICATE, ImportRow, ImportRowBusy, ImportRowNotFound,
+    _aware, _now, _row_dict, _touch)
 from lenny.core.db import session as db
 from lenny.core.exceptions import FileTooLargeError, InvalidFileError, ItemExistsError, LennyAPIError
 from lenny.core.models import _xact_lock
@@ -23,6 +26,7 @@ from lenny.core.models import _xact_lock
 logger = logging.getLogger(__name__)
 
 _CLAIMABLE = (MATCHED, FAILED, IMPORTING)
+CLAIM_TTL = timedelta(minutes=15)  # longer than any one upload should take
 _DROP = dict.fromkeys(("isbn", "title", "author", "language", "publisher", "year"))
 
 
@@ -38,7 +42,10 @@ def _claim(batch_id: int, row_id: int):
             return None, _row_dict(row)
         if row.state not in _CLAIMABLE or not row.olid or row.skipped:
             raise ValueError("Only a matched row that is not skipped can be imported.")
-        row.state, row.error = IMPORTING, None
+        if (row.state == IMPORTING and row.claimed_at
+                and _now() - _aware(row.claimed_at) < CLAIM_TTL):
+            raise ImportRowBusy("This book is already being imported.")
+        row.state, row.error, row.claimed_at = IMPORTING, None, _now()
         _touch(batch)
         olid, encrypted = row.olid, row.encrypted
         db.commit()
@@ -48,8 +55,11 @@ def _claim(batch_id: int, row_id: int):
 
 
 def _finish(row_id: int, **fields) -> dict:
+    """Record the outcome, but only on a row still being imported by us: a late
+    finish must not overwrite what a newer attempt already settled."""
     try:
-        db.query(ImportRow).filter(ImportRow.id == row_id).update(fields, synchronize_session=False)
+        db.query(ImportRow).filter(ImportRow.id == row_id, ImportRow.state == IMPORTING).update(
+            dict(fields, claimed_at=None), synchronize_session=False)
         db.commit()
         return _row_dict(db.query(ImportRow).filter(ImportRow.id == row_id).one())
     finally:

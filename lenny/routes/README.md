@@ -259,7 +259,7 @@ rows instead of duplicating them.
 thread per process, paced to Open Library's limit (1 request/s, 3/s when
 `LENNY_CONTACT_EMAIL` is set), ISBNs fifty to a query. Results are saved to rows as
 they arrive, so polling `GET /admin/import/batches/{id}` shows partial progress
-and a restart loses nothing (unmatched rows stay `queued`). Rows the admin has
+and a restart loses nothing (unmatched rows stay `queued`). Matching state is per process, so keep one worker for big imports or Open Library sees one paced stream per worker. Rows the admin has
 decided (picked an edition) or skipped are never overwritten.
 
 - **POST /admin/import/batches/{id}/match** — `{state?: "queued"|"no_match"|"needs_review", row_ids?: [≤500]}` → `202` job `{id, status: queued|running|done|failed, total, done, error}`. `state: "no_match"` is the *Re-check* button. One active job per batch; asking again returns it.
@@ -268,7 +268,7 @@ decided (picked an edition) or skipped are never overwritten.
 - **GET /admin/import/editions/lookup?key=OL123M** — checks a pasted edition key: `{olid, title, publisher, year, isbn, in_library}`; `400` bad key, `404` unknown to Open Library.
 - **POST /admin/import/check-duplicates** — `{olids: [≤1000]}` → `{existing: [...]}` (already in the library).
 - **GET /admin/import/limits** — `{max_rows_per_call, isbn_batch, ol_requests_per_second, ol_identified, ol_logged_in, max_file_mb, upload_concurrency, retention_days, formats}`.
-- **POST /admin/import/batches/{id}/rows/{row_id}/file** — multipart `file`; imports a matched, unskipped row. The answer is the row; its `state` is the outcome: `imported`, `duplicate` (already in the library), `not_epub`, `failed`. Retrying is safe. Runs under the same bounded upload pool as other uploads.
+- **POST /admin/import/batches/{id}/rows/{row_id}/file** — multipart `file`; imports a matched, unskipped row. The answer is the row; its `state` is the outcome: `imported`, `duplicate` (already in the library), `not_epub`, `failed`. Retrying is safe; a second attempt while one is in progress gets `409` (an abandoned attempt is retaken after 15 minutes). Runs under the same bounded upload pool as other uploads.
 
 Row states: `queued → matched | needs_review | no_match`; `duplicate`; `importing → imported | failed | not_epub`.
 `matched` rows carry `olid` and `auto_picked`; `needs_review` rows have no `olid` until the admin picks one.

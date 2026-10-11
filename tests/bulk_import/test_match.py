@@ -45,7 +45,7 @@ class FakeOL:
     def __init__(self, *works):
         self.works, self.calls = list(works), []
 
-    def __call__(self, params):
+    def __call__(self, params, retries=3):
         self.calls.append(dict(params))
         if "q" in params and params["q"].startswith("isbn:"):
             wanted = set(params["q"].replace("isbn:", "").strip("()").replace(" OR ", " ").split())
@@ -217,6 +217,17 @@ def test_requests_identify_the_server_and_log_in_when_configured(fresh_guard):
     assert "me@example.org" in headers["User-Agent"] and headers["Authorization"] == "LOW ak:sk"
 
 
+def test_interactive_calls_do_not_wait_out_a_429(fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    with patch("requests.get", return_value=resp(429, headers={"Retry-After": "30"})) as get, \
+         patch("lenny.core.bulk_import.matcher.time.sleep") as sleep:
+        with pytest.raises(m.UpstreamError):
+            m.candidates_for(dict(title="Dune", isbn="9780441013593"))
+        with pytest.raises(m.UpstreamError):
+            m.lookup_edition(5)
+    assert get.call_count == 2 and sleep.call_count == 0
+
+
 def test_lookup_edition(fresh_guard):
     from lenny.core.bulk_import import matcher as m
     body = {"title": "Dune", "publishers": ["Ace"], "publish_date": "1990", "isbn_13": ["9780441013593"]}
@@ -313,8 +324,8 @@ def test_a_choice_made_while_the_job_runs_wins(ol):
     bid = batch_with(dict(title="Dune", author="Frank Herbert"))
     row = b.list_rows(bid)["rows"][0]["id"]
     real = ol.__call__
-    def search_then_admin_picks(params):
-        out = real(params)
+    def search_then_admin_picks(params, retries=3):
+        out = real(params, retries)
         b.update_row(bid, row, olid=777)                    # lands between the answer and the save
         return out
     with patch("lenny.core.bulk_import.matcher.search", search_then_admin_picks):
@@ -369,9 +380,9 @@ def test_partial_results_are_saved_as_the_job_goes(ol):
     bid = batch_with(*[dict(title="Dune", author="Frank Herbert") for _ in range(jobs.FLUSH_EVERY + 5)])
     seen = []
     real = ol.__call__
-    def spying(params):
+    def spying(params, retries=3):
         seen.append(b.get_summary(bid)["counts"].get("matched", 0))
-        return real(params)
+        return real(params, retries)
     with patch("lenny.core.bulk_import.matcher.search", spying):
         run_job(bid)
     assert max(seen) >= jobs.FLUSH_EVERY and b.get_summary(bid)["counts"]["matched"] == jobs.FLUSH_EVERY + 5
@@ -458,12 +469,38 @@ def test_import_outcomes(error, state):
     assert "sensitive" not in (row["error"] or "") or error in ("InvalidFileError", "FileTooLargeError")
 
 
-def test_failed_and_interrupted_rows_can_be_retried():
+def test_failed_rows_can_be_retried():
     bid, rid = matched_row()
     row, _ = do_import(bid, rid, MagicMock(side_effect=RuntimeError("x")))
     assert row["state"] == "failed"
-    set_state(bid, **{str(rid): dict(state="importing")})     # as left by a crash
     row, _ = do_import(bid, rid)
+    assert row["state"] == "imported"
+
+
+def test_a_live_claim_is_busy_and_an_abandoned_one_is_retaken():
+    from datetime import datetime, timedelta, timezone
+    from lenny.core.bulk_import import batches as b, importer
+    bid, rid = matched_row()
+    now = datetime.now(timezone.utc)
+    set_state(bid, **{str(rid): dict(state="importing", claimed_at=now)})
+    with pytest.raises(b.ImportRowBusy):
+        do_import(bid, rid)
+    set_state(bid, **{str(rid): dict(claimed_at=now - importer.CLAIM_TTL - timedelta(seconds=1))})
+    row, add = do_import(bid, rid)                              # as left by a crash
+    assert row["state"] == "imported" and add.call_count == 1
+
+
+def test_a_late_finish_does_not_overwrite_a_settled_row():
+    """Attempt A is slow; its claim expires, B imports the book, then A's own add reports 'exists'."""
+    from lenny.core.api import LennyAPI
+    from lenny.core.bulk_import import batches as b, importer
+    from lenny.core.exceptions import ItemExistsError
+    bid, rid = matched_row()
+    def slow_add(*a, **k):
+        set_state(bid, **{str(rid): dict(state="imported", claimed_at=None)})   # B won meanwhile
+        raise ItemExistsError("exists")
+    with patch.object(LennyAPI, "add", slow_add):
+        row = importer.import_row(bid, rid, MagicMock())
     assert row["state"] == "imported"
 
 

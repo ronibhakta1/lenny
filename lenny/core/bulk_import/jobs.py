@@ -6,6 +6,11 @@ sees one paced client. Results are saved to the rows as they arrive, so the page
 can poll the batch (or the job) and show partial progress, and a restart loses
 nothing: unmatched rows are still `queued` and a new job picks them up.
 
+Per process, on purpose: with several worker processes each runs its own job and
+pacer, so Open Library may see up to that many times the paced rate. Keep one
+worker for big imports. ponytail: a shared limiter needs a shared store; add it
+only if multi-worker deployments do large imports.
+
 Only rows the admin has not decided are touched: `decision == auto`, and the
 write itself re-checks that, so a choice made while a job is running wins.
 """

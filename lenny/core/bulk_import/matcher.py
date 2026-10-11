@@ -52,14 +52,17 @@ def _headers() -> dict:
     return ol_auth_headers()
 
 
-def _get(url: str, params: dict | None = None):
-    """GET with pacing and Retry-After backoff; returns the response (any status < 500 other than 429)."""
-    for attempt in range(RETRIES + 1):
+def _get(url: str, params: dict | None = None, retries: int = RETRIES):
+    """GET with pacing and Retry-After backoff; returns the response (any status other than 429).
+
+    Interactive calls (an admin waiting on a click) pass retries=0: fail at the
+    first 429 instead of sleeping up to a minute."""
+    for attempt in range(retries + 1):
         pacer.wait()
         resp = requests.get(url, params=params, headers=_headers(), timeout=OL_TIMEOUT)
         if resp.status_code != 429:
             return resp
-        if attempt == RETRIES:
+        if attempt == retries:
             break
         try:
             wait = float(resp.headers.get("Retry-After", 2 ** attempt))
@@ -69,9 +72,9 @@ def _get(url: str, params: dict | None = None):
     raise UpstreamError("Open Library is rate limiting this server; try again in a few minutes.")
 
 
-def _call(key, url, params=None):
+def _call(key, url, params=None, retries=RETRIES):
     def fetch():
-        resp = _get(url, params)
+        resp = _get(url, params, retries)
         resp.raise_for_status()
         return resp.json()
     try:
@@ -80,16 +83,16 @@ def _call(key, url, params=None):
         raise UpstreamError("Open Library is not answering; try again shortly.") from e
 
 
-def search(params: dict) -> list:
+def search(params: dict, retries: int = RETRIES) -> list:
     params = dict(params, fields=_FIELDS)
-    return _call(("search", tuple(sorted(params.items()))), SEARCH_URL, params).get("docs", [])
+    return _call(("search", tuple(sorted(params.items()))), SEARCH_URL, params, retries).get("docs", [])
 
 
 def lookup_edition(olid: int) -> dict | None:
     """The edition's basic facts, or None if Open Library has no such edition."""
     url = f"https://openlibrary.org/books/OL{int(olid)}M.json"
     def fetch():
-        resp = _get(url)
+        resp = _get(url, retries=0)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -214,20 +217,20 @@ def _usable(row: dict) -> bool:
     return bool(row.get("isbn") or row.get("title"))
 
 
-def _by_title(row: dict) -> list:
+def _by_title(row: dict, retries: int = RETRIES) -> list:
     params = {"title": row["title"][:200], "limit": MAX_CANDIDATES}
     if row.get("author"):
         params["author"] = row["author"][:200]
-    return rank(row, candidates_from(search(params)))
+    return rank(row, candidates_from(search(params, retries)))
 
 
 def candidates_for(row: dict) -> list:
     """Live, scored candidates for one row (what the "Change edition" list shows)."""
     cands = []
     if row.get("isbn"):
-        cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}))
+        cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}, retries=0))
     if row.get("title"):
-        cands += _by_title(row)
+        cands += _by_title(row, retries=0)
     merged = {c["olid"]: c for c in cands}
     return [public(c) for c in rank(row, list(merged.values()))]
 
