@@ -35,7 +35,7 @@ import anyio
 from fastapi import APIRouter, Body, File, HTTPException, Request, Response, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 
-from lenny.core.bulk_import import batches, importer, jobs, limits, matcher, staging
+from lenny.core.bulk_import import batches, import_job, importer, jobs, limits, matcher, staging
 from lenny.core.db import session as db
 from lenny.core.exceptions import (
     DatabaseUpdateError, FileTooLargeError, InvalidFileError, ItemExistsError, ItemNotFoundError, S3UploadError)
@@ -98,6 +98,7 @@ async def get_batch(request: Request, batch_id: int):
     _require_admin(request)
     summary = await _run(batches.get_summary, batch_id)
     summary["match"] = jobs.latest(batch_id)   # newest match job, or None (this process only)
+    summary["import"] = import_job.latest(batch_id)   # newest import job, or None
     return summary
 
 
@@ -197,6 +198,31 @@ async def start_match(request: Request, batch_id: int, body: dict = Body(default
     Returns the job; poll it, or the batch summary, for progress."""
     _require_admin(request)
     return await _run(jobs.start, batch_id, body.get("state") or batches.QUEUED, body.get("row_ids"))
+
+
+@router.post("/admin/import/batches/{batch_id}/import", status_code=status.HTTP_202_ACCEPTED)
+async def start_import(request: Request, batch_id: int, body: dict = Body(default={})):
+    """Import every ready row whose file is on the server (see PUT .../staged), in the
+    background; closing the page does not stop it. Body (optional): `retry_failed: true`
+    to also retry rows that failed. Returns the job `{id, status, total, done, imported,
+    duplicate, failed, waiting, error}`: `waiting` counts ready rows whose file has not
+    reached the server yet (they import on a later run). Poll the batch summary (`import`,
+    `counts`) or GET /admin/import/jobs/{id}. One active job per batch."""
+    _require_admin(request)
+    retry = body.get("retry_failed", False)
+    if not isinstance(retry, bool):
+        raise HTTPException(status_code=400, detail="'retry_failed' must be a boolean")
+    return await _run(import_job.start, batch_id, retry)
+
+
+@router.get("/admin/import/jobs/{job_id}")
+async def get_job(request: Request, job_id: str):
+    """Progress of a match or an import job. 404 after a restart; the batch summary says the same."""
+    _require_admin(request)
+    job = jobs.get(job_id) or import_job.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job.")
+    return job
 
 
 @router.get("/admin/import/match/{job_id}")
