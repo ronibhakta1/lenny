@@ -32,7 +32,10 @@ ADMIN_SALT = os.environ.get('ADMIN_SALT')
 LOG_LEVEL = os.environ.get('LENNY_LOG_LEVEL', 'info')
 SSL_CRT = os.environ.get('LENNY_SSL_CRT')
 SSL_KEY = os.environ.get('LENNY_SSL_KEY')
-LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0"}
+# Optional contact for Open Library's operators; sent in the User-Agent, which
+# is what earns the higher "identified client" rate limit.
+CONTACT_EMAIL = os.environ.get('LENNY_CONTACT_EMAIL') or None
+LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0" + (f" ({CONTACT_EMAIL})" if CONTACT_EMAIL else "")}
 OTP_SERVER = os.environ.get('OTP_SERVER', 'https://openlibrary.org')
 # Demo marketplace: same API as production BRIET, throwaway codes.
 BRIET_REDEEM_URL = os.environ.get('BRIET_REDEEM_URL', 'https://demo.market.briet.app/api/redeem-lenny')

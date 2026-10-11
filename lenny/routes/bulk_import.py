@@ -11,26 +11,35 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     GET    /admin/import/batches/{id}/rows
     PATCH  /admin/import/batches/{id}/rows/{row_id}
     POST   /admin/import/batches/{id}/actions
+    POST   /admin/import/batches/{id}/match           start matching (queued rows, or state=no_match to re-check)
+    GET    /admin/import/match/{job_id}               progress of a match job
+    GET    /admin/import/batches/{id}/rows/{row}/candidates
+    POST   /admin/import/batches/{id}/rows/{row}/file import one matched row (multipart `file`)
+    GET    /admin/import/editions/lookup?key=OL123M   check a pasted edition key
+    POST   /admin/import/check-duplicates             which editions are already in the library
+    GET    /admin/import/limits
 
 Every route is admin-only, same credential pair as the other /admin/ routes.
 Database work runs on a worker thread and drops that thread's session after,
 since the app's per-request cleanup only reaches the event loop's own thread.
 """
 
+import re
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Request, Response, status
+import anyio
+from fastapi import APIRouter, Body, File, HTTPException, Request, Response, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 
-from lenny.core.bulk_import import batches
+from lenny.core.bulk_import import batches, importer, jobs, limits, matcher
 from lenny.core.db import session as db
 from lenny.core.exceptions import ItemExistsError, ItemNotFoundError, S3UploadError, DatabaseUpdateError
-from lenny.routes.api import _require_admin
+from lenny.routes.api import _UPLOAD_LIMITER, _require_admin
 
 router = APIRouter()
 
 
-async def _run(fn, *args, **kwargs):
+async def _run(fn, *args, _limiter=None, **kwargs):
     def call():
         try:
             return fn(*args, **kwargs)
@@ -46,10 +55,14 @@ async def _run(fn, *args, **kwargs):
             raise HTTPException(status_code=404, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except matcher.UpstreamError as e:
+            raise HTTPException(status_code=502, detail=str(e))
         except (S3UploadError, DatabaseUpdateError):
             raise HTTPException(status_code=500, detail="Internal server error")
         finally:
             db.remove()
+    if _limiter is not None:
+        return await anyio.to_thread.run_sync(call, limiter=_limiter)
     return await run_in_threadpool(call)
 
 
@@ -137,3 +150,77 @@ async def post_action(request: Request, batch_id: int, body: dict = Body(...)):
         batches.bulk_update, batch_id, body.get("action"), state=state, q=body.get("q"),
         value=body.get("value"), skipped=skipped, auto_picked=auto_picked)
     return {"updated": updated}
+
+
+# ─── matching ────────────────────────────────────────────────────────────────
+
+@router.post("/admin/import/batches/{batch_id}/match", status_code=status.HTTP_202_ACCEPTED)
+async def start_match(request: Request, batch_id: int, body: dict = Body(default={})):
+    """Queue matching. Body (all optional): `state` queued (default) | no_match
+    (the Re-check button) | needs_review, and `row_ids` (at most 500) to narrow it.
+    Returns the job; poll it, or the batch summary, for progress."""
+    _require_admin(request)
+    return await _run(jobs.start, batch_id, body.get("state") or batches.QUEUED, body.get("row_ids"))
+
+
+@router.get("/admin/import/match/{job_id}")
+async def get_match(request: Request, job_id: str):
+    """Job progress. 404 after a restart or many newer jobs; the batch summary's
+    counts (queued vs matched) say the same thing and survive both."""
+    _require_admin(request)
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown match job.")
+    return job
+
+
+@router.get("/admin/import/batches/{batch_id}/rows/{row_id}/candidates")
+async def row_candidates(request: Request, batch_id: int, row_id: int):
+    _require_admin(request)
+    def work():
+        return {"candidates": matcher.candidates_for(batches.get_row(batch_id, row_id))}
+    return await _run(work)
+
+
+_KEY = re.compile(r"^(?:/?books/)?OL(\d{1,10})M$", re.I)
+
+
+@router.get("/admin/import/editions/lookup")
+async def lookup_edition(request: Request, key: str):
+    """Check an edition key the admin pasted (`OL123M` or `/books/OL123M`)."""
+    _require_admin(request)
+    m = _KEY.match(key.strip())
+    if not m:
+        raise HTTPException(status_code=400, detail="Not an Open Library edition key (like OL123456M).")
+    olid = int(m.group(1))
+    def work():
+        edition = matcher.lookup_edition(olid)
+        if edition is None:
+            raise batches.ImportRowNotFound(f"Open Library has no edition OL{olid}M.")
+        return dict(edition, in_library=bool(batches.existing_olids([olid])))
+    return await _run(work)
+
+
+@router.post("/admin/import/check-duplicates")
+async def check_duplicates(request: Request, body: dict = Body(...)):
+    _require_admin(request)
+    olids = body.get("olids")
+    if (not isinstance(olids, list) or len(olids) > limits.MAX_OLIDS_PER_CHECK
+            or not all(isinstance(o, int) and not isinstance(o, bool) and 0 < o < 2 ** 31 for o in olids)):
+        raise HTTPException(status_code=400, detail=f"'olids' must be a list of at most {limits.MAX_OLIDS_PER_CHECK} edition numbers")
+    return {"existing": await _run(batches.existing_olids, olids)}
+
+
+@router.get("/admin/import/limits")
+async def get_limits(request: Request):
+    _require_admin(request)
+    return await _run(limits.limits)
+
+
+@router.post("/admin/import/batches/{batch_id}/rows/{row_id}/file")
+async def import_file(request: Request, batch_id: int, row_id: int,
+                      file: UploadFile = File(..., description="The row's EPUB file")):
+    """Store one matched book. The row's `state` in the answer is the outcome:
+    imported, duplicate (already in the library), not_epub or failed."""
+    _require_admin(request)
+    return await _run(importer.import_row, batch_id, row_id, file, _limiter=_UPLOAD_LIMITER)

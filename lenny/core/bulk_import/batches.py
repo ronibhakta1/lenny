@@ -332,6 +332,28 @@ def list_rows(batch_id: int, state: str | None = None, q: str | None = None,
         db.rollback()
 
 
+def get_row(batch_id: int, row_id: int) -> dict:
+    try:
+        _get(batch_id)
+        row = db.query(ImportRow).filter(
+            ImportRow.batch_id == batch_id, ImportRow.id == row_id).one_or_none()
+        if row is None:
+            raise ImportRowNotFound(f"Row {row_id} not found.")
+        return _row_dict(row)
+    finally:
+        db.rollback()
+
+
+def existing_olids(olids: list) -> list:
+    """Which of these editions are already in the library."""
+    from lenny.core.models import Item
+    try:
+        return sorted(o for (o,) in db.query(Item.openlibrary_edition).filter(
+            Item.openlibrary_edition.in_(olids)).all()) if olids else []
+    finally:
+        db.rollback()
+
+
 def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
                olid: int | None = None, encrypted: bool | None = None) -> dict:
     """Apply one admin decision to one row.

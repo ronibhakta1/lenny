@@ -255,6 +255,24 @@ rows instead of duplicating them.
 - **PATCH /admin/import/batches/{id}/rows/{row_id}** — `{skipped?, olid?, encrypted?}`. A new `olid` on an already imported row moves the stored book to that edition; loans stay with it.
 - **POST /admin/import/batches/{id}/actions** — `{action: "skip"|"unskip"|"set_encrypted", value?, state?, q?, skipped?, auto_picked?}` applied to every row matching the filter. Returns `{updated}`.
 
+**Matching and importing** (same admin credentials). Matching runs on one background
+thread per process, paced to Open Library's limit (1 request/s, 3/s when
+`LENNY_CONTACT_EMAIL` is set), ISBNs fifty to a query. Results are saved to rows as
+they arrive, so polling `GET /admin/import/batches/{id}` shows partial progress
+and a restart loses nothing (unmatched rows stay `queued`). Rows the admin has
+decided (picked an edition) or skipped are never overwritten.
+
+- **POST /admin/import/batches/{id}/match** — `{state?: "queued"|"no_match"|"needs_review", row_ids?: [≤500]}` → `202` job `{id, status: queued|running|done|failed, total, done, error}`. `state: "no_match"` is the *Re-check* button. One active job per batch; asking again returns it.
+- **GET /admin/import/match/{job_id}** — job progress (`404` after a restart; use the batch summary then).
+- **GET /admin/import/batches/{id}/rows/{row_id}/candidates** — `{candidates: [{olid, title, authors[], year, publisher, language, isbn, score}]}`, best first, live from Open Library. `502` if Open Library is unreachable.
+- **GET /admin/import/editions/lookup?key=OL123M** — checks a pasted edition key: `{olid, title, publisher, year, isbn, in_library}`; `400` bad key, `404` unknown to Open Library.
+- **POST /admin/import/check-duplicates** — `{olids: [≤1000]}` → `{existing: [...]}` (already in the library).
+- **GET /admin/import/limits** — `{max_rows_per_call, isbn_batch, ol_requests_per_second, ol_identified, ol_logged_in, max_file_mb, upload_concurrency, retention_days, formats}`.
+- **POST /admin/import/batches/{id}/rows/{row_id}/file** — multipart `file`; imports a matched, unskipped row. The answer is the row; its `state` is the outcome: `imported`, `duplicate` (already in the library), `not_epub`, `failed`. Retrying is safe. Runs under the same bounded upload pool as other uploads.
+
+Row states: `queued → matched | needs_review | no_match`; `duplicate`; `importing → imported | failed | not_epub`.
+`matched` rows carry `olid` and `auto_picked`; `needs_review` rows have no `olid` until the admin picks one.
+
 ## Authentication
 Most endpoints require a valid session cookie. Use `/authenticate` to obtain one via email and OTP.
 
