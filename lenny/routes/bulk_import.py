@@ -17,6 +17,7 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     GET    /admin/import/match/{job_id}               progress of a match job
     GET    /admin/import/batches/{id}/rows/{row}/candidates
     POST   /admin/import/batches/{id}/rows/{row}/file import one matched row (multipart `file`)
+    POST   /admin/import/batches/{id}/rows/{row}/import import a row whose file was staged (no upload)
     GET    /admin/import/editions/lookup?key=OL123M   check a pasted edition key
     POST   /admin/import/check-duplicates             which editions are already in the library
     GET    /admin/import/limits
@@ -249,6 +250,15 @@ async def check_duplicates(request: Request, body: dict = Body(...)):
 async def get_limits(request: Request):
     _require_admin(request)
     return await _run(limits.limits)
+
+
+@router.post("/admin/import/batches/{batch_id}/rows/{row_id}/import")
+async def import_staged_file(request: Request, batch_id: int, row_id: int):
+    """Import a row whose file was sent with PUT .../staged: finished on the server,
+    nothing to upload. The row's `state` in the answer is the outcome, as for `/file`
+    (imported, duplicate, failed). `400` if the file was never staged."""
+    _require_admin(request)
+    return await _run(importer.import_staged, batch_id, row_id, _limiter=_UPLOAD_LIMITER)
 
 
 @router.post("/admin/import/batches/{batch_id}/rows/{row_id}/file")

@@ -801,6 +801,41 @@ class LennyAPI:
         finally:
             db.rollback()
 
+    @classmethod
+    def add_staged(cls, openlibrary_edition: int, source_key: str, encrypt: bool = False):
+        """Adds a book whose (already checked) EPUB is in the bucket under `source_key`:
+        a server-side copy to `{olid}.epub` plus the database row, no upload.
+
+        Same locking as `add`. A missing source raises ItemNotFoundError; a database
+        failure removes the copy it just made.
+        """
+        try:
+            lock_editions(openlibrary_edition)
+            if Item.exists(openlibrary_edition):
+                raise ItemExistsError(f"Item '{openlibrary_edition}' already exists.")
+            dest = f"{openlibrary_edition}.epub"
+            try:
+                s3.copy_object(Bucket=s3.BOOKSHELF_BUCKET,
+                               CopySource={'Bucket': s3.BOOKSHELF_BUCKET, 'Key': source_key}, Key=dest)
+            except ClientError as e:
+                if e.response.get('Error', {}).get('Code') in ('404', 'NoSuchKey', 'NotFound'):
+                    raise ItemNotFoundError("The uploaded copy of this book is gone.")
+                raise S3UploadError(f"Failed to copy the staged file: {e}")
+            try:
+                item = Item(openlibrary_edition=openlibrary_edition, encrypted=encrypt, formats=FormatEnum.EPUB)
+                db.add(item)
+                db.commit()
+                return item
+            except Exception as e:
+                db.rollback()
+                try:
+                    s3.delete_object(Bucket=s3.BOOKSHELF_BUCKET, Key=dest)
+                except ClientError:
+                    pass
+                raise DatabaseInsertError(f"Failed to add item to db: {str(e)}.")
+        finally:
+            db.rollback()
+
     UNSET = object()  # sentinel: "field not provided", distinct from JSON null
 
     @classmethod

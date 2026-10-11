@@ -15,12 +15,12 @@ older than CLAIM_TTL; before that a second attempt is refused as busy.
 import logging
 from datetime import timedelta
 
-from lenny.core.bulk_import import batches
+from lenny.core.bulk_import import batches, staging
 from lenny.core.bulk_import.batches import (
     FAILED, IMPORTED, IMPORTING, MATCHED, NOT_EPUB, DUPLICATE, ImportRow, ImportRowBusy, ImportRowNotFound,
     _aware, _now, _row_dict, _touch)
 from lenny.core.db import session as db
-from lenny.core.exceptions import FileTooLargeError, InvalidFileError, ItemExistsError, LennyAPIError
+from lenny.core.exceptions import FileTooLargeError, InvalidFileError, ItemExistsError, ItemNotFoundError, LennyAPIError
 from lenny.core.models import _xact_lock
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ CLAIM_TTL = timedelta(minutes=15)  # longer than any one upload should take
 _DROP = dict.fromkeys(("isbn", "title", "author", "language", "publisher", "year"))
 
 
-def _claim(batch_id: int, row_id: int):
+def _claim(batch_id: int, row_id: int, staged: bool = False):
     try:
         _xact_lock(f"import_batch:{batch_id}")
         batch = batches._get(batch_id)
@@ -42,6 +42,8 @@ def _claim(batch_id: int, row_id: int):
             return None, _row_dict(row)
         if row.state not in _CLAIMABLE or not row.olid or row.skipped:
             raise ValueError("Only a matched row that is not skipped can be imported.")
+        if staged and not row.staged:
+            raise ValueError("This book's file has not been uploaded yet.")
         if (row.state == IMPORTING and row.claimed_at
                 and _now() - _aware(row.claimed_at) < CLAIM_TTL):
             raise ImportRowBusy("This book is already being imported.")
@@ -87,3 +89,32 @@ def import_row(batch_id: int, row_id: int, upload) -> dict:
         logger.exception("import of row %s failed", row_id)
         return _finish(row_id, state=FAILED, error="Could not store this book; try again.")
     return _finish(row_id, state=IMPORTED, error=None, **_DROP)
+
+
+def import_staged(batch_id: int, row_id: int) -> dict:
+    """Import a row whose file is already on the server (staging.py): no upload,
+    no browser. Same outcomes as import_row. The staged copy is deleted once the
+    book is in (or turns out to be a duplicate); after a failure it stays for a retry."""
+    from lenny.core.api import LennyAPI  # lazy: api imports a lot
+    claim, done = _claim(batch_id, row_id, staged=True)
+    if done:
+        return done
+    olid, encrypted = claim
+    source = staging.key(batch_id, row_id)
+    try:
+        LennyAPI.add_staged(olid, source, encrypt=encrypted)
+    except ItemExistsError:
+        row = _finish(row_id, state=DUPLICATE, error=None, staged=False)
+        staging.drop(rows=[(batch_id, row_id)])
+        return row
+    except ItemNotFoundError:
+        return _finish(row_id, state=FAILED, staged=False, error="The uploaded copy is gone; send the file again.")
+    except LennyAPIError as e:
+        logger.warning("import of staged row %s failed: %s", row_id, e)
+        return _finish(row_id, state=FAILED, error="Could not store this book; try again.")
+    except Exception:
+        logger.exception("import of staged row %s failed", row_id)
+        return _finish(row_id, state=FAILED, error="Could not store this book; try again.")
+    row = _finish(row_id, state=IMPORTED, error=None, staged=False, **_DROP)
+    staging.drop(rows=[(batch_id, row_id)])
+    return row

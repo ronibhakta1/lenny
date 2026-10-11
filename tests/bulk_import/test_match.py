@@ -1082,3 +1082,159 @@ async def test_import_uploads_run_under_the_upload_limiter(app_module, admin_hea
              patch("lenny.routes.bulk_import._UPLOAD_LIMITER", anyio.CapacityLimiter(2)):
             out = await asyncio.gather(*[send(client, r) for r in range(6)])
     assert out == ["imported"] * 6 and peak[0] == 2
+
+
+# ─── importing a staged row: no upload, no browser ───────────────────────────
+
+@pytest.fixture
+def staged_s3():
+    """An object store that remembers copies and deletes, for the staged-import path."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.BOOKSHELF_BUCKET = "bookshelf"
+    store.objects = {}
+    def copy_object(Bucket, CopySource, Key):
+        from botocore.exceptions import ClientError
+        if CopySource["Key"] not in store.objects:
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "CopyObject")
+        store.objects[Key] = store.objects[CopySource["Key"]]
+    store.copy_object.side_effect = copy_object
+    store.delete_object.side_effect = lambda Bucket, Key: store.objects.pop(Key, None)
+    store.get_keys.side_effect = lambda prefix="", **k: [o for o in sorted(store.objects) if o.startswith(prefix)]
+    with patch("lenny.core.bulk_import.staging.s3", store), patch("lenny.core.api.s3", store):
+        yield store
+
+
+def staged_row(store, **extra):
+    from lenny.core.bulk_import import batches as b, staging
+    bid, rid = matched_row(**extra)
+    set_state(bid, **{str(rid): dict(staged=True)})
+    store.objects[staging.key(bid, rid)] = b"epub"
+    return bid, rid
+
+
+def test_a_staged_book_imports_with_no_upload_and_the_copy_is_cleaned_up(staged_s3, db_items):
+    from lenny.core.bulk_import import importer, staging
+    from lenny.core.models import Item
+    bid, rid = staged_row(staged_s3, encrypted=True, match_title="Dune")
+    row = importer.import_staged(bid, rid)
+    assert row["state"] == "imported" and row["staged"] is False and row["match_title"] == "Dune" and row["title"] is None
+    assert "101.epub" in staged_s3.objects and staging.key(bid, rid) not in staged_s3.objects
+    item = db_items.query(Item).filter(Item.openlibrary_edition == 101).one()
+    assert item.encrypted is True
+    assert importer.import_staged(bid, rid)["state"] == "imported"           # retry is harmless
+
+
+def test_a_staged_book_already_in_the_library_is_a_duplicate_and_the_copy_goes(staged_s3, db_items):
+    from lenny.core.bulk_import import importer, staging
+    from lenny.core.models import FormatEnum, Item
+    db_items.add(Item(openlibrary_edition=101, formats=FormatEnum.EPUB)); db_items.commit()
+    bid, rid = staged_row(staged_s3)
+    row = importer.import_staged(bid, rid)
+    assert row["state"] == "duplicate" and row["staged"] is False and staging.key(bid, rid) not in staged_s3.objects
+
+
+def test_a_vanished_staged_copy_asks_for_the_file_again(staged_s3, db_items):
+    from lenny.core.bulk_import import importer, staging
+    bid, rid = staged_row(staged_s3)
+    staged_s3.objects.pop(staging.key(bid, rid))
+    row = importer.import_staged(bid, rid)
+    assert row["state"] == "failed" and row["staged"] is False and "send the file again" in row["error"]
+
+
+def test_a_store_failure_keeps_the_staged_copy_for_a_retry(staged_s3, db_items):
+    from botocore.exceptions import ClientError
+    from lenny.core.bulk_import import importer, staging
+    bid, rid = staged_row(staged_s3)
+    good = staged_s3.copy_object.side_effect
+    staged_s3.copy_object.side_effect = ClientError({"Error": {"Code": "InternalError"}}, "CopyObject")
+    row = importer.import_staged(bid, rid)
+    assert row["state"] == "failed" and row["staged"] is True and staging.key(bid, rid) in staged_s3.objects
+    staged_s3.copy_object.side_effect = good
+    assert importer.import_staged(bid, rid)["state"] == "imported"
+
+
+def test_a_database_failure_removes_the_copy_it_made(staged_s3, db_items):
+    from lenny.core.bulk_import import importer
+    from lenny.core import api
+    from lenny.core.models import Item
+    bid, rid = staged_row(staged_s3)
+    real_commit = api.db.commit
+    def commit(*a, **k):
+        if any(isinstance(o, Item) for o in api.db.new):          # only the new library row fails
+            raise RuntimeError("db down")
+        return real_commit(*a, **k)
+    with patch.object(api.db, "commit", commit):
+        row = importer.import_staged(bid, rid)
+    assert row["state"] == "failed" and "101.epub" not in staged_s3.objects
+
+
+def test_only_staged_matched_rows_can_be_imported_that_way(staged_s3, db_items):
+    from lenny.core.bulk_import import importer
+    bid, rid = matched_row()                                   # matched but its file never sent
+    with pytest.raises(ValueError, match="not been uploaded"):
+        importer.import_staged(bid, rid)
+    set_state(bid, **{str(rid): dict(staged=True, skipped=True)})
+    with pytest.raises(ValueError):
+        importer.import_staged(bid, rid)
+
+
+@pytest.fixture
+def db_items():
+    from lenny.core.cache import CacheEntry
+    from lenny.core.db import Base, engine, session
+    from lenny.core.models import Item
+    Base.metadata.create_all(engine)
+    session.remove()
+    yield session
+    session.rollback()
+    session.query(Item).delete(); session.query(CacheEntry).delete(); session.commit()
+    session.remove()
+
+
+def test_staged_import_over_http_and_it_never_needs_the_browser_again(client, staged_s3, db_items):
+    import io
+    from lenny.core.bulk_import import staging
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=3, mtime=1, title="Dune")]})
+    rid = client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+    assert client.post(f"{API}/{bid}/rows/{rid}/import").status_code == 400          # nothing staged, not matched
+    client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 101})
+    assert client.post(f"{API}/{bid}/rows/{rid}/import").status_code == 400          # matched, file not sent
+    epub = __import__("tests.bulk_import.test_batches", fromlist=["epub_upload"]).epub_upload().file.read()
+    staged_s3.upload_fileobj.side_effect = lambda f, bucket, key, **k: staged_s3.objects.__setitem__(key, f.read())
+    assert client.put(f"{API}/{bid}/rows/{rid}/staged", files={"file": ("a.epub", io.BytesIO(epub))}).json()["staged"] is True
+    r = client.post(f"{API}/{bid}/rows/{rid}/import")                                # no file, no browser
+    assert r.status_code == 200 and r.json()["state"] == "imported"
+    assert staged_s3.objects.get("101.epub") == epub and staging.key(bid, rid) not in staged_s3.objects
+
+
+def test_the_staged_import_route_requires_admin(app_module):
+    from fastapi.testclient import TestClient
+    assert TestClient(app_module).post(f"{API}/1/rows/1/import").status_code == 403
+
+
+def test_two_staged_copies_of_one_edition_import_once(pg, staged_s3):
+    """Two rows (two copies of the same book) finish at the same instant; the edition lock lets one win."""
+    from lenny.core.bulk_import import batches as b, importer, staging
+    from lenny.core.db import session
+    from lenny.core.models import Item
+    bid = b.create_batch()["id"]
+    b.upsert_rows(bid, rows(6, title="Dune"))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    set_state(bid, **{str(i): dict(state="matched", olid=101, staged=True) for i in ids})
+    for i in ids:
+        staged_s3.objects[staging.key(bid, i)] = b"epub"
+    session.remove()
+    out, barrier = [], threading.Barrier(len(ids))
+    def worker(rid):
+        try:
+            barrier.wait()
+            out.append(importer.import_staged(bid, rid)["state"])
+        finally:
+            session.remove()
+    ts = [threading.Thread(target=worker, args=(i,)) for i in ids]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert sorted(out) == ["duplicate"] * 5 + ["imported"]
+    assert session.query(Item).filter(Item.openlibrary_edition == 101).count() == 1
+    assert [k for k in staged_s3.objects if k.startswith("import-staging/")] == []
