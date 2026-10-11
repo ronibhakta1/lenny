@@ -1026,9 +1026,12 @@ def test_choosing_another_edition_replaces_what_the_row_shows():
     # a choice without facts clears the old ones rather than leaving the wrong title behind
     out = b.update_row(bid, rid, olid=11)
     assert out["olid"] == 11 and out["match_title"] is None and out["match_author"] is None and out["match_year"] is None
-    # an unchanged olid (just toggling encryption) keeps what is shown
-    out = b.update_row(bid, rid, olid=11, match={"title": "T"})
-    assert out["match_title"] is None
+    # the same edition sent again fills in details an older choice never stored (a row chosen before they were kept)
+    out = b.update_row(bid, rid, olid=11, match={"title": "Filled In", "author": "A", "year": 2026})
+    assert (out["match_title"], out["match_author"], out["match_year"], out["decision"]) == ("Filled In", "A", 2026, "user")
+    # but it never overwrites details the row already has
+    out = b.update_row(bid, rid, olid=11, match={"title": "Different"})
+    assert out["match_title"] == "Filled In"
 
 
 def test_other_changes_to_a_row_keep_its_match_details():

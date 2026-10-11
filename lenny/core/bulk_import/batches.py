@@ -439,6 +439,14 @@ def existing_olids(olids: list) -> list:
         db.rollback()
 
 
+def _set_match(row: ImportRow, match: dict | None) -> None:
+    match = match or {}
+    row.match_title = (match.get("title") or "")[:_MAX["title"]] or None
+    row.match_author = (match.get("author") or "")[:_MAX["author"]] or None
+    year = match.get("year")
+    row.match_year = year if isinstance(year, int) and not isinstance(year, bool) and 0 < year < 10000 else None
+
+
 def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
                olid: int | None = None, encrypted: bool | None = None, match: dict | None = None) -> dict:
     """Apply one admin decision to one row.
@@ -482,11 +490,9 @@ def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
             row.olid, row.decision, row.auto_picked, row.error = olid, USER, False, None
             # The row must show the edition that was chosen, not the one it was matched to first.
             row.confidence = 0
-            match = match or {}
-            row.match_title = (match.get("title") or "")[:_MAX["title"]] or None
-            row.match_author = (match.get("author") or "")[:_MAX["author"]] or None
-            year = match.get("year")
-            row.match_year = year if isinstance(year, int) and not isinstance(year, bool) and 0 < year < 10000 else None
+            _set_match(row, match)
+        elif olid is not None and match and row.match_title is None:
+            _set_match(row, match)    # same edition re-sent: fills in details an older choice never stored
         if skipped is not None:
             row.skipped = skipped
         if encrypted is not None:
