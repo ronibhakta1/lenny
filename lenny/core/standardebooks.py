@@ -20,6 +20,7 @@
 
 import logging
 import re
+from urllib.parse import quote
 from io import BytesIO
 from typing import Optional
 
@@ -69,6 +70,21 @@ class StandardEbooks:
         return f"https://archive.org/download/{name}/{name}.epub"
 
     @classmethod
+    def find_item_epub_url(cls, identifier: str) -> Optional[str]:
+        """The EPUB's real address inside the book's own archive.org item, for items where it
+        is not named after the item (Standard Ebooks "_advanced.epub" files). One metadata call."""
+        name = identifier.replace("/", "_")
+        try:
+            resp = httpx.get(f"https://archive.org/metadata/{name}", timeout=cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
+            resp.raise_for_status()
+            files = [f["name"] for f in resp.json().get("files", []) if str(f.get("name", "")).lower().endswith(".epub")]
+        except (httpx.HTTPError, ValueError, KeyError):
+            return None
+        # Prefer the file called after the item, then the "advanced" one, then any original EPUB.
+        files.sort(key=lambda n: (n != f"{name}.epub", not n.endswith("_advanced.epub"), n))
+        return f"https://archive.org/download/{name}/{quote(files[0])}" if files else None
+
+    @classmethod
     def verify_download(cls, content: Optional[BytesIO]) -> Optional[BytesIO]:
         return verify_epub(content)
 
@@ -79,6 +95,8 @@ class StandardEbooks:
             epub = download_epub(url, timeout=timeout or cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
             if epub is not None:
                 return epub
+        if (url := cls.find_item_epub_url(identifier)):       # the item exists but names its file differently
+            return download_epub(url, timeout=timeout or cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
         return None
 
 

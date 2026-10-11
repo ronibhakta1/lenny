@@ -448,7 +448,8 @@ def test_standalone_items_are_listed_with_one_search():
     resp = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: body})()
     with patch("lenny.core.preload.catalog.httpx.get", return_value=resp) as get:
         assert catalog._archive_item_names() == {"a_b"}
-    assert get.call_count == 1 and "Standard eBooks" in get.call_args.kwargs["params"]["q"]
+    q = get.call_args.kwargs["params"]["q"]
+    assert get.call_count == 1 and "Standard eBooks" in q and "subject:standardebooks" in q       # both ways items are tagged
 
 
 def test_a_book_missing_from_the_preload_item_is_downloaded_from_its_own_item():
@@ -514,3 +515,32 @@ def test_a_page_that_fails_once_is_retried():
          patch("lenny.core.preload.catalog.time.sleep"):
         with pytest.raises(httpx.HTTPError):
             catalog._fetch_records()                                         # three tries, then the error stands
+
+
+def test_an_item_that_names_its_epub_differently_is_found_through_its_metadata():
+    import io
+    from lenny.core.standardebooks import StandardEbooks
+    epub = io.BytesIO(b"PK\x03\x04" + b"0" * 50)
+    meta = {"files": [{"name": "x_archive.torrent"}, {"name": "gustave-le-bon_the-crowd_advanced.epub"}, {"name": "cover.jpg"}]}
+    resp = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: meta})()
+    urls = []
+    def fake_download(url, timeout=None, headers=None):
+        urls.append(url)
+        return epub if url.endswith("gustave-le-bon_the-crowd_advanced.epub") else None
+    with patch("lenny.core.standardebooks.download_epub", fake_download), patch("lenny.core.standardebooks.httpx.get", return_value=resp) as get:
+        assert StandardEbooks.download("gustave-le-bon/the-crowd") is epub
+    assert len(urls) == 3 and get.call_args.args[0] == "https://archive.org/metadata/gustave-le-bon_the-crowd"
+    assert StandardEbooks.find_item_epub_url.__func__ is not None
+
+
+def test_the_metadata_lookup_prefers_the_plain_epub_and_survives_errors():
+    import httpx
+    from lenny.core.standardebooks import StandardEbooks
+    meta = {"files": [{"name": "a_b_advanced.epub"}, {"name": "a_b.epub"}, {"name": "A_B_other.EPUB"}]}
+    resp = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: meta})()
+    with patch("lenny.core.standardebooks.httpx.get", return_value=resp):
+        assert StandardEbooks.find_item_epub_url("a/b") == "https://archive.org/download/a_b/a_b.epub"
+    with patch("lenny.core.standardebooks.httpx.get", return_value=type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"files": []}})()):
+        assert StandardEbooks.find_item_epub_url("a/b") is None
+    with patch("lenny.core.standardebooks.httpx.get", side_effect=httpx.ConnectError("down")):
+        assert StandardEbooks.find_item_epub_url("a/b") is None

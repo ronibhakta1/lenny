@@ -62,7 +62,7 @@ def _archive_files() -> dict:
 
 
 ARCHIVE_SEARCH = "https://archive.org/advancedsearch.php"
-_ITEMS_QUERY = '(subject:"Standard eBooks" OR collection:standardebooks) AND mediatype:texts'
+_ITEMS_QUERY = '(subject:"Standard eBooks" OR subject:standardebooks OR collection:standardebooks) AND mediatype:texts'
 
 
 def _archive_item_names() -> set:
