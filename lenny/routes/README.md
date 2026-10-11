@@ -293,6 +293,10 @@ actually downloadable (190 books, about 195 MB), not everything Open Library lis
 
 `make preload items=N` still works and shares the same downloader.
 
+### Library Links
+
+- **GET /admin/library/links** — copyable links for sharing this library, admin only: `opds_feed`, `opds_search` (replace `{query}`), `opds_book_template` (replace `{olid}` with a book's edition number), `reader_url` (the feed opened in Internet Archive's Book Server, reader.archive.org), `base_url`, `source` (`configured` from `LENNY_PUBLIC_URL`, or `request`: the address the admin used) and `is_public`. `is_public: false` means the address only works on this machine or network (localhost, a private IP, `.local`): set `LENNY_PUBLIC_URL` to your domain or tunnel for links that work for others.
+
 ## Authentication
 Most endpoints require a valid session cookie. Use `/authenticate` to obtain one via email and OTP.
 
