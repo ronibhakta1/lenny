@@ -244,6 +244,9 @@ class LennyAPI:
     DEFAULT_LIMIT = 50
     OPDS_TITLE = "Lenny Catalog"
     MAX_FILE_SIZE = 100 * 1024 * 1024
+    # Uploads running at once per worker process. Each ties up a thread and a database connection,
+    # so keep it small: a Pi has few cores and patrons share them.
+    UPLOAD_CONCURRENCY = 2
     # EPUB only. FormatEnum keeps its PDF members so existing rows still load.
     VALID_EXTS = {
         ".epub": FormatEnum.EPUB

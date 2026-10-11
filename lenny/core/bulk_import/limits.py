@@ -2,8 +2,9 @@
 
 The page reads these numbers (`GET /admin/import/limits`) instead of hard-coding
 them, and the matcher paces itself by them. Open Library allows 1 request a
-second to anonymous clients and 3 to identified ones (a User-Agent with contact
-details; a logged-in account may be treated better still, which is unverified).
+second to anonymous clients and 3 to identified ones. Lenny identifies itself with the
+Open Library account the admin signed in with (the same login `ol_auth_headers()` sends on every Open
+Library request), so a signed-in Lenny is paced at 3 a second and an anonymous one at 1.
 """
 
 import threading
@@ -18,9 +19,9 @@ MAX_OLIDS_PER_CHECK = 1000
 
 
 def identified() -> bool:
+    """True when an Open Library account is signed in (OL_S3_ACCESS_KEY / OL_S3_SECRET_KEY)."""
     from lenny import configs
-    # Only the documented route counts; a login is sent too but its effect on the limit is unverified.
-    return bool(configs.CONTACT_EMAIL)
+    return bool(configs.OL_S3_ACCESS_KEY and configs.OL_S3_SECRET_KEY)
 
 
 def ol_rps() -> float:
@@ -54,9 +55,9 @@ def limits() -> dict:
         "isbn_batch": ISBN_BATCH,
         "ol_requests_per_second": rps,
         "ol_identified": identified(),
-        "ol_logged_in": bool(configs.OL_S3_ACCESS_KEY and configs.OL_S3_SECRET_KEY),
+        "ol_logged_in": identified(),
         "max_file_mb": LennyAPI.MAX_FILE_SIZE // (1024 * 1024),
-        "upload_concurrency": configs.UPLOAD_CONCURRENCY,
+        "upload_concurrency": LennyAPI.UPLOAD_CONCURRENCY,
         "retention_days": batches.RETENTION.days,
         "formats": ["epub"],
     }

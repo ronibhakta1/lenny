@@ -433,9 +433,9 @@ def test_the_ladder_runs_several_searches_at_once():
 def test_workers_follow_the_allowed_rate():
     from lenny import configs
     from lenny.core.bulk_import import matcher as m
-    assert m._workers() == 2
-    with patch.object(configs, "CONTACT_EMAIL", "me@example.org"):
-        assert m._workers() == 4
+    assert m._workers() == 2                                                    # nobody signed in to Open Library
+    with patch.object(configs, "OL_S3_ACCESS_KEY", "ak"), patch.object(configs, "OL_S3_SECRET_KEY", "sk"):
+        assert m._workers() == 4                                                # signed in: paced at 3 a second
 
 
 def test_an_upstream_failure_in_a_worker_stops_the_job_cleanly():
@@ -619,15 +619,19 @@ def test_open_library_down_is_an_upstream_error_and_trips_the_breaker(fresh_guar
         assert get.call_count == 3          # the 4th call never left
 
 
-def test_requests_identify_the_server_and_log_in_when_configured(fresh_guard):
+def test_requests_send_the_open_library_login_lenny_already_has(fresh_guard):
+    """The matcher reuses the account the admin signed in with (ol_auth_headers), no setting of its own."""
     from lenny import configs
     from lenny.core.bulk_import import matcher as m
     with patch("requests.get", return_value=resp()) as get, \
-         patch.object(configs, "OL_S3_ACCESS_KEY", "ak"), patch.object(configs, "OL_S3_SECRET_KEY", "sk"), \
-         patch.dict(configs.LENNY_HTTP_HEADERS, {"User-Agent": "LennyImportBot/1.0 (me@example.org)"}):
+         patch.object(configs, "OL_S3_ACCESS_KEY", "ak"), patch.object(configs, "OL_S3_SECRET_KEY", "sk"):
         m.search({"title": "x"})
     headers = get.call_args.kwargs["headers"]
-    assert "me@example.org" in headers["User-Agent"] and headers["Authorization"] == "LOW ak:sk"
+    assert headers["User-Agent"] == configs.LENNY_HTTP_HEADERS["User-Agent"] and headers["Authorization"] == "LOW ak:sk"
+    with patch("requests.get", return_value=resp()) as get, \
+         patch.object(configs, "OL_S3_ACCESS_KEY", None), patch.object(configs, "OL_S3_SECRET_KEY", None):
+        m.search({"title": "y"})
+    assert "Authorization" not in get.call_args.kwargs["headers"]                      # signed out: anonymous
 
 
 def test_interactive_calls_do_not_wait_out_a_429(fresh_guard):
@@ -678,11 +682,12 @@ def test_limits_report_the_servers_numbers():
     from lenny import configs
     from lenny.core.bulk_import import limits
     anon = limits.limits()
-    assert anon["ol_requests_per_second"] == 1.0 and anon["ol_identified"] is False
+    assert anon["ol_requests_per_second"] == 1.0 and anon["ol_identified"] is False and anon["ol_logged_in"] is False
     assert anon["formats"] == ["epub"] and anon["retention_days"] == 30 and anon["isbn_batch"] == 50
-    assert anon["max_file_mb"] == 100 and anon["max_rows_per_call"] == 500
-    with patch.object(configs, "CONTACT_EMAIL", "me@example.org"):
-        assert limits.limits()["ol_requests_per_second"] == 3.0
+    assert anon["max_file_mb"] == 100 and anon["max_rows_per_call"] == 500 and anon["upload_concurrency"] == 2
+    with patch.object(configs, "OL_S3_ACCESS_KEY", "ak"), patch.object(configs, "OL_S3_SECRET_KEY", "sk"):
+        signed_in = limits.limits()                                             # the account Lenny already signs in with
+    assert signed_in["ol_requests_per_second"] == 3.0 and signed_in["ol_identified"] is True and signed_in["ol_logged_in"] is True
 
 
 # ─── the background job ──────────────────────────────────────────────────────

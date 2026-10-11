@@ -20,9 +20,6 @@ PROXY = os.environ.get('LENNY_PROXY', '')
 HOST = os.environ.get('LENNY_HOST', 'localhost')
 PORT = int(os.environ.get('LENNY_PORT', 8080))
 WORKERS = int(os.environ.get('LENNY_WORKERS', 1 if TESTING else 3))
-# Uploads running at once per worker process. Each ties up a thread and a
-# database connection, so keep it small: a Pi has few cores and patrons share them.
-UPLOAD_CONCURRENCY = max(1, int(os.environ.get('LENNY_UPLOAD_CONCURRENCY', 2)))
 DEBUG = bool(int(os.environ.get('LENNY_DEBUG', 0)))
 SEED = os.environ.get('LENNY_SEED')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
@@ -32,10 +29,7 @@ ADMIN_SALT = os.environ.get('ADMIN_SALT')
 LOG_LEVEL = os.environ.get('LENNY_LOG_LEVEL', 'info')
 SSL_CRT = os.environ.get('LENNY_SSL_CRT')
 SSL_KEY = os.environ.get('LENNY_SSL_KEY')
-# Optional contact for Open Library's operators; sent in the User-Agent, which
-# is what earns the higher "identified client" rate limit.
-CONTACT_EMAIL = os.environ.get('LENNY_CONTACT_EMAIL') or None
-LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0" + (f" ({CONTACT_EMAIL})" if CONTACT_EMAIL else "")}
+LENNY_HTTP_HEADERS = {"User-Agent": "LennyImportBot/1.0"}
 OTP_SERVER = os.environ.get('OTP_SERVER', 'https://openlibrary.org')
 # Demo marketplace: same API as production BRIET, throwaway codes.
 BRIET_REDEEM_URL = os.environ.get('BRIET_REDEEM_URL', 'https://demo.market.briet.app/api/redeem-lenny')

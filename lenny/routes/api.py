@@ -90,7 +90,7 @@ from urllib.parse import quote
 # Uploads write to S3 and Postgres synchronously. They run on their own small
 # pool, not the shared one every other sync endpoint uses, so a burst of
 # uploads cannot take the threads patrons need to read or borrow.
-_UPLOAD_LIMITER = anyio.CapacityLimiter(configs.UPLOAD_CONCURRENCY)
+_UPLOAD_LIMITER = anyio.CapacityLimiter(LennyAPI.UPLOAD_CONCURRENCY)
 
 
 def _run_upload(fn, *args, **kwargs):

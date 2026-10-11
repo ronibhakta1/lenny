@@ -511,8 +511,6 @@ On machines with limited RAM, tune these in your `.env` before running `make upd
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LENNY_WORKERS` | `2` | uvicorn worker processes — reduce to `1` on very small machines |
-| `LENNY_UPLOAD_CONCURRENCY` | `2` | uploads running at once per worker process; they use their own small thread pool so patrons keep their threads. Use `1` on a very small machine |
-| `LENNY_CONTACT_EMAIL` | *(unset)* | contact address added to the User-Agent sent to Open Library. Open Library allows identified clients 3 requests/s instead of 1, so bulk matching is three times faster with it set |
 | `LENNY_ADMIN_NODE_HEAP_MB` | `384` | Node.js heap cap for the admin UI — raise on machines with 8+ GB RAM |
 | `LENNY_OL_TIMEOUT` | `8` | seconds to wait for Open Library before giving up on one call. After 3 failures in a row Lenny stops calling for 30s and serves the last good page it has |
 
