@@ -80,8 +80,8 @@ def test_the_same_file_from_another_operating_system_is_the_same_row():
     bid = new_batch()
     mac = dict(path="Bücher/Café.epub".replace("ü", "u\u0308").replace("é", "e\u0301"), size=5, mtime=7)
     win = dict(path="B\u00fccher\\Caf\u00e9.epub", size=5, mtime=7)
-    assert b.upsert_rows(bid, [mac]) == {"created": 1, "existing": 0}
-    assert b.upsert_rows(bid, [win]) == {"created": 0, "existing": 1}
+    assert b.upsert_rows(bid, [mac]) == {"created": 1, "existing": 0, "existing_states": {}}
+    assert b.upsert_rows(bid, [win]) == {"created": 0, "existing": 1, "existing_states": {"queued": 1}}
     assert b.list_rows(bid)["rows"][0]["path"] == "B\u00fccher/Caf\u00e9.epub"
 
 
@@ -130,10 +130,10 @@ def test_delete_batch_removes_its_rows_only():
 def test_upsert_is_idempotent_and_never_resets_a_decision():
     from lenny.core.bulk_import import batches as b
     bid = new_batch()
-    assert b.upsert_rows(bid, rows(5)) == {"created": 5, "existing": 0}
+    assert b.upsert_rows(bid, rows(5)) == {"created": 5, "existing": 0, "existing_states": {}}
     row_id = b.list_rows(bid)["rows"][0]["id"]
     b.update_row(bid, row_id, skipped=True, encrypted=True)
-    assert b.upsert_rows(bid, rows(5)) == {"created": 0, "existing": 5}
+    assert b.upsert_rows(bid, rows(5)) == {"created": 0, "existing": 5, "existing_states": {"queued": 5}}
     first = b.list_rows(bid)["rows"][0]
     assert first["skipped"] is True and first["encrypted"] is True
     assert b.get_summary(bid)["total"] == 5
@@ -142,7 +142,7 @@ def test_upsert_is_idempotent_and_never_resets_a_decision():
 def test_the_same_row_twice_in_one_call_is_one_row():
     from lenny.core.bulk_import import batches as b
     bid = new_batch()
-    assert b.upsert_rows(bid, rows(1) + rows(1)) == {"created": 1, "existing": 0}
+    assert b.upsert_rows(bid, rows(1) + rows(1)) == {"created": 1, "existing": 0, "existing_states": {}}
 
 
 def test_a_resent_row_refreshes_metadata_until_it_is_imported():
@@ -465,7 +465,7 @@ def test_a_removed_file_dropped_again_is_a_fresh_row():
     old = b.list_rows(bid)["rows"][0]["id"]
     set_state(bid, **{str(old): dict(state="matched", olid=5, decision="user")})
     b.delete_row(bid, old)
-    assert b.upsert_rows(bid, rows(1, title="Dune")) == {"created": 1, "existing": 0}
+    assert b.upsert_rows(bid, rows(1, title="Dune")) == {"created": 1, "existing": 0, "existing_states": {}}
     new = b.list_rows(bid)["rows"][0]
     assert new["state"] == "queued" and new["olid"] is None and new["decision"] == "auto"   # nothing carried over
 
@@ -530,7 +530,7 @@ def test_the_whole_flow_over_http(client):
     assert client.get(API).json()["batches"][0]["id"] == bid
 
     put = client.put(f"{API}/{bid}/rows", json={"rows": rows(3, title="Dune")})
-    assert put.json() == {"created": 3, "existing": 0}
+    assert put.json() == {"created": 3, "existing": 0, "existing_states": {}}
     listing = client.get(f"{API}/{bid}/rows", params={"q": "dune", "limit": 2}).json()
     assert len(listing["rows"]) == 2 and listing["next_cursor"] == listing["rows"][-1]["id"]
     rid = listing["rows"][0]["id"]
@@ -900,3 +900,15 @@ def test_remove_by_ids_over_http(client):
     assert client.get(f"{API}/{bid}").json()["total"] == 2
     assert client.post(f"{API}/{bid}/actions", json={"action": "remove", "row_ids": []}).status_code == 400
     assert client.post(f"{API}/{bid}/actions", json={"action": "skip", "row_ids": ids}).status_code == 400
+
+
+def test_dropping_the_same_folder_again_says_what_was_already_there():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(6))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    set_state(bid, **{str(i): dict(state="imported", olid=100 + i) for i in ids[:3]},
+              **{str(i): dict(state="matched", olid=200 + i) for i in ids[3:5]})
+    again = b.upsert_rows(bid, rows(8))                                          # the same six plus two new files
+    assert again == {"created": 2, "existing": 6,
+                     "existing_states": {"imported": 3, "matched": 2, "queued": 1}}
+    assert all(r["state"] == "imported" for r in b.list_rows(bid, state="imported")["rows"])   # nothing was reset

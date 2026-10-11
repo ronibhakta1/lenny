@@ -311,7 +311,12 @@ def upsert_rows(batch_id: int, raw_rows: list) -> dict:
             db.bulk_update_mappings(ImportRow, updates)
         _touch(batch)
         db.commit()
-        return {"created": len(new), "existing": len(existing)}
+        # `existing_states` says what the rows already in the list are (imported, matched, ...), so
+        # the page can tell someone who drops the same folder again that nothing new was added.
+        states = {}
+        for _, state in existing.values():
+            states[state] = states.get(state, 0) + 1
+        return {"created": len(new), "existing": len(existing), "existing_states": states}
     finally:
         db.rollback()
 
