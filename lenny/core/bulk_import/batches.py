@@ -450,8 +450,17 @@ def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
 
 def bulk_update(batch_id: int, action: str, state: str | None = None,
                 q: str | None = None, value: bool | None = None,
-                skipped: bool | None = None, auto_picked: bool | None = None) -> int:
-    """Apply an action to every row matching a filter; never takes a list of ids."""
+                skipped: bool | None = None, auto_picked: bool | None = None,
+                row_ids: list | None = None) -> int:
+    """Apply an action to every row matching a filter. Only `remove` also takes a short
+    list of row ids (the rows a person ticked), at most MAX_ROWS_PER_CALL, combined with
+    any filter; every other action works on filters alone."""
+    if row_ids is not None:
+        if action != "remove":
+            raise ValueError("'row_ids' is only for the remove action")
+        if (not isinstance(row_ids, list) or not row_ids or len(row_ids) > MAX_ROWS_PER_CALL
+                or not all(isinstance(i, int) and not isinstance(i, bool) for i in row_ids)):
+            raise ValueError(f"'row_ids' must be a list of 1-{MAX_ROWS_PER_CALL} row ids")
     if action == "set_encrypted":
         if not isinstance(value, bool):
             raise ValueError("'value' must be a boolean for set_encrypted")
@@ -466,6 +475,8 @@ def bulk_update(batch_id: int, action: str, state: str | None = None,
         _xact_lock(f"import_batch:{batch_id}")
         batch = _get(batch_id)
         query = _filtered(batch_id, state, q, skipped, auto_picked)
+        if row_ids is not None:
+            query = query.filter(ImportRow.id.in_(row_ids))
         if action == "remove":
             # A row being uploaded right now stays; imported ones go (the book stays in the library).
             query = query.filter(ImportRow.state != IMPORTING)
