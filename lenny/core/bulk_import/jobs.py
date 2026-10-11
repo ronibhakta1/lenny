@@ -59,6 +59,7 @@ def start(batch_id: int, state: str = QUEUED, row_ids: list | None = None) -> di
         if (not isinstance(row_ids, list) or len(row_ids) > batches.MAX_ROWS_PER_CALL
                 or not all(isinstance(i, int) and not isinstance(i, bool) for i in row_ids)):
             raise ValueError(f"'row_ids' must be a list of at most {batches.MAX_ROWS_PER_CALL} row ids")
+    batches.reconcile(batch_id)          # first drop stale "already in the library" rows for books since deleted
     try:
         batches._get(batch_id)
         total = _targets(batch_id, (state,), row_ids).count()

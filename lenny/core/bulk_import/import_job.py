@@ -42,6 +42,7 @@ def _ready(batch_id: int, retry_failed: bool):
 
 def start(batch_id: int, retry_failed: bool = False) -> dict:
     """Queue the import. One active job per batch: asking again returns it."""
+    batches.reconcile(batch_id)          # books deleted since they were matched as duplicates are importable again
     try:
         batches._get(batch_id)
         total = _ready(batch_id, retry_failed).filter(ImportRow.staged.is_(True)).count()

@@ -208,3 +208,29 @@ def test_two_batches_importing_one_edition_at_once_import_it_once(pg, staged_s3)
     [t.start() for t in ts]; [t.join() for t in ts]
     assert sum(j["imported"] for j in results) == 1 and sum(j["duplicate"] for j in results) == 3
     assert session.query(Item).filter(Item.openlibrary_edition == 101).count() == 1
+
+
+def test_a_book_deleted_from_the_library_can_be_imported_again(staged_s3, db_items):
+    """The reported case, end to end: import, delete the book, drop the file again, import again."""
+    from lenny.core.bulk_import import batches as b, import_job, importer, staging
+    from lenny.core.models import Item
+    bid, ids = staged_batch(staged_s3, 1)
+    assert run(bid)["imported"] == 1 and db_items.query(Item).count() == 1
+    db_items.query(Item).delete(); db_items.commit()                                   # the admin deletes the book
+    # the same file is dropped again: a fresh row; it is matched and its file staged as before
+    assert b.upsert_rows(bid, rows(1)) == {"created": 1, "existing": 0, "existing_states": {}}
+    new = [r for r in b.list_rows(bid, state="queued")["rows"]][0]
+    set_state(bid, **{str(new["id"]): dict(state="matched", olid=100 + ids[0], staged=True)})
+    staged_s3.objects[staging.key(bid, new["id"])] = b"epub"
+    job = run(bid)
+    assert job["imported"] == 1 and db_items.query(Item).count() == 1
+    assert sorted(r["state"] for r in b.list_rows(bid)["rows"]) == ["imported", "imported"]   # two history entries
+
+
+def test_a_stale_duplicate_is_matched_again_when_an_import_starts(staged_s3, db_items):
+    from lenny.core.bulk_import import batches as b, import_job
+    bid, ids = staged_batch(staged_s3, 1)
+    set_state(bid, **{str(ids[0]): dict(state="duplicate", staged=False)})            # was in the library; it is not now
+    with patch.object(import_job, "_executor", MagicMock()):
+        job = import_job.start(bid)
+    assert b.list_rows(bid)["rows"][0]["state"] == "matched" and job["waiting"] == 1   # waits for its file to be sent again
