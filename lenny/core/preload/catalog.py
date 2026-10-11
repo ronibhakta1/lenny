@@ -1,0 +1,176 @@
+"""The catalog of free books Lenny can preload.
+
+Open Library knows every Standard Ebooks title (864 at the time of writing) but
+the archive.org item Lenny downloads from holds only some of them (190). Showing
+the first list would offer books that fail to download, so the catalog is the
+intersection: a record is `available` only if its file is in the item.
+
+Built from one archive.org call plus ~9 Open Library pages and held in this
+process for CATALOG_TTL. If a rebuild fails the old copy keeps being served, so
+a brief outage does not blank the page. ponytail: per process, no shared store;
+every worker rebuilds once per TTL (about 10 requests), which is fine for this
+size. Move it into the Cache table if workers multiply or the catalog grows.
+"""
+
+import logging
+import threading
+import time
+
+import httpx
+
+from lenny.core.openlibrary import OpenLibrary
+from lenny.core.standardebooks import StandardEbooks
+
+logger = logging.getLogger(__name__)
+
+CATALOG_TTL = 6 * 3600
+ARCHIVE_ITEM = "https://archive.org/metadata/lenny-open-access-preloads"
+MAX_SUBJECTS = 6
+MAX_PAGE = 100
+DEFAULT_PAGE = 24
+
+# name → substrings looked for in a book's subjects (case-insensitive).
+COLLECTIONS = {
+    "classic-fiction": ("Classic fiction", ("fiction classics", "classic", "literary fiction")),
+    "science-fiction": ("Science fiction", ("science fiction", "sci-fi")),
+    "mystery": ("Mystery & detective", ("mystery", "detective", "crime")),
+    "adventure": ("Adventure", ("adventure",)),
+    "romance": ("Romance", ("romance", "love stories")),
+    "poetry": ("Poetry", ("poetry", "poems")),
+    "plays": ("Plays & drama", ("drama", "plays")),
+    "philosophy": ("Philosophy", ("philosophy",)),
+    "childrens": ("Children's", ("children", "juvenile")),
+    "horror": ("Horror & gothic", ("horror", "gothic", "ghost")),
+}
+
+
+class CatalogUnavailable(Exception):
+    """Neither archive.org nor Open Library could be reached and nothing is cached."""
+
+
+_lock = threading.Lock()
+_cached = {"built": 0.0, "books": [], "known": 0}
+
+
+def _archive_files() -> dict:
+    """{identifier file name (no .epub): size in bytes} for the preload set."""
+    resp = httpx.get(ARCHIVE_ITEM, timeout=StandardEbooks.HTTP_TIMEOUT, headers=_headers())
+    resp.raise_for_status()
+    return {f["name"][:-5]: int(f.get("size") or 0)
+            for f in resp.json().get("files", []) if f.get("name", "").endswith(".epub")}
+
+
+def _headers() -> dict:
+    from lenny.core.client import LennyClient
+    return LennyClient.HTTP_HEADERS
+
+
+def _book(record, files: dict):
+    """One catalog entry, or None if the record cannot be loaded."""
+    source_id = record.standardebooks_id
+    if not source_id:
+        return None
+    try:
+        olid = int(record.olid)
+    except (ValueError, AttributeError, TypeError, IndexError, KeyError):
+        return None
+    name = source_id.replace("/", "_")
+    if name not in files:
+        return None
+    try:
+        cover = record.cover_url
+    except (IndexError, KeyError, AttributeError):
+        cover = None
+    return {
+        "olid": olid, "title": record.get("title"), "authors": list(record.get("author_name") or []),
+        "year": record.get("first_publish_year"), "cover_url": cover,
+        "subjects": list(record.get("subject") or [])[:MAX_SUBJECTS],
+        "source": "standardebooks", "source_id": source_id, "size": files[name],
+    }
+
+
+def _build() -> dict:
+    files = _archive_files()
+    books, known = [], 0
+    fields = ["title", "author_name", "first_publish_year", "subject", "id_standard_ebooks", "cover_i"]
+    for record in OpenLibrary.search("id_standard_ebooks:*", fields=fields):
+        known += 1
+        if (book := _book(record, files)):
+            books.append(book)
+    books.sort(key=lambda b: (b["title"] or "").lower())
+    return {"built": time.monotonic(), "books": books, "known": known}
+
+
+def get(now=time.monotonic) -> dict:
+    """The catalog: {books, known, built}. Rebuilt when older than CATALOG_TTL."""
+    if _cached["books"] and now() - _cached["built"] < CATALOG_TTL:
+        return _cached
+    with _lock:  # one rebuild at a time; others wait and then reuse it
+        if _cached["books"] and now() - _cached["built"] < CATALOG_TTL:
+            return _cached
+        try:
+            _cached.update(_build())
+        except (httpx.HTTPError, ValueError, OSError) as e:
+            logger.warning("Could not rebuild the preload catalog (%s)", e)
+            if not _cached["books"]:
+                raise CatalogUnavailable("Open Library or archive.org is not answering; try again shortly.") from e
+        return _cached
+
+
+def _matches(book: dict, q: str) -> bool:
+    hay = " ".join([book["title"] or "", *book["authors"], *book["subjects"]]).lower()
+    return all(word in hay for word in q.lower().split())
+
+
+def in_collection(book: dict, collection: str) -> bool:
+    keywords = COLLECTIONS[collection][1]
+    subjects = " ".join(book["subjects"]).lower()
+    return any(k in subjects for k in keywords)
+
+
+def search(q: str | None = None, collection: str | None = None, cursor: int = 0,
+           limit: int = DEFAULT_PAGE, hide: set | None = None) -> dict:
+    """A page of books. `hide` is a set of olids to leave out (e.g. already in the library)."""
+    if collection is not None and collection not in COLLECTIONS:
+        raise ValueError(f"'collection' must be one of {', '.join(COLLECTIONS)}")
+    cat = get()
+    found = [b for b in cat["books"]
+             if (not q or _matches(b, q)) and (not collection or in_collection(b, collection))
+             and not (hide and b["olid"] in hide)]
+    cursor, limit = max(0, cursor), max(1, min(limit, MAX_PAGE))
+    page = found[cursor:cursor + limit]
+    return {"books": page, "total": len(found), "available": len(cat["books"]), "known": cat["known"],
+            "next_cursor": cursor + limit if cursor + limit < len(found) else None}
+
+
+def collections(existing: set) -> list:
+    """Named groups with how many books each holds and how many you already have."""
+    cat = get()
+    out = []
+    for cid, (name, _) in COLLECTIONS.items():
+        members = [b for b in cat["books"] if in_collection(b, cid)]
+        if members:
+            out.append({"id": cid, "name": name, "count": len(members),
+                        "in_library": sum(b["olid"] in existing for b in members)})
+    return out
+
+
+def find(olids=(), source_ids=(), collection: str | None = None) -> tuple:
+    """Resolve a pick to catalog books. Returns (books, unknown) where unknown
+    lists every requested olid / source id the catalog does not have."""
+    cat = get()
+    by_olid = {b["olid"]: b for b in cat["books"]}
+    by_source = {b["source_id"]: b for b in cat["books"]}
+    picked, unknown = {}, []
+    for o in olids:
+        (picked.__setitem__(o, by_olid[o]) if o in by_olid else unknown.append(o))
+    for s in source_ids:
+        book = by_source.get(s)
+        (picked.__setitem__(book["olid"], book) if book else unknown.append(s))
+    if collection:
+        if collection not in COLLECTIONS:
+            raise ValueError(f"'collection' must be one of {', '.join(COLLECTIONS)}")
+        for b in cat["books"]:
+            if in_collection(b, collection):
+                picked[b["olid"]] = b
+    return list(picked.values()), unknown

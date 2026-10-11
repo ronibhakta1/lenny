@@ -278,6 +278,17 @@ decided (picked an edition) or skipped are never overwritten. A row without an I
 
 Row states: `queued → matched | needs_review | no_match`; `duplicate`; `importing → imported | failed | not_epub`.
 `matched` rows carry `olid` and `auto_picked`; `needs_review` rows have no `olid` until the admin picks one.
+### Preloaded Books
+
+Browse and load the free Standard Ebooks Lenny can download. The catalog is what is
+actually downloadable (190 books, about 195 MB), not everything Open Library lists
+(864); `known` reports the larger number. All routes are admin-only.
+
+- **GET /admin/preload/catalog** — `?q=&collection=&hide_owned=&cursor=&limit=` → `{books: [{olid, title, authors[], year, cover_url, subjects[], source, source_id, size, in_library}], total, available, known, in_library, next_cursor}`. `q` matches title, author and subject words. `502` if Open Library / archive.org cannot be reached and nothing is cached.
+- **GET /admin/preload/collections** — `{collections: [{id, name, count, in_library}]}` (Classic fiction, Science fiction, Mystery, Poetry, …; empty ones are left out).
+- **POST /admin/preload/import** — `{olids?: [int], source_ids?: [str], collection?: str}` (at most 200 listed ids; a collection can be larger) → `202 {queued, already_in_library, unknown, size}`. Books already in the library are skipped before downloading. Loads run in the background one at a time; per-book progress (with titles) is in `GET /admin/imports`. `409` while a load is still running.
+
+`make preload items=N` still works and shares the same downloader.
 
 ## Authentication
 Most endpoints require a valid session cookie. Use `/authenticate` to obtain one via email and OTP.

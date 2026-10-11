@@ -11,6 +11,7 @@ from lenny.routes import api
 from lenny.routes import oauth as oauth_routes
 from lenny.routes import oauth2 as oauth2_routes
 from lenny.routes import bulk_import as bulk_import_routes
+from lenny.routes import preload as preload_routes
 from lenny.configs import FORWARDED_ALLOW_IPS, OPTIONS
 from lenny.core.db import session as db_session
 from lenny import __version__ as VERSION
@@ -169,6 +170,7 @@ app.include_router(api.router, prefix="/v1/api")
 app.include_router(oauth_routes.router, prefix="/v1/api")
 app.include_router(oauth2_routes.router, prefix="/v1/api")
 app.include_router(bulk_import_routes.router, prefix="/v1/api")
+app.include_router(preload_routes.router, prefix="/v1/api")
 
 
 # RFC 8414 requires this at the origin root, not under a path prefix — a client
