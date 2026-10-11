@@ -74,6 +74,17 @@ def test_writes_extend_retention_but_reads_do_not():
     assert datetime.fromisoformat(b.get_summary(bid)["expires_at"]) > soon + timedelta(days=27)
 
 
+def test_the_same_file_from_another_operating_system_is_the_same_row():
+    """macOS writes é as e + combining accent; Windows may send backslashes."""
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch()
+    mac = dict(path="Bücher/Café.epub".replace("ü", "u\u0308").replace("é", "e\u0301"), size=5, mtime=7)
+    win = dict(path="B\u00fccher\\Caf\u00e9.epub", size=5, mtime=7)
+    assert b.upsert_rows(bid, [mac]) == {"created": 1, "existing": 0}
+    assert b.upsert_rows(bid, [win]) == {"created": 0, "existing": 1}
+    assert b.list_rows(bid)["rows"][0]["path"] == "B\u00fccher/Caf\u00e9.epub"
+
+
 def test_expired_batch_is_gone_for_every_operation():
     from lenny.core.bulk_import import batches as b
     from lenny.core.db import session as db

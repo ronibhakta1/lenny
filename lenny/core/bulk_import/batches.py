@@ -23,6 +23,7 @@
 
 import hashlib
 import logging
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
@@ -145,6 +146,10 @@ def _clean_row(raw: dict, index: int) -> dict:
     if not isinstance(raw, dict):
         raise ValueError(f"row {index}: must be an object")
     path, size, mtime = raw.get("path"), raw.get("size"), raw.get("mtime")
+    if isinstance(path, str):
+        # macOS hands out decomposed (NFD) names, Windows and Linux composed (NFC);
+        # one form keeps a folder re-dropped from another machine attaching to its rows.
+        path = unicodedata.normalize("NFC", path).replace("\\", "/")
     if not isinstance(path, str) or not 0 < len(path) <= _MAX["path"]:
         raise ValueError(f"row {index}: 'path' must be a string of 1-{_MAX['path']} characters")
     for name, value in (("size", size), ("mtime", mtime)):
