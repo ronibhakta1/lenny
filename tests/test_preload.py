@@ -32,11 +32,12 @@ FILES = {"jane-austen_pride-and-prejudice": 3000, "bram-stoker_dracula": 2000, "
 @pytest.fixture(autouse=True)
 def fresh_catalog():
     from lenny.core.preload import catalog
-    catalog._cached.update(built=0.0, books=[], known=0)
-    catalog._refreshing.clear()
+    reset = dict(built=0.0, books=[], known=0, updated=None, probed=0.0)
+    catalog._cached.update(reset)
+    catalog._refreshing.clear(); catalog._probing.clear()
     yield
-    catalog._cached.update(built=0.0, books=[], known=0)
-    catalog._refreshing.clear()
+    catalog._cached.update(reset)
+    catalog._refreshing.clear(); catalog._probing.clear()
 
 
 @pytest.fixture
@@ -47,13 +48,13 @@ def fakes():
 
     def archive():
         calls["archive"] += 1
-        return dict(FILES)
+        return dict(FILES), dict(calls.get("added", {})), calls.get("updated", 1000)
 
     def fetch():
         calls["search"] += 1
         return [OpenLibraryRecord(d) for d in DOCS]
 
-    with patch("lenny.core.preload.catalog._archive_files", archive), \
+    with patch("lenny.core.preload.catalog._archive_listing", archive), \
          patch("lenny.core.preload.catalog._archive_item_names", lambda: set(calls.setdefault("items", set()))), \
          patch("lenny.core.preload.catalog._fetch_records", fetch):
         yield calls
@@ -92,7 +93,7 @@ def test_only_downloadable_books_are_in_the_catalog(fakes):
     assert dracula == {
         "olid": 1, "title": "Dracula", "authors": ["Bram Stoker"], "year": 1900,
         "cover_url": "https://covers.openlibrary.org/b/id/1-M.jpg", "subjects": ["Horror", "Gothic fiction"],
-        "source": "standardebooks", "source_id": "bram-stoker/dracula", "size": 2000}
+        "source": "standardebooks", "source_id": "bram-stoker/dracula", "size": 2000, "added_at": None}
 
 
 def test_a_record_without_editions_or_an_id_is_skipped_not_fatal(fakes):
@@ -117,8 +118,8 @@ def test_warm_builds_ahead_of_the_first_visitor_and_never_raises(fakes):
     from lenny.core.preload import catalog
     catalog.warm()
     assert fakes["search"] == 1 and len(catalog._cached["books"]) == 3
-    catalog._cached.update(books=[], built=0.0)
-    with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
+    catalog._cached.update(books=[], built=0.0, probed=0.0)
+    with patch("lenny.core.preload.catalog._archive_listing", side_effect=httpx.ConnectError("down")):
         catalog.warm()                                                    # down at start-up: no crash, built on first use instead
 
 
@@ -160,7 +161,7 @@ def test_a_failed_rebuild_keeps_serving_the_old_catalog(fakes):
     from lenny.core.preload import catalog
     catalog.get()
     catalog._cached["built"] = time.monotonic() - catalog.CATALOG_TTL - 1
-    with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
+    with patch("lenny.core.preload.catalog._archive_listing", side_effect=httpx.ConnectError("down")):
         assert len(catalog.get()["books"]) == 3
         for _ in range(50):
             if not catalog._refreshing.is_set():
@@ -172,7 +173,7 @@ def test_a_failed_rebuild_keeps_serving_the_old_catalog(fakes):
 def test_no_catalog_and_no_upstream_is_a_clear_error():
     import httpx
     from lenny.core.preload import catalog
-    with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
+    with patch("lenny.core.preload.catalog._archive_listing", side_effect=httpx.ConnectError("down")):
         with pytest.raises(catalog.CatalogUnavailable):
             catalog.get()
 
@@ -373,7 +374,7 @@ def test_collections_route(client, fakes, db):
 
 def test_routes_say_502_when_nothing_can_be_built(client):
     import httpx
-    with patch("lenny.core.preload.catalog._archive_files", side_effect=httpx.ConnectError("down")):
+    with patch("lenny.core.preload.catalog._archive_listing", side_effect=httpx.ConnectError("down")):
         assert client.get(f"{P}/catalog").status_code == 502
         assert client.post(f"{P}/import", json={"olids": [1]}).status_code == 502
 
@@ -545,3 +546,125 @@ def test_the_metadata_lookup_prefers_the_plain_epub_and_survives_errors():
         assert StandardEbooks.find_item_epub_url("a/b") is None
     with patch("lenny.core.standardebooks.httpx.get", side_effect=httpx.ConnectError("down")):
         assert StandardEbooks.find_item_epub_url("a/b") is None
+
+
+# ─── following the archive.org item: new books appear by themselves ───────────
+
+def wait_until(check, seconds=3):
+    for _ in range(int(seconds / 0.02)):
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_books_added_to_the_item_appear_without_any_change_on_our_side(fakes):
+    from lenny.core.preload import catalog
+    files_now = dict(FILES)
+    def archive():
+        return dict(files_now), {"jane-austen_pride-and-prejudice": int(time.time()) - 3600}, fakes.get("updated", 1000)
+    with patch("lenny.core.preload.catalog._archive_listing", archive):
+        assert len(catalog.get()["books"]) == 3
+        files_now["nobody_missing"] = 4000                                      # the uploader adds a file
+        fakes["updated"] = 2000
+        with patch("lenny.core.preload.catalog._probe_updated", return_value=2000) as probe:
+            catalog._cached["probed"] = time.monotonic() - catalog.PROBE_EVERY - 1   # a minute has passed
+            catalog.get()                                                       # served at once, from the old list
+            assert wait_until(lambda: len(catalog._cached["books"]) == 4)       # the new book is listed after the rebuild
+            assert probe.call_count == 1
+    assert "Missing From Archive" in [b["title"] for b in catalog._cached["books"]]
+    assert catalog._cached["updated"] == 2000
+
+
+def test_the_probe_is_rate_limited_and_does_not_rebuild_when_nothing_changed(fakes):
+    from lenny.core.preload import catalog
+    catalog.get()
+    builds = fakes["search"]
+    with patch("lenny.core.preload.catalog._probe_updated", return_value=1000) as probe:       # the same number as at build time
+        catalog._cached["probed"] = time.monotonic() - catalog.PROBE_EVERY - 1
+        for _ in range(5):
+            catalog.get()                                                       # five requests in a burst
+        assert wait_until(lambda: not catalog._probing.is_set())
+        assert probe.call_count == 1                                            # one look, not five
+    assert fakes["search"] == builds                                            # unchanged: no rebuild
+
+
+def test_a_probe_that_fails_changes_nothing(fakes):
+    from lenny.core.preload import catalog
+    catalog.get(); builds = fakes["search"]
+    with patch("lenny.core.preload.catalog._probe_updated", return_value=None):
+        catalog._cached["probed"] = time.monotonic() - catalog.PROBE_EVERY - 1
+        catalog.get()
+        assert wait_until(lambda: not catalog._probing.is_set())
+    assert fakes["search"] == builds and len(catalog._cached["books"]) == 3
+
+
+def test_the_probe_reads_the_items_last_updated_number():
+    from lenny.core.preload import catalog
+    ok = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"result": 1774522860}})()
+    with patch("lenny.core.preload.catalog.httpx.get", return_value=ok) as get:
+        assert catalog._probe_updated() == 1774522860
+    assert get.call_args.args[0].endswith("/lenny-open-access-preloads/item_last_updated")
+    import httpx
+    with patch("lenny.core.preload.catalog.httpx.get", side_effect=httpx.ConnectError("x")):
+        assert catalog._probe_updated() is None
+    bad = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: ["not", "a", "dict"]})()
+    with patch("lenny.core.preload.catalog.httpx.get", return_value=bad):
+        assert catalog._probe_updated() is None
+
+
+def test_the_listing_reads_sizes_added_times_and_the_updated_stamp():
+    from lenny.core.preload import catalog
+    body = {"item_last_updated": 1774522860, "files": [
+        {"name": "a_b.epub", "size": "100", "mtime": "1773813520"}, {"name": "a_b.pdf", "size": "9"},
+        {"name": "c_d.epub", "size": "7"}]}                                     # no mtime: no added time
+    resp = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: body})()
+    with patch("lenny.core.preload.catalog.httpx.get", return_value=resp):
+        assert catalog._archive_listing() == ({"a_b": 100, "c_d": 7}, {"a_b": 1773813520}, 1774522860)
+
+
+def test_recent_books_are_flagged_new_and_can_be_listed_first_or_alone(fakes):
+    from lenny.core.preload import catalog
+    now = int(time.time())
+    fakes["added"] = {"bram-stoker_dracula": now - 86400, "jane-austen_pride-and-prejudice": now - 90 * 86400}   # yesterday; three months ago
+    res = catalog.search(limit=10)
+    flags = {b["title"]: b["is_new"] for b in res["books"]}
+    assert flags == {"Dracula": True, "Pride and Prejudice": False, "The Raven": False} and res["new"] == 1
+    assert [b["title"] for b in catalog.search(new_only=True)["books"]] == ["Dracula"]
+    assert catalog.search(new_only=True)["total"] == 1
+    order = [b["title"] for b in catalog.search(sort="added_desc", limit=10)["books"]]
+    assert order[:2] == ["Dracula", "Pride and Prejudice"]                       # newest first, undated last
+    assert catalog.search()["updated_at"] is not None and catalog.search()["refreshing"] is False
+    with pytest.raises(ValueError):
+        catalog.search(sort="by_vibes")
+
+
+def test_refresh_starts_one_rebuild_at_a_time(fakes):
+    from lenny.core.preload import catalog
+    catalog.get(); builds = fakes["search"]
+    release = threading.Event()
+    real = catalog._build
+    def slow():
+        release.wait(3); return real()
+    with patch("lenny.core.preload.catalog._build", slow):
+        assert catalog.refresh() is True and catalog.refresh() is False        # a second click while one is running
+        release.set()
+        assert wait_until(lambda: not catalog._refreshing.is_set())
+    assert fakes["search"] == builds + 1
+
+
+def test_refresh_and_the_new_filters_over_http(client, fakes, db):
+    now = int(time.time())
+    fakes["added"] = {"bram-stoker_dracula": now - 3600}
+    body = client.get(f"{P}/catalog", params={"sort": "added_desc", "new_only": True}).json()
+    assert [b["title"] for b in body["books"]] == ["Dracula"] and body["books"][0]["is_new"] is True and body["new"] == 1
+    assert client.get(f"{P}/catalog", params={"sort": "bogus"}).status_code == 400
+    r = client.post(f"{P}/refresh")
+    assert r.status_code == 202 and r.json() == {"started": True}
+    from lenny.core.preload import catalog
+    assert wait_until(lambda: not catalog._refreshing.is_set())
+
+
+def test_the_refresh_route_requires_admin(app_module):
+    from fastapi.testclient import TestClient
+    assert TestClient(app_module).post(f"{P}/refresh").status_code == 403

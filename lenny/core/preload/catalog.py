@@ -6,8 +6,12 @@ the first list would offer books that fail to download, so the catalog is the
 intersection: a record is `available` only if its file is in the item.
 
 Built from one archive.org call plus ~9 Open Library pages and held in this
-process for CATALOG_TTL. If a rebuild fails the old copy keeps being served, so
-a brief outage does not blank the page. ponytail: per process, no shared store;
+process. It follows the archive.org item by itself: a small probe (the item's
+"last updated" number, once a minute at most, never on the request path) notices
+when books were added and rebuilds in the background, so a book uploaded to the
+item shows up within a minute or so with no change on our side; CATALOG_TTL is
+only the backstop for what the probe cannot see (Open Library data, other items).
+If a rebuild fails the old copy keeps being served, so a brief outage does not blank the page. ponytail: per process, no shared store;
 every worker rebuilds once per TTL (about 10 requests), which is fine for this
 size. Move it into the Cache table if workers multiply or the catalog grows.
 """
@@ -15,6 +19,7 @@ size. Move it into the Cache table if workers multiply or the catalog grows.
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -24,7 +29,9 @@ from lenny.core.standardebooks import StandardEbooks, clean_source_id
 
 logger = logging.getLogger(__name__)
 
-CATALOG_TTL = 6 * 3600
+CATALOG_TTL = 3600
+PROBE_EVERY = 60          # seconds between looks at the item's "last updated"
+NEW_DAYS = 14             # a book added to the item this recently is flagged new
 ARCHIVE_ITEM = "https://archive.org/metadata/lenny-open-access-preloads"
 MAX_SUBJECTS = 6
 MAX_PAGE = 100
@@ -50,15 +57,28 @@ class CatalogUnavailable(Exception):
 
 
 _lock = threading.Lock()
-_cached = {"built": 0.0, "books": [], "known": 0}
+_cached = {"built": 0.0, "books": [], "known": 0, "updated": None, "probed": 0.0}
 
 
-def _archive_files() -> dict:
-    """{identifier file name (no .epub): size in bytes} for the preload set."""
+def _archive_listing() -> tuple:
+    """The preload item: ({file name (no .epub): size}, {file name: time it was added, epoch}, item last updated)."""
     resp = httpx.get(ARCHIVE_ITEM, timeout=StandardEbooks.HTTP_TIMEOUT, headers=_headers())
     resp.raise_for_status()
-    return {f["name"][:-5]: int(f.get("size") or 0)
-            for f in resp.json().get("files", []) if f.get("name", "").endswith(".epub")}
+    data = resp.json()
+    epubs = [f for f in data.get("files", []) if f.get("name", "").endswith(".epub")]
+    sizes = {f["name"][:-5]: int(f.get("size") or 0) for f in epubs}
+    added = {f["name"][:-5]: int(f["mtime"]) for f in epubs if str(f.get("mtime") or "").isdigit()}
+    return sizes, added, data.get("item_last_updated")
+
+
+def _probe_updated():
+    """The item's "last updated" number (a few bytes), or None if archive.org cannot say right now."""
+    try:
+        resp = httpx.get(f"{ARCHIVE_ITEM}/item_last_updated", timeout=StandardEbooks.HTTP_TIMEOUT, headers=_headers())
+        resp.raise_for_status()
+        return resp.json().get("result")
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
 
 
 ARCHIVE_SEARCH = "https://archive.org/advancedsearch.php"
@@ -75,17 +95,18 @@ def _archive_item_names() -> set:
     return {d["identifier"] for d in docs if d.get("identifier") and "EPUB" in (d.get("format") or [])}
 
 
-def available_files() -> dict:
-    """{name: size} of every EPUB archive.org can serve for a Standard Ebooks title: the files
-    of the preload item (size known) plus standalone items (size unknown, 0). The standalone
-    list is a bonus: if that search fails, the preload item alone is used."""
-    files = _archive_files()
+def available_files() -> tuple:
+    """({name: size}, {name: added epoch}, item last updated) for every EPUB archive.org can serve
+    for a Standard Ebooks title: the files of the preload item (size and date known) plus standalone
+    items (size unknown, 0, no date). The standalone list is a bonus: if that search fails, the
+    preload item alone is used."""
+    files, added, updated = _archive_listing()
     try:
         extra = _archive_item_names()
     except (httpx.HTTPError, ValueError, OSError) as e:
         logger.warning("Could not list standalone archive.org items (%s)", e)
         extra = set()
-    return {**{name: 0 for name in extra}, **files}
+    return {**{name: 0 for name in extra}, **files}, added, updated
 
 
 def _headers() -> dict:
@@ -93,7 +114,11 @@ def _headers() -> dict:
     return LennyClient.HTTP_HEADERS
 
 
-def _book(record, files: dict):
+def _iso(epoch) -> str | None:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if isinstance(epoch, int) else None
+
+
+def _book(record, files: dict, added: dict | None = None):
     """One catalog entry, or None if the record cannot be loaded."""
     source_id = clean_source_id(record.standardebooks_id)
     if not source_id:
@@ -114,6 +139,7 @@ def _book(record, files: dict):
         "year": record.get("first_publish_year"), "cover_url": cover,
         "subjects": list(record.get("subject") or [])[:MAX_SUBJECTS],
         "source": "standardebooks", "source_id": source_id, "size": files[name],
+        "added_at": _iso((added or {}).get(name)),
     }
 
 
@@ -153,16 +179,16 @@ def _fetch_records() -> list:
 
 
 def _build() -> dict:
-    files = available_files()
+    files, added, updated = available_files()
     books, known = [], 0
     for record in _fetch_records():
         if not clean_source_id(record.standardebooks_id):
             continue                      # junk in Open Library's field: not a Standard Ebooks id
         known += 1
-        if (book := _book(record, files)):
+        if (book := _book(record, files, added)):
             books.append(book)
     books.sort(key=lambda b: (b["title"] or "").lower())
-    return {"built": time.monotonic(), "books": books, "known": known}
+    return {"built": time.monotonic(), "books": books, "known": known, "updated": updated, "probed": time.monotonic()}
 
 
 _refreshing = threading.Event()
@@ -186,6 +212,36 @@ def _refresh_in_background() -> None:
     threading.Thread(target=work, name="preload-catalog-refresh", daemon=True).start()
 
 
+_probing = threading.Event()
+
+
+def _probe_in_background(now=time.monotonic) -> None:
+    """At most once a minute, in a thread: has the archive.org item changed since the catalog was
+    built? If so rebuild (still in the background, the old list is served until it is ready)."""
+    if now() - _cached["probed"] < PROBE_EVERY or _probing.is_set():
+        return
+    _probing.set()
+    _cached["probed"] = now()
+
+    def work():
+        try:
+            updated = _probe_updated()
+            if updated is not None and updated != _cached["updated"]:
+                logger.info("The preload item changed (%s -> %s): refreshing the catalog", _cached["updated"], updated)
+                _refresh_in_background()
+        finally:
+            _probing.clear()
+    threading.Thread(target=work, name="preload-catalog-probe", daemon=True).start()
+
+
+def refresh() -> bool:
+    """Rebuild now, in the background (the Refresh button). False if one is already running."""
+    if _refreshing.is_set():
+        return False
+    _refresh_in_background()
+    return True
+
+
 def warm() -> None:
     """Build the catalog ahead of the first visitor (called at startup, in a thread)."""
     try:
@@ -203,6 +259,8 @@ def get(now=time.monotonic) -> dict:
     if _cached["books"]:
         if now() - _cached["built"] >= CATALOG_TTL:
             _refresh_in_background()
+        else:
+            _probe_in_background(now)
         return _cached
     with _lock:  # the first build: one at a time; others wait and then reuse it
         if _cached["books"]:
@@ -226,18 +284,36 @@ def in_collection(book: dict, collection: str) -> bool:
     return any(k in subjects for k in keywords)
 
 
+SORTS = ("title", "added_desc")
+
+
+def is_new(book: dict, now: datetime | None = None) -> bool:
+    """Added to the archive.org item in the last NEW_DAYS days (books from standalone items carry no date)."""
+    if not book.get("added_at"):
+        return False
+    return datetime.fromisoformat(book["added_at"]) >= (now or datetime.now(timezone.utc)) - timedelta(days=NEW_DAYS)
+
+
 def search(q: str | None = None, collection: str | None = None, cursor: int = 0,
-           limit: int = DEFAULT_PAGE, hide: set | None = None) -> dict:
-    """A page of books. `hide` is a set of olids to leave out (e.g. already in the library)."""
+           limit: int = DEFAULT_PAGE, hide: set | None = None, sort: str = "title", new_only: bool = False) -> dict:
+    """A page of books. `hide` is a set of olids to leave out (e.g. already in the library);
+    `sort` is title or added_desc (newest additions first); `new_only` keeps only recent additions."""
     if collection is not None and collection not in COLLECTIONS:
         raise ValueError(f"'collection' must be one of {', '.join(COLLECTIONS)}")
+    if sort not in SORTS:
+        raise ValueError(f"'sort' must be one of {', '.join(SORTS)}")
     cat = get()
+    now = datetime.now(timezone.utc)
     found = [b for b in cat["books"]
              if (not q or _matches(b, q)) and (not collection or in_collection(b, collection))
-             and not (hide and b["olid"] in hide)]
+             and not (hide and b["olid"] in hide) and (not new_only or is_new(b, now))]
+    if sort == "added_desc":
+        found.sort(key=lambda b: (b.get("added_at") or "", (b["title"] or "").lower()), reverse=True)
     cursor, limit = max(0, cursor), max(1, min(limit, MAX_PAGE))
-    page = found[cursor:cursor + limit]
+    page = [dict(b, is_new=is_new(b, now)) for b in found[cursor:cursor + limit]]
     return {"books": page, "total": len(found), "available": len(cat["books"]), "known": cat["known"],
+            "new": sum(is_new(b, now) for b in cat["books"]), "updated_at": _iso(cat.get("updated")),
+            "refreshing": _refreshing.is_set(),
             "next_cursor": cursor + limit if cursor + limit < len(found) else None}
 
 

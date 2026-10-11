@@ -3,7 +3,8 @@
 """
 Admin endpoints for preloading free books (see lenny/core/preload/).
 
-    GET  /admin/preload/catalog      ?q=&collection=&hide_owned=&cursor=&limit=
+    GET  /admin/preload/catalog      ?q=&collection=&hide_owned=&sort=&new_only=&cursor=&limit=
+    POST /admin/preload/refresh
     GET  /admin/preload/collections
     POST /admin/preload/import       {olids?, source_ids?, collection?}
 
@@ -32,15 +33,26 @@ def _catalog_call(fn, *args, **kwargs):
 # run on the event loop.
 @router.get("/admin/preload/catalog")
 def get_catalog(request: Request, q: str | None = None, collection: str | None = None,
-                hide_owned: bool = False, cursor: int = 0, limit: int = catalog.DEFAULT_PAGE):
+                hide_owned: bool = False, cursor: int = 0, limit: int = catalog.DEFAULT_PAGE,
+                sort: str = "title", new_only: bool = False):
     _require_admin(request)
     cat = _catalog_call(catalog.get)
     owned = service.existing_among(b["olid"] for b in cat["books"])
-    result = _catalog_call(catalog.search, q, collection, cursor, limit, hide=owned if hide_owned else None)
+    result = _catalog_call(catalog.search, q, collection, cursor, limit, hide=owned if hide_owned else None,
+                          sort=sort, new_only=new_only)
     for book in result["books"]:
         book["in_library"] = book["olid"] in owned
     result["in_library"] = len(owned)
     return result
+
+
+@router.post("/admin/preload/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_catalog(request: Request):
+    """Look at archive.org again now. The list also follows the archive.org item by itself (about a
+    minute after books are added there); this is for the impatient. The old list stays visible
+    until the new one is ready; `refreshing` in the catalog response says when it is."""
+    _require_admin(request)
+    return {"started": catalog.refresh()}
 
 
 @router.get("/admin/preload/collections")
