@@ -1009,3 +1009,32 @@ def test_history_and_exclude_over_http(client):
     assert client.get(f"{API}/{bid}/rows", params={"order": "x"}).status_code == 400
     assert client.post(f"{API}/{bid}/actions", json={"action": "remove", "exclude_state": "imported"}).json() == {"updated": 2}
     assert client.get(f"{API}/{bid}").json()["counts"] == {"imported": 2}
+
+
+def test_choosing_another_edition_replaces_what_the_row_shows():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1, title="Game Show Zine"))
+    rid = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(rid): dict(state="matched", olid=5, auto_picked=True, confidence=76, candidates_count=4,
+                                    match_title="Game Show Zine", match_author="Old Author", match_year=1999, staged=True)})
+    out = b.update_row(bid, rid, olid=9, match={"title": "Defector Weekly Digest", "author": "Tom Ley, Diana Moskovitz", "year": 2026})
+    assert out["olid"] == 9 and out["state"] == "matched" and out["decision"] == "user" and out["auto_picked"] is False
+    assert (out["match_title"], out["match_author"], out["match_year"]) == ("Defector Weekly Digest", "Tom Ley, Diana Moskovitz", 2026)
+    assert out["confidence"] == 0 and out["candidates_count"] == 4 and out["staged"] is True         # the file stays valid
+    again = b.list_rows(bid)["rows"][0]                                                              # and the list agrees
+    assert (again["olid"], again["match_title"], again["match_year"]) == (9, "Defector Weekly Digest", 2026)
+    # a choice without facts clears the old ones rather than leaving the wrong title behind
+    out = b.update_row(bid, rid, olid=11)
+    assert out["olid"] == 11 and out["match_title"] is None and out["match_author"] is None and out["match_year"] is None
+    # an unchanged olid (just toggling encryption) keeps what is shown
+    out = b.update_row(bid, rid, olid=11, match={"title": "T"})
+    assert out["match_title"] is None
+
+
+def test_other_changes_to_a_row_keep_its_match_details():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1))
+    rid = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(rid): dict(state="matched", olid=5, match_title="Keep Me", match_year=2001)})
+    out = b.update_row(bid, rid, encrypted=True)
+    assert out["match_title"] == "Keep Me" and out["match_year"] == 2001 and out["encrypted"] is True
