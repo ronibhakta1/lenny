@@ -1339,3 +1339,110 @@ def test_a_failed_or_duplicate_row_is_not_stamped(db_items):
     from lenny.core.exceptions import ItemExistsError
     row2, _ = do_import(bid2, rid2, MagicMock(side_effect=ItemExistsError("x")))
     assert row2["state"] == "duplicate" and row2["imported_at"] is None
+
+
+# ─── choosing another edition must really change the row ─────────────────────
+
+def auto_matched_row(client, staged=False):
+    """A row auto-matched to the wrong book (Game Show Zine, 76%), as in the bug report."""
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1, title="Defector Weekly Digest")]})
+    rid = client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+    set_state(bid, **{str(rid): dict(state="matched", olid=5, auto_picked=True, confidence=76, candidates_count=6,
+                                    match_title="Game Show Zine", match_author="Someone Else", match_year=1999, staged=staged)})
+    return bid, rid
+
+
+def test_picking_another_edition_updates_the_response_and_the_next_list(client):
+    bid, rid = auto_matched_row(client, staged=True)
+    facts = {"olid": 62576958, "title": "Defector Weekly Digest: May 17-23, 2026", "authors": ["Tom Ley", "Diana Moskovitz"],
+             "year": 2026, "publisher": "The Brick House Cooperative", "language": "eng", "isbn": None}
+    with patch("lenny.core.bulk_import.matcher.edition_facts", return_value=facts) as lookup:
+        r = client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 62576958})
+    assert r.status_code == 200 and lookup.call_args.args == (62576958,)
+    row = r.json()
+    assert (row["olid"], row["state"], row["decision"], row["auto_picked"]) == (62576958, "matched", "user", False)
+    assert (row["match_title"], row["match_author"], row["match_year"]) == (
+        "Defector Weekly Digest: May 17-23, 2026", "Tom Ley, Diana Moskovitz", 2026)
+    assert row["confidence"] == 0 and row["candidates_count"] == 6 and row["staged"] is True
+    listed = client.get(f"{API}/{bid}/rows").json()["rows"][0]
+    assert (listed["olid"], listed["match_title"], listed["match_year"]) == (62576958, row["match_title"], 2026)
+
+
+def test_a_failed_lookup_leaves_the_row_exactly_as_it_was(client):
+    from lenny.core.bulk_import import matcher as m
+    bid, rid = auto_matched_row(client)
+    before = client.get(f"{API}/{bid}/rows").json()["rows"][0]
+    with patch("lenny.core.bulk_import.matcher.edition_facts", side_effect=m.UpstreamError("Open Library is not answering", retry_after=None)):
+        r = client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 62576958})
+    assert r.status_code == 502 and "not answering" in r.json()["detail"]
+    assert client.get(f"{API}/{bid}/rows").json()["rows"][0] == before
+    with patch("lenny.core.bulk_import.matcher.edition_facts", return_value=None):
+        r = client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 62576958})
+    assert r.status_code == 400 and "no edition" in r.json()["detail"]
+    assert client.get(f"{API}/{bid}/rows").json()["rows"][0] == before
+
+
+@pytest.mark.parametrize("state", ["matched", "needs_review", "no_match", "failed", "duplicate"])
+def test_the_choice_works_in_every_state_but_importing(client, state):
+    bid, rid = auto_matched_row(client)
+    set_state(bid, **{str(rid): dict(state=state)})
+    assert client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 7}).status_code == 200
+    got = client.get(f"{API}/{bid}/rows").json()["rows"][0]
+    assert got["olid"] == 7 and got["match_title"] == "Edition 7" and got["state"] == "matched"   # a duplicate re-opens with the new edition
+
+
+def test_a_row_being_imported_refuses_the_change_with_a_409(client):
+    bid, rid = auto_matched_row(client)
+    set_state(bid, **{str(rid): dict(state="importing")})
+    assert client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 7}).status_code == 409
+    assert client.get(f"{API}/{bid}/rows").json()["rows"][0]["olid"] == 5
+
+
+def test_a_choice_made_during_a_match_job_wins_and_keeps_its_details(ol, client):
+    from lenny.core.bulk_import import jobs
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1, title="Dune", author="Frank Herbert")]})
+    rid = client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+    real = ol.__call__
+    def search_then_admin_picks(params, retries=3, fresh=False):
+        out = real(params, retries, fresh)
+        client.patch(f"{API}/{bid}/rows/{rid}", json={"olid": 777})                  # lands before the job saves
+        return out
+    with patch("lenny.core.bulk_import.matcher.search", search_then_admin_picks), patch.object(jobs, "_executor", Inline()):
+        client.post(f"{API}/{bid}/match")
+    got = client.get(f"{API}/{bid}/rows").json()["rows"][0]
+    assert (got["olid"], got["match_title"], got["decision"]) == (777, "Edition 777", "user")
+
+
+def test_automatic_matches_carry_the_editions_year_too(ol):
+    from lenny.core.bulk_import import matcher as m
+    out = dict(m.match_rows([titled(1, "Dune", "Frank Herbert")]))
+    assert out[1]["match_year"] == 2000 and out[1]["match_title"] == "Dune"
+
+
+@pytest.mark.real_edition_lookup
+def test_edition_facts_come_from_one_key_search_or_the_record_itself(fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    body = {"docs": [{"key": "/works/OL1W", "title": "Defector Weekly Digest", "author_name": ["Tom Ley"],
+                      "editions": {"docs": [{"key": "/books/OL62576958M", "title": "Defector Weekly Digest: May 17-23, 2026",
+                                             "publisher": ["Brick House"], "language": ["eng"], "publish_year": [2026]}]}}]}
+    with patch("requests.get", return_value=resp(200, body)) as get:
+        facts = m.edition_facts(62576958)
+    assert facts["title"] == "Defector Weekly Digest: May 17-23, 2026" and facts["authors"] == ["Tom Ley"] and facts["year"] == 2026
+    assert get.call_args.kwargs["params"]["q"] == "edition_key:OL62576958M" and get.call_count == 1
+    record = {"title": "Plain Title", "publishers": ["Ace"], "publish_date": "1990", "isbn_13": ["9780441013593"]}
+    with patch("requests.get", side_effect=[resp(200, {"docs": []}), resp(200, record)]):
+        facts = m.edition_facts(5)                                                    # not in the search index: use the record
+    assert facts["title"] == "Plain Title" and facts["year"] == 1990
+    with patch("requests.get", side_effect=[resp(200, {"docs": []}), resp(404)]):
+        assert m.edition_facts(6) is None
+
+
+@pytest.mark.real_edition_lookup
+def test_edition_facts_raise_when_open_library_is_down(fresh_guard):
+    import requests
+    from lenny.core.bulk_import import matcher as m
+    with patch("requests.get", side_effect=requests.ConnectionError("down")):
+        with pytest.raises(m.UpstreamError):
+            m.edition_facts(5)

@@ -360,9 +360,11 @@ def decide(ranked: list) -> dict:
     base = {"candidates_count": len(ranked), "confidence": top, "error": None}
     if top >= AUTO_MIN:
         best = ranked[0]
+        year = best.get("year")
         return dict(base, state="matched", olid=best["olid"], auto_picked=True,
                     match_title=(best["title"] or "")[:300] or None,
-                    match_author=", ".join(best["authors"])[:200] or None)
+                    match_author=", ".join(best["authors"])[:200] or None,
+                    match_year=year if isinstance(year, int) else None)
     if top >= REVIEW_MIN:
         return dict(base, state="needs_review", olid=None, auto_picked=False)
     return dict(base, state="no_match", olid=None, auto_picked=False, confidence=top)
@@ -532,6 +534,22 @@ def candidates_for(row: dict) -> list:
 
 
 _KEY = re.compile(r"OL(\d{1,10})M", re.I)
+
+
+def edition_facts(olid: int) -> dict | None:
+    """What Open Library says about one edition: {olid, title, authors, year, publisher, language, isbn},
+    or None if it has no such edition. Used when an admin picks an edition, so the row shows
+    that edition's title, author and year. Live, never cached. Raises UpstreamError if Open
+    Library cannot answer (the caller must not pretend the choice worked)."""
+    for c in candidates_from(search({"q": f"edition_key:OL{int(olid)}M", "limit": 3}, retries=0, fresh=True)):
+        if c["olid"] == int(olid):
+            return public(c)
+    e = lookup_edition(int(olid))                  # the key is not indexed for search yet: the record itself
+    if not e:
+        return None
+    year = re.search(r"\b(1\d{3}|20\d{2})\b", str(e.get("year") or ""))
+    return {"olid": e["olid"], "title": e["title"], "authors": [], "year": int(year.group(1)) if year else None,
+            "publisher": e.get("publisher"), "language": None, "isbn": e.get("isbn")}
 
 
 def search_books(q: str, row: dict | None = None) -> list:

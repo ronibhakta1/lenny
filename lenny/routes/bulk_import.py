@@ -147,7 +147,17 @@ async def patch_row(request: Request, batch_id: int, row_id: int, body: dict = B
         raise HTTPException(status_code=400, detail=str(e))
     if olid is None and skipped is None and encrypted is None:
         raise HTTPException(status_code=400, detail="Provide skipped, olid and/or encrypted")
-    return await _run(batches.update_row, batch_id, row_id, skipped=skipped, olid=olid, encrypted=encrypted)
+    def work():
+        match = None
+        if olid is not None:
+            # Look the chosen edition up first: if Open Library cannot answer (502) or has no
+            # such edition (400) the row is left exactly as it was, never half-updated.
+            facts = matcher.edition_facts(olid)
+            if facts is None:
+                raise ValueError(f"Open Library has no edition OL{olid}M.")
+            match = {"title": facts["title"], "author": ", ".join(facts["authors"]), "year": facts["year"]}
+        return batches.update_row(batch_id, row_id, skipped=skipped, olid=olid, encrypted=encrypted, match=match)
+    return await _run(work)
 
 
 @router.delete("/admin/import/batches/{batch_id}/rows/{row_id}")

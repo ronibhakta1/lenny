@@ -93,7 +93,8 @@ def latest(batch_id: int) -> dict | None:
     return None
 
 
-_SAVED = ("state", "olid", "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "error")
+_SAVED = ("state", "olid", "auto_picked", "candidates_count", "confidence", "match_title", "match_author",
+          "match_year", "error")
 
 
 def _save(batch_id: int, results: list, state: str) -> None:
@@ -108,7 +109,7 @@ def _save(batch_id: int, results: list, state: str) -> None:
             update = dict(update, state=DUPLICATE)
         # Every row sets every column, so one statement serves them all.
         full = {"auto_picked": False, "candidates_count": 0, "confidence": 0, "olid": None,
-                "match_title": None, "match_author": None, "error": None}
+                "match_title": None, "match_author": None, "match_year": None, "error": None}
         full.update(update)
         params.append({"b_id": row_id, **{f"v_{k}": full[k] for k in _SAVED}})
     if params:
