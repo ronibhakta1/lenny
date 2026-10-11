@@ -277,6 +277,39 @@ def test_search_answers_are_cached_but_empty_ones_and_fresh_calls_are_not(clear_
         assert get.call_count == 4
 
 
+def test_removing_a_row_forgets_its_cached_lookups(clear_cache, fresh_guard):
+    from lenny.core.bulk_import import matcher as m
+    body = {"docs": [{"key": "/works/OL1W"}]}
+    row = dict(isbn="9780441013593", title="Dune", author="Frank Herbert", path=None)
+    with patch("requests.get", return_value=resp(200, body)) as get:
+        m.search({"title": "Dune", "author": "Frank Herbert", "limit": m.MAX_CANDIDATES})
+        m.search({"title": "Dune", "limit": m.MAX_CANDIDATES})
+        m.search({"q": "isbn:9780441013593", "limit": m.MAX_CANDIDATES})
+        m.search({"title": "Other Book", "limit": m.MAX_CANDIDATES})
+        assert get.call_count == 4 and len(m._cache) == 4
+        m.forget(row)
+        assert len(m._cache) == 1                                      # only the unrelated lookup is left
+        m.clear_cache()
+        assert len(m._cache) == 0
+
+
+def test_removing_a_row_over_http_purges_its_cache_and_a_redrop_is_fresh(client, ol):
+    from lenny.core.bulk_import import jobs, matcher as m
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1, title="Dune", author="Frank Herbert")]})
+    with patch.object(jobs, "_executor", Inline()):
+        client.post(f"{API}/{bid}/match")
+    rid = client.get(f"{API}/{bid}/rows").json()["rows"][0]["id"]
+    assert client.get(f"{API}/{bid}/rows").json()["rows"][0]["olid"] == 101
+    with patch.object(m, "forget") as forget:
+        r = client.delete(f"{API}/{bid}/rows/{rid}")
+    assert r.status_code == 200 and r.json()["total"] == 0 and forget.call_count == 1
+    assert forget.call_args.args[0]["title"] == "Dune"
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path="a.epub", size=1, mtime=1, title="Dune", author="Frank Herbert")]})
+    again = client.get(f"{API}/{bid}/rows").json()["rows"][0]
+    assert again["state"] == "queued" and again["olid"] is None and again["decision"] == "auto"
+
+
 def test_the_cache_is_bounded_and_expires(clear_cache, fresh_guard):
     from lenny.core.bulk_import import matcher as m
     body = {"docs": [{"key": "/works/OL1W"}]}

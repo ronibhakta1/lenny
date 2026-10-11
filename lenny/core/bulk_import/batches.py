@@ -352,6 +352,26 @@ def get_row(batch_id: int, row_id: int) -> dict:
         db.rollback()
 
 
+def delete_row(batch_id: int, row_id: int) -> dict:
+    """Remove one row from the batch (the list entry only: an imported book stays
+    in the library). Refused while it is importing. Returns the batch summary."""
+    try:
+        _xact_lock(f"import_batch:{batch_id}")
+        batch = _get(batch_id)
+        row = db.query(ImportRow).filter(
+            ImportRow.batch_id == batch_id, ImportRow.id == row_id).one_or_none()
+        if row is None:
+            raise ImportRowNotFound(f"Row {row_id} not found.")
+        if row.state == IMPORTING:
+            raise ImportRowBusy("Wait for this upload to finish.")
+        db.delete(row)
+        _touch(batch)
+        db.commit()
+        return summary(batch)
+    finally:
+        db.rollback()
+
+
 def existing_olids(olids: list) -> list:
     """Which of these editions are already in the library."""
     from lenny.core.models import Item
@@ -424,12 +444,20 @@ def bulk_update(batch_id: int, action: str, state: str | None = None,
         change, differs = {ImportRow.encrypted: value}, ImportRow.encrypted.is_not(value)
     elif action in ("skip", "unskip"):
         change, differs = {ImportRow.skipped: action == "skip"}, ImportRow.skipped.is_not(action == "skip")
+    elif action == "remove":
+        change = differs = None
     else:
-        raise ValueError("'action' must be one of skip, unskip, set_encrypted")
+        raise ValueError("'action' must be one of skip, unskip, set_encrypted, remove")
     try:
         _xact_lock(f"import_batch:{batch_id}")
         batch = _get(batch_id)
         query = _filtered(batch_id, state, q, skipped, auto_picked)
+        if action == "remove":
+            # A row being uploaded right now stays; imported ones go (the book stays in the library).
+            removed = query.filter(ImportRow.state != IMPORTING).delete(synchronize_session=False)
+            _touch(batch)
+            db.commit()
+            return removed
         if action != "set_encrypted":
             query = query.filter(ImportRow.state.notin_(_SETTLED))
         else:

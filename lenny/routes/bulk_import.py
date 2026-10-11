@@ -10,6 +10,7 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     PUT    /admin/import/batches/{id}/rows
     GET    /admin/import/batches/{id}/rows
     PATCH  /admin/import/batches/{id}/rows/{row_id}
+    DELETE /admin/import/batches/{id}/rows/{row_id}
     POST   /admin/import/batches/{id}/actions
     POST   /admin/import/batches/{id}/match           start matching (queued rows, or state=no_match to re-check)
     GET    /admin/import/match/{job_id}               progress of a match job
@@ -138,6 +139,19 @@ async def patch_row(request: Request, batch_id: int, row_id: int, body: dict = B
     return await _run(batches.update_row, batch_id, row_id, skipped=skipped, olid=olid, encrypted=encrypted)
 
 
+@router.delete("/admin/import/batches/{batch_id}/rows/{row_id}")
+async def delete_row(request: Request, batch_id: int, row_id: int):
+    """Remove a row from the batch; returns the updated batch summary. 404 if the
+    row is gone, 409 while it is being imported. An imported book stays in the library."""
+    _require_admin(request)
+    def work():
+        row = batches.get_row(batch_id, row_id)          # 404/410 before anything is dropped
+        summary = batches.delete_row(batch_id, row_id)
+        matcher.forget(row)                              # nothing cached may answer for it again
+        return summary
+    return await _run(work)
+
+
 @router.post("/admin/import/batches/{batch_id}/actions")
 async def post_action(request: Request, batch_id: int, body: dict = Body(...)):
     _require_admin(request)
@@ -151,6 +165,8 @@ async def post_action(request: Request, batch_id: int, body: dict = Body(...)):
     updated = await _run(
         batches.bulk_update, batch_id, body.get("action"), state=state, q=body.get("q"),
         value=body.get("value"), skipped=skipped, auto_picked=auto_picked)
+    if body.get("action") == "remove":
+        matcher.clear_cache()                            # many rows went; cheaper than finding each one's entries
     return {"updated": updated}
 
 

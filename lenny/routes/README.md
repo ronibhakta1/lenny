@@ -253,7 +253,8 @@ rows instead of duplicating them.
 - **PUT /admin/import/batches/{id}/rows** — `{"rows": [{path, size, mtime, isbn?, title?, author?, language?, publisher?, year?, state?: "not_epub"}]}`, at most 500 per call. Idempotent. Returns `{created, existing}`.
 - **GET /admin/import/batches/{id}/rows** — `?state=&q=&skipped=&auto_picked=&cursor=&limit=` (limit up to 200). Returns `{rows, next_cursor}`.
 - **PATCH /admin/import/batches/{id}/rows/{row_id}** — `{skipped?, olid?, encrypted?}`. A new `olid` on an already imported row moves the stored book to that edition; loans stay with it.
-- **POST /admin/import/batches/{id}/actions** — `{action: "skip"|"unskip"|"set_encrypted", value?, state?, q?, skipped?, auto_picked?}` applied to every row matching the filter. Returns `{updated}`.
+- **DELETE /admin/import/batches/{id}/rows/{row_id}** — remove the row from the batch (an imported book stays in the library); returns the batch summary. `404` if the row is gone, `409` while it is being imported. A removed row comes back if the same file is dropped again.
+- **POST /admin/import/batches/{id}/actions** — `{action: "skip"|"unskip"|"set_encrypted"|"remove", value?, state?, q?, skipped?, auto_picked?}` applied to every row matching the filter. Returns `{updated}`.
 
 **Matching and importing** (same admin credentials). Matching runs on one background
 thread per process, paced to Open Library's limit (1 request/s, 3/s when

@@ -114,13 +114,34 @@ _cache: "OrderedDict[tuple, tuple]" = OrderedDict()
 _cache_lock = threading.Lock()
 
 
+def _cache_key(params: dict) -> tuple:
+    return ("search", tuple(sorted(params.items())))
+
+
+def forget(row: dict) -> None:
+    """Drop the cached answers for this row's own lookups (its ISBN and every title
+    query), so a removed-and-re-dropped file cannot be answered from old results.
+    Answers shared inside a batched query cannot be told apart; they expire on their own."""
+    keys = [_cache_key(dict(q, fields=_FIELDS)) for q in _queries(row)]
+    if row.get("isbn"):
+        keys.append(_cache_key({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES, "fields": _FIELDS}))
+    with _cache_lock:
+        for k in keys:
+            _cache.pop(k, None)
+
+
+def clear_cache() -> None:
+    with _cache_lock:
+        _cache.clear()
+
+
 def search(params: dict, retries: int = RETRIES, fresh: bool = False) -> list:
     """Works matching `params`. Non-empty answers are reused for CACHE_TTL (a
     re-dropped library, the same title in two batches); `fresh` skips the cache,
     for a Re-check (the admin may just have added the record) and for the
     interactive candidates list. Empty answers are never cached."""
     params = dict(params, fields=_FIELDS)
-    key = ("search", tuple(sorted(params.items())))
+    key = _cache_key(params)
     now = time.monotonic()
     if not fresh:
         with _cache_lock:
