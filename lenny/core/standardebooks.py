@@ -35,16 +35,20 @@ logger = logging.getLogger(__name__)
 SOURCE = "standardebooks"
 
 # A real Standard Ebooks id: author/title, plus translator or other contributors ("jane-austen/emma",
-# "fyodor-sologub/the-created-legend/john-cournos"). Open Library's id_standard_ebooks field also holds
-# leading-slash forms ("/sophocles/antigone/francis-storr") and unrelated values (UUIDs of modern
+# "fyodor-sologub/the-created-legend/john-cournos"); several authors or translators in one part are
+# joined with "_" ("karl-marx_friedrich-engels/the-communist-manifesto/samuel-moore"). Open Library's
+# id_standard_ebooks field also holds leading-slash forms ("/sophocles/antigone/francis-storr"), the
+# archive.org name with "_" for "/" ("james-joyce_dubliners"), and unrelated values (UUIDs of modern
 # novels) that are not Standard Ebooks at all.
-_SE_ID = re.compile(r"[a-z0-9][a-z0-9.\-]*(?:/[a-z0-9][a-z0-9.\-]*){1,3}")
+_PART = r"[a-z0-9][a-z0-9.\-]*(?:_[a-z0-9][a-z0-9.\-]*)*"
+_SE_ID = re.compile(rf"{_PART}(?:/{_PART}){{1,3}}")
+_SE_FLAT = re.compile(rf"[a-z0-9][a-z0-9.\-]*(?:_[a-z0-9][a-z0-9.\-]*)+")   # one part, but it needs a "_" (not a UUID)
 
 
 def clean_source_id(raw) -> Optional[str]:
     """The Standard Ebooks id in `raw` without stray slashes, or None if it is not one."""
     sid = str(raw or "").strip().strip("/").lower()
-    return sid if _SE_ID.fullmatch(sid) else None
+    return sid if len(sid) <= 400 and (_SE_ID.fullmatch(sid) or _SE_FLAT.fullmatch(sid)) else None
 
 
 class StandardEbooks:

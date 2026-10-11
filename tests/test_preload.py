@@ -476,7 +476,11 @@ def test_a_book_missing_from_the_preload_item_is_downloaded_from_its_own_item():
     ("  Jane-Austen/Emma ", "jane-austen/emma"),
     ("3c85ef23-cc51-4320-96e1-f80f189ce31e", None),                                      # a UUID: not Standard Ebooks
     ("/3c85ef23-cc51-4320-96e1-f80f189ce31e", None),
+    ("karl-marx_friedrich-engels/the-communist-manifesto/samuel-moore", "karl-marx_friedrich-engels/the-communist-manifesto/samuel-moore"),
+    ("william-shakespeare_john-fletcher/the-two-noble-kinsmen", "william-shakespeare_john-fletcher/the-two-noble-kinsmen"),
+    ("james-joyce_dubliners", "james-joyce_dubliners"),                                   # the archive.org form of the name
     ("emma", None), ("", None), (None, None), ("a/b/c/d/e", None), ("a b/c", None), ("../etc/passwd", None),
+    ("a" * 500 + "/b", None),
 ])
 def test_clean_source_id(raw, clean):
     from lenny.core.standardebooks import clean_source_id
