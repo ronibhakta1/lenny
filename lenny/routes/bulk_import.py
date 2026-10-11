@@ -10,6 +10,7 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     PUT    /admin/import/batches/{id}/rows
     GET    /admin/import/batches/{id}/rows
     PATCH  /admin/import/batches/{id}/rows/{row_id}
+    DELETE /admin/import/batches/{id}/rows/{row_id}
     POST   /admin/import/batches/{id}/actions
 
 Every route is admin-only, same credential pair as the other /admin/ routes.
@@ -121,6 +122,14 @@ async def patch_row(request: Request, batch_id: int, row_id: int, body: dict = B
     if olid is None and skipped is None and encrypted is None:
         raise HTTPException(status_code=400, detail="Provide skipped, olid and/or encrypted")
     return await _run(batches.update_row, batch_id, row_id, skipped=skipped, olid=olid, encrypted=encrypted)
+
+
+@router.delete("/admin/import/batches/{batch_id}/rows/{row_id}")
+async def delete_row(request: Request, batch_id: int, row_id: int):
+    """Remove a row from the batch; returns the updated batch summary. 404 if the
+    row is gone, 409 while it is being imported. An imported book stays in the library."""
+    _require_admin(request)
+    return await _run(batches.delete_row, batch_id, row_id)
 
 
 @router.post("/admin/import/batches/{batch_id}/actions")

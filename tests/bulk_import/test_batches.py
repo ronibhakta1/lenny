@@ -420,6 +420,68 @@ def test_bulk_update_rejects_bad_input(kwargs):
         b.bulk_update(new_batch(), **kwargs)
 
 
+# ─── removing rows ───────────────────────────────────────────────────────────
+
+def test_delete_row_removes_it_and_updates_the_counts():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(3))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    summary = b.delete_row(bid, ids[1])
+    assert summary["total"] == 2 and summary["counts"] == {"queued": 2}
+    assert [r["id"] for r in b.list_rows(bid)["rows"]] == [ids[0], ids[2]]
+    with pytest.raises(b.ImportRowNotFound):
+        b.delete_row(bid, ids[1])                                  # already gone: 404
+
+
+def test_delete_row_refuses_an_importing_row_but_removes_an_imported_one():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(2))
+    a, c = [r["id"] for r in b.list_rows(bid)["rows"]]
+    set_state(bid, **{str(a): dict(state="importing"), str(c): dict(state="imported", olid=5)})
+    with pytest.raises(b.ImportRowBusy):
+        b.delete_row(bid, a)
+    assert b.delete_row(bid, c)["counts"] == {"importing": 1}
+
+
+def test_delete_row_refreshes_retention_and_stays_inside_its_batch():
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.db import session as db
+    one, two = new_batch(), new_batch()
+    b.upsert_rows(one, rows(1)); b.upsert_rows(two, rows(1))
+    row_two = b.list_rows(two)["rows"][0]["id"]
+    soon = datetime.now(timezone.utc) + timedelta(days=2)
+    db.query(b.ImportBatch).filter(b.ImportBatch.id == one).update({"expires_at": soon}); db.commit()
+    row_one = b.list_rows(one)["rows"][0]["id"]
+    with pytest.raises(b.ImportRowNotFound):
+        b.delete_row(one, row_two)                                  # another batch's row
+    b.delete_row(one, row_one)
+    assert datetime.fromisoformat(b.get_summary(one)["expires_at"]) > soon + timedelta(days=27)
+    assert b.get_summary(two)["total"] == 1
+
+
+def test_a_removed_file_dropped_again_is_a_fresh_row():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1, title="Dune"))
+    old = b.list_rows(bid)["rows"][0]["id"]
+    set_state(bid, **{str(old): dict(state="matched", olid=5, decision="user")})
+    b.delete_row(bid, old)
+    assert b.upsert_rows(bid, rows(1, title="Dune")) == {"created": 1, "existing": 0}
+    new = b.list_rows(bid)["rows"][0]
+    assert new["state"] == "queued" and new["olid"] is None and new["decision"] == "auto"   # nothing carried over
+
+
+def test_bulk_remove_takes_the_filtered_rows_but_not_importing_ones():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(5))
+    ids = [r["id"] for r in b.list_rows(bid)["rows"]]
+    for i in ids[:3]:
+        b.update_row(bid, i, skipped=True)
+    set_state(bid, **{str(ids[0]): dict(state="importing")})
+    assert b.bulk_update(bid, "remove", skipped=True) == 2          # the importing one stays
+    assert sorted(r["id"] for r in b.list_rows(bid)["rows"]) == [ids[0], ids[3], ids[4]]
+    assert b.bulk_update(bid, "remove", state="queued") == 2
+
+
 # ─── routes ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
@@ -453,7 +515,7 @@ API = "/v1/api/admin/import/batches"
 @pytest.mark.parametrize("method, path", [
     ("post", API), ("get", API), ("get", f"{API}/1"), ("delete", f"{API}/1"),
     ("put", f"{API}/1/rows"), ("get", f"{API}/1/rows"),
-    ("patch", f"{API}/1/rows/1"), ("post", f"{API}/1/actions"),
+    ("patch", f"{API}/1/rows/1"), ("delete", f"{API}/1/rows/1"), ("post", f"{API}/1/actions"),
 ])
 def test_every_route_requires_the_admin_credentials(app_module, method, path):
     from fastapi.testclient import TestClient
@@ -482,6 +544,18 @@ def test_the_whole_flow_over_http(client):
 
     assert client.delete(f"{API}/{bid}").status_code == 204
     assert client.get(f"{API}/{bid}").status_code == 404
+
+
+def test_remove_over_http(client):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path=f"{i}.epub", size=i + 1, mtime=1) for i in range(3)]})
+    ids = [r["id"] for r in client.get(f"{API}/{bid}/rows").json()["rows"]]
+    r = client.delete(f"{API}/{bid}/rows/{ids[0]}")
+    assert r.status_code == 200 and r.json()["total"] == 2 and r.json()["counts"] == {"queued": 2}
+    assert client.delete(f"{API}/{bid}/rows/{ids[0]}").status_code == 404
+    client.patch(f"{API}/{bid}/rows/{ids[1]}", json={"skipped": True})
+    assert client.post(f"{API}/{bid}/actions", json={"action": "remove", "skipped": True}).json() == {"updated": 1}
+    assert client.get(f"{API}/{bid}").json()["total"] == 1
 
 
 def test_http_errors_are_mapped(client):
