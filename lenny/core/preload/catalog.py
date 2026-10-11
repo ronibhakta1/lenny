@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 
 from lenny.core.openlibrary import OpenLibrary
-from lenny.core.standardebooks import StandardEbooks
+from lenny.core.standardebooks import StandardEbooks, clean_source_id
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def _headers() -> dict:
 
 def _book(record, files: dict):
     """One catalog entry, or None if the record cannot be loaded."""
-    source_id = record.standardebooks_id
+    source_id = clean_source_id(record.standardebooks_id)
     if not source_id:
         return None
     try:
@@ -145,6 +145,8 @@ def _build() -> dict:
     files = available_files()
     books, known = [], 0
     for record in _fetch_records():
+        if not clean_source_id(record.standardebooks_id):
+            continue                      # junk in Open Library's field: not a Standard Ebooks id
         known += 1
         if (book := _book(record, files)):
             books.append(book)

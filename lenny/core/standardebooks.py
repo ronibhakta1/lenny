@@ -19,6 +19,7 @@
 """
 
 import logging
+import re
 from io import BytesIO
 from typing import Optional
 
@@ -32,6 +33,18 @@ from lenny.core.openlibrary import OpenLibrary
 logger = logging.getLogger(__name__)
 
 SOURCE = "standardebooks"
+
+# A real Standard Ebooks id: author/title, plus translator or other contributors ("jane-austen/emma",
+# "fyodor-sologub/the-created-legend/john-cournos"). Open Library's id_standard_ebooks field also holds
+# leading-slash forms ("/sophocles/antigone/francis-storr") and unrelated values (UUIDs of modern
+# novels) that are not Standard Ebooks at all.
+_SE_ID = re.compile(r"[a-z0-9][a-z0-9.\-]*(?:/[a-z0-9][a-z0-9.\-]*){1,3}")
+
+
+def clean_source_id(raw) -> Optional[str]:
+    """The Standard Ebooks id in `raw` without stray slashes, or None if it is not one."""
+    sid = str(raw or "").strip().strip("/").lower()
+    return sid if _SE_ID.fullmatch(sid) else None
 
 
 class StandardEbooks:
@@ -119,7 +132,7 @@ def import_standardebooks(limit=None, offset=0):
                 stats["skipped"] += 1
                 continue
 
-            standardebooks_id = book.standardebooks_id
+            standardebooks_id = clean_source_id(book.standardebooks_id)
             if not standardebooks_id:
                 logger.warning(f"Skipping OLID {olid}: no Standard Ebooks ID in OL record")
                 stats["skipped"] += 1

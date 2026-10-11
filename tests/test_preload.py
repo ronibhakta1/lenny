@@ -465,3 +465,30 @@ def test_a_book_missing_from_the_preload_item_is_downloaded_from_its_own_item():
     assert urls[0].endswith("lenny-open-access-preloads/jane-austen_emma.epub")        # the preload item is tried first
     assert urls[1] == "https://archive.org/download/jane-austen_emma/jane-austen_emma.epub"
     assert urls[2:] == [StandardEbooks.construct_download_url("nobody/nothing"), StandardEbooks.construct_item_url("nobody/nothing")]
+
+
+# ─── junk in Open Library's id_standard_ebooks field ─────────────────────────
+
+@pytest.mark.parametrize("raw, clean", [
+    ("jane-austen/emma", "jane-austen/emma"),
+    ("/sophocles/antigone/francis-storr", "sophocles/antigone/francis-storr"),         # leading slash
+    ("fyodor-sologub/the-created-legend/john-cournos/", "fyodor-sologub/the-created-legend/john-cournos"),
+    ("  Jane-Austen/Emma ", "jane-austen/emma"),
+    ("3c85ef23-cc51-4320-96e1-f80f189ce31e", None),                                      # a UUID: not Standard Ebooks
+    ("/3c85ef23-cc51-4320-96e1-f80f189ce31e", None),
+    ("emma", None), ("", None), (None, None), ("a/b/c/d/e", None), ("a b/c", None), ("../etc/passwd", None),
+])
+def test_clean_source_id(raw, clean):
+    from lenny.core.standardebooks import clean_source_id
+    assert clean_source_id(raw) == clean
+
+
+def test_the_catalog_skips_junk_ids_and_counts_only_real_ones(fakes):
+    from lenny.core.openlibrary import OpenLibraryRecord
+    from lenny.core.preload import catalog
+    junk = [OpenLibraryRecord(dict(DOCS[0], **{"id_standard_ebooks": ["3c85ef23-cc51-4320-96e1-f80f189ce31e"]})),
+            OpenLibraryRecord(dict(DOCS[2], **{"id_standard_ebooks": ["/edgar-allan-poe/the-raven"]}))]   # fixable
+    with patch("lenny.core.preload.catalog._fetch_records", return_value=junk + [OpenLibraryRecord(DOCS[1])]):
+        cat = catalog.get()
+    assert [b["source_id"] for b in cat["books"]] == ["bram-stoker/dracula", "edgar-allan-poe/the-raven"]
+    assert cat["known"] == 2                                                                           # the UUID entry is not counted
