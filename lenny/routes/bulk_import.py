@@ -11,6 +11,7 @@ Admin endpoints for bulk-import batches (see lenny/core/bulk_import/batches.py).
     GET    /admin/import/batches/{id}/rows
     PATCH  /admin/import/batches/{id}/rows/{row_id}
     DELETE /admin/import/batches/{id}/rows/{row_id}
+    PUT    /admin/import/batches/{id}/rows/{row_id}/staged   keep the file on the server
     POST   /admin/import/batches/{id}/actions
     POST   /admin/import/batches/{id}/match           start matching (queued rows, or state=no_match to re-check)
     GET    /admin/import/match/{job_id}               progress of a match job
@@ -32,9 +33,10 @@ import anyio
 from fastapi import APIRouter, Body, File, HTTPException, Request, Response, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 
-from lenny.core.bulk_import import batches, importer, jobs, limits, matcher
+from lenny.core.bulk_import import batches, importer, jobs, limits, matcher, staging
 from lenny.core.db import session as db
-from lenny.core.exceptions import ItemExistsError, ItemNotFoundError, S3UploadError, DatabaseUpdateError
+from lenny.core.exceptions import (
+    DatabaseUpdateError, FileTooLargeError, InvalidFileError, ItemExistsError, ItemNotFoundError, S3UploadError)
 from lenny.routes.api import _UPLOAD_LIMITER, _require_admin
 
 router = APIRouter()
@@ -54,6 +56,10 @@ async def _run(fn, *args, _limiter=None, **kwargs):
             raise HTTPException(status_code=409, detail=str(e))
         except ItemNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
+        except FileTooLargeError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        except InvalidFileError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except matcher.UpstreamError as e:
@@ -150,6 +156,16 @@ async def delete_row(request: Request, batch_id: int, row_id: int):
         matcher.forget(row)                              # nothing cached may answer for it again
         return summary
     return await _run(work)
+
+
+@router.put("/admin/import/batches/{batch_id}/rows/{row_id}/staged")
+async def stage_file(request: Request, batch_id: int, row_id: int,
+                     file: UploadFile = File(..., description="The row's EPUB file")):
+    """Keep this book's file on the server so importing it later needs no browser.
+    Idempotent (a second upload replaces the first). Runs under the same bounded
+    upload pool as other uploads. Returns the row, with `staged: true`."""
+    _require_admin(request)
+    return await _run(staging.stage, batch_id, row_id, file, _limiter=_UPLOAD_LIMITER)
 
 
 @router.post("/admin/import/batches/{batch_id}/actions")

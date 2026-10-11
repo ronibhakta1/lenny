@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer,
-    SmallInteger, String, UniqueConstraint, and_, case, func, or_,
+    SmallInteger, String, UniqueConstraint, and_, case, false, func, or_,
 )
 
 from lenny.core.db import Base, session as db
@@ -113,12 +113,15 @@ class ImportRow(Base):
     # When an import of this row started; an `importing` row older than the
     # claim timeout is taken to be abandoned (crash, closed tab) and may be retried.
     claimed_at = Column(DateTime(timezone=True), nullable=True)
+    # The book's file is already on the server (staging.py), so importing it needs
+    # no browser: nothing has to stay connected, survive a reload or a backgrounded app.
+    staged = Column(Boolean, nullable=False, default=False, server_default=false())
 
 
 _ROW_FIELDS = (
     "id", "path", "size", "mtime", "state", "decision", "skipped", "encrypted", "olid",
     "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "isbn", "title", "author",
-    "language", "publisher", "year", "error",
+    "language", "publisher", "year", "error", "staged",
 )
 _METADATA = ("isbn", "title", "author", "language", "publisher", "year")
 
@@ -181,7 +184,15 @@ def purge_expired() -> int:
         db.query(ImportRow).filter(ImportRow.batch_id.in_(ids)).delete(synchronize_session=False)
         db.query(ImportBatch).filter(ImportBatch.id.in_(ids)).delete(synchronize_session=False)
     db.commit()
+    _drop_staged(batches=ids)
     return len(ids)
+
+
+def _drop_staged(batches=(), rows=()):
+    """Delete uploaded copies after their rows are gone (best effort: a leftover
+    object is only wasted space, never a wrong book)."""
+    from lenny.core.bulk_import import staging
+    staging.drop(batches=batches, rows=rows)
 
 
 def _get(batch_id: int) -> ImportBatch:
@@ -203,11 +214,13 @@ def summary(batch: ImportBatch) -> dict:
         db.query(ImportRow.state, func.count())
         .filter(ImportRow.batch_id == batch.id).group_by(ImportRow.state).all())
     matched = (ImportRow.state == MATCHED)
-    skipped, encrypted, ready, auto_picked = db.query(
+    skipped, encrypted, ready, auto_picked, staged, unstaged = db.query(
         func.coalesce(func.sum(case((ImportRow.skipped, 1), else_=0)), 0),
         func.coalesce(func.sum(case((ImportRow.encrypted, 1), else_=0)), 0),
         func.coalesce(func.sum(case((and_(matched, ImportRow.skipped.is_(False)), 1), else_=0)), 0),
         func.coalesce(func.sum(case((and_(matched, ImportRow.auto_picked.is_(True)), 1), else_=0)), 0),
+        func.coalesce(func.sum(case((ImportRow.staged, 1), else_=0)), 0),
+        func.coalesce(func.sum(case((and_(matched, ImportRow.skipped.is_(False), ImportRow.staged.is_(False)), 1), else_=0)), 0),
     ).filter(ImportRow.batch_id == batch.id).one()
     return {
         "id": batch.id,
@@ -219,6 +232,8 @@ def summary(batch: ImportBatch) -> dict:
         "encrypted": int(encrypted),
         "ready": int(ready),  # matched and not skipped: what "Import N books" imports
         "auto_picked": int(auto_picked),
+        "staged": int(staged),            # files already on the server
+        "unstaged": int(unstaged),        # matched, not skipped, file not on the server yet
     }
 
 
@@ -254,6 +269,7 @@ def delete_batch(batch_id: int) -> None:
         db.query(ImportRow).filter(ImportRow.batch_id == batch_id).delete(synchronize_session=False)
         db.query(ImportBatch).filter(ImportBatch.id == batch_id).delete(synchronize_session=False)
         db.commit()
+        _drop_staged(batches=[batch_id])
     finally:
         db.rollback()
 
@@ -364,9 +380,12 @@ def delete_row(batch_id: int, row_id: int) -> dict:
             raise ImportRowNotFound(f"Row {row_id} not found.")
         if row.state == IMPORTING:
             raise ImportRowBusy("Wait for this upload to finish.")
+        staged = row.staged
         db.delete(row)
         _touch(batch)
         db.commit()
+        if staged:
+            _drop_staged(rows=[(batch_id, row_id)])
         return summary(batch)
     finally:
         db.rollback()
@@ -454,9 +473,12 @@ def bulk_update(batch_id: int, action: str, state: str | None = None,
         query = _filtered(batch_id, state, q, skipped, auto_picked)
         if action == "remove":
             # A row being uploaded right now stays; imported ones go (the book stays in the library).
-            removed = query.filter(ImportRow.state != IMPORTING).delete(synchronize_session=False)
+            query = query.filter(ImportRow.state != IMPORTING)
+            staged = [(batch_id, i) for (i,) in query.filter(ImportRow.staged.is_(True)).with_entities(ImportRow.id).all()]
+            removed = query.delete(synchronize_session=False)
             _touch(batch)
             db.commit()
+            _drop_staged(rows=staged)
             return removed
         if action != "set_encrypted":
             query = query.filter(ImportRow.state.notin_(_SETTLED))
