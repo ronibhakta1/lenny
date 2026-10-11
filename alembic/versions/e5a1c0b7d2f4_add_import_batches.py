@@ -48,6 +48,7 @@ def upgrade() -> None:
         sa.Column('match_author', sa.String(200), nullable=True),
         sa.Column('match_year', sa.SmallInteger, nullable=True),
         sa.Column('isbn', sa.String(13), nullable=True),
+        sa.Column('isbn_alt', sa.String(64), nullable=True),
         sa.Column('title', sa.String(300), nullable=True),
         sa.Column('author', sa.String(200), nullable=True),
         sa.Column('language', sa.String(16), nullable=True),

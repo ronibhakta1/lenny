@@ -1133,3 +1133,33 @@ def test_sync_over_http(client, library):
     assert client.post(f"{API}/{bid}/sync").json() == {"reverted": 1, "released": 0, "removed_from_library": 0}
     assert client.get(f"{API}/{bid}/rows").json()["rows"][0]["state"] == "matched"
     assert client.post(f"{API}/{bid + 99}/sync").status_code == 404
+
+
+# ─── every ISBN a file mentions ──────────────────────────────────────────────
+
+def test_a_file_can_carry_several_isbns_and_all_are_kept_clean():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch()
+    b.upsert_rows(bid, [dict(path="a.epub", size=1, mtime=1, isbn="978-0-441-01359-3",
+                             isbns=["0441013597", "9780441013593", "bogus", None, "978 0 14 032872 1", "9780140328721"])])
+    row = b.list_rows(bid)["rows"][0]
+    assert row["isbn"] == "9780441013593"
+    assert row["isbn_alt"] == "0441013597 9780140328721"                  # de-duplicated, junk dropped, primary not repeated
+
+
+def test_isbns_alone_are_enough_and_the_alternates_are_capped():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch()
+    many = [f"97800000000{i:02d}" for i in range(10)]
+    b.upsert_rows(bid, [dict(path="a.epub", size=1, mtime=1, isbns=many), dict(path="b.epub", size=2, mtime=1, isbns="x")])
+    a, c = b.list_rows(bid)["rows"]
+    assert a["isbn"] is not None and len(a["isbn_alt"].split()) <= b.MAX_ALT_ISBNS and len(a["isbn_alt"]) <= 64
+    assert c["isbn"] is None and c["isbn_alt"] is None                    # not a list: ignored
+
+
+def test_a_re_dropped_file_gains_isbns_it_did_not_have_before():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(1))
+    b.upsert_rows(bid, [dict(rows(1)[0], isbn="9780441013593", isbns=["9780140328721"])])
+    row = b.list_rows(bid)["rows"][0]
+    assert (row["isbn"], row["isbn_alt"]) == ("9780441013593", "9780140328721")
