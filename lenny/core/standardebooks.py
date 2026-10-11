@@ -91,7 +91,9 @@ class StandardEbooks:
     @classmethod
     def download(cls, identifier: str, timeout: Optional[int] = None) -> Optional[BytesIO]:
         """The preload item first, then the book's own archive.org item; None if neither has it."""
-        for url in (cls.construct_download_url(identifier), cls.construct_item_url(identifier)):
+        # The preload item first. The book's own item is tried twice: archive.org's file servers
+        # answer 500 or time out now and then, and a retry usually gets through.
+        for url in (cls.construct_download_url(identifier), cls.construct_item_url(identifier), cls.construct_item_url(identifier)):
             epub = download_epub(url, timeout=timeout or cls.HTTP_TIMEOUT, headers=LennyClient.HTTP_HEADERS)
             if epub is not None:
                 return epub

@@ -460,12 +460,13 @@ def test_a_book_missing_from_the_preload_item_is_downloaded_from_its_own_item():
     def fake_download(url, timeout=None, headers=None):
         urls.append(url)
         return epub if "/jane-austen_emma/" in url else None
-    with patch("lenny.core.standardebooks.download_epub", fake_download):
+    with patch("lenny.core.standardebooks.download_epub", fake_download), patch("lenny.core.standardebooks.httpx.get", side_effect=__import__("httpx").ConnectError("no")):
         assert StandardEbooks.download("jane-austen/emma") is epub
         assert StandardEbooks.download("nobody/nothing") is None
     assert urls[0].endswith("lenny-open-access-preloads/jane-austen_emma.epub")        # the preload item is tried first
     assert urls[1] == "https://archive.org/download/jane-austen_emma/jane-austen_emma.epub"
-    assert urls[2:] == [StandardEbooks.construct_download_url("nobody/nothing"), StandardEbooks.construct_item_url("nobody/nothing")]
+    nobody = [StandardEbooks.construct_download_url("nobody/nothing")] + [StandardEbooks.construct_item_url("nobody/nothing")] * 2
+    assert urls[2:] == nobody                                                                  # the book's own item is tried twice
 
 
 # ─── junk in Open Library's id_standard_ebooks field ─────────────────────────
@@ -529,8 +530,8 @@ def test_an_item_that_names_its_epub_differently_is_found_through_its_metadata()
         return epub if url.endswith("gustave-le-bon_the-crowd_advanced.epub") else None
     with patch("lenny.core.standardebooks.download_epub", fake_download), patch("lenny.core.standardebooks.httpx.get", return_value=resp) as get:
         assert StandardEbooks.download("gustave-le-bon/the-crowd") is epub
-    assert len(urls) == 3 and get.call_args.args[0] == "https://archive.org/metadata/gustave-le-bon_the-crowd"
-    assert StandardEbooks.find_item_epub_url.__func__ is not None
+    assert len(urls) == 4 and urls[-1].endswith("/gustave-le-bon_the-crowd_advanced.epub")     # preload item, item twice, then the real name
+    assert get.call_args.args[0] == "https://archive.org/metadata/gustave-le-bon_the-crowd"
 
 
 def test_the_metadata_lookup_prefers_the_plain_epub_and_survives_errors():
