@@ -107,7 +107,7 @@ async def put_rows(request: Request, batch_id: int, body: dict = Body(...)):
 async def get_rows(
     request: Request, batch_id: int,
     state: Optional[str] = None, q: Optional[str] = None,
-    cursor: Optional[int] = None, limit: int = 100,
+    cursor: Optional[int] = None, limit: int = 100, offset: Optional[int] = None, total: bool = False,
     skipped: Optional[bool] = None, auto_picked: Optional[bool] = None, staged: Optional[bool] = None,
 ):
     _require_admin(request)
@@ -115,7 +115,7 @@ async def get_rows(
         raise HTTPException(status_code=400, detail=f"'state' must be one of {', '.join(batches.STATES)}")
     return await _run(
         batches.list_rows, batch_id, state=state, q=q, cursor=cursor, limit=limit,
-        skipped=skipped, auto_picked=auto_picked, staged=staged)
+        skipped=skipped, auto_picked=auto_picked, staged=staged, offset=offset, with_total=total)
 
 
 @router.patch("/admin/import/batches/{batch_id}/rows/{row_id}")

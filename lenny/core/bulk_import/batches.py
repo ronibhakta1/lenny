@@ -342,18 +342,32 @@ def _row_dict(row: ImportRow) -> dict:
 def list_rows(batch_id: int, state: str | None = None, q: str | None = None,
               cursor: int | None = None, limit: int = 100,
               skipped: bool | None = None, auto_picked: bool | None = None,
-              staged: bool | None = None) -> dict:
+              staged: bool | None = None, offset: int | None = None,
+              with_total: bool = False) -> dict:
+    """A page of rows in id order. Two ways to page: `cursor` (rows after this id; what the
+    import and upload passes use) or `offset` (skip this many; for numbered pages).
+    `total` (rows matching the filters, ignoring paging) is computed only when asked for
+    (`with_total`, or whenever `offset` is given) since it costs a count; otherwise None."""
+    if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
+        raise ValueError("'offset' must be a non-negative integer")
+    if offset is not None and cursor:
+        raise ValueError("Use either 'cursor' or 'offset', not both")
     limit = max(1, min(limit, MAX_PAGE))
     try:
         _get(batch_id)
         query = _filtered(batch_id, state, q, skipped, auto_picked, staged)
+        total = query.count() if (with_total or offset is not None) else None
         if cursor:
             query = query.filter(ImportRow.id > cursor)
-        rows = query.order_by(ImportRow.id).limit(limit + 1).all()
+        query = query.order_by(ImportRow.id)
+        if offset:
+            query = query.offset(offset)
+        rows = query.limit(limit + 1).all()
         page = rows[:limit]
         return {
             "rows": [_row_dict(r) for r in page],
             "next_cursor": page[-1].id if len(rows) > limit else None,
+            "total": total,
         }
     finally:
         db.rollback()

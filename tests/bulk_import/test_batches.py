@@ -632,6 +632,13 @@ def test_fifty_thousand_rows_page_and_count_correctly(pg):
         if cursor is None:
             break
     assert seen == 50_000 and pages == 250
+    # Numbered pages: a deep page and the total, with and without a search, stay quick.
+    started = time.monotonic()
+    deep = b.list_rows(bid, offset=49_950, limit=50)
+    assert len(deep["rows"]) == 50 and deep["total"] == 50_000 and deep["next_cursor"] is None
+    searched = b.list_rows(bid, offset=0, limit=50, q="book4999")        # book4999, book49990..49999
+    assert searched["total"] == 11 and len(searched["rows"]) == 11
+    assert time.monotonic() - started < 3.0
     started = time.monotonic()
     assert b.bulk_update(bid, "skip") == 50_000
     assert time.monotonic() - started < 5.0
@@ -815,3 +822,52 @@ def test_rows_can_be_filtered_by_whether_their_file_is_on_the_server(client):
     assert got(staged="true") == ids[:2] and got(staged="false") == ids[2:] and len(got()) == 4
     set_state(bid, **{str(i): dict(state="matched") for i in ids})
     assert got(staged="false", state="matched") == ids[2:]
+
+
+# ─── numbered pages ──────────────────────────────────────────────────────────
+
+def test_offset_pages_are_stable_and_match_the_cursor_order():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(23))
+    ids = [r["id"] for r in b.list_rows(bid, limit=200)["rows"]]
+    pages = [[r["id"] for r in b.list_rows(bid, offset=o, limit=10)["rows"]] for o in (0, 10, 20)]
+    assert pages[0] + pages[1] + pages[2] == ids and [len(p) for p in pages] == [10, 10, 3]
+    assert b.list_rows(bid, offset=30, limit=10)["rows"] == []                  # past the end: empty, not an error
+    first = b.list_rows(bid, offset=0, limit=10)
+    assert first["total"] == 23 and first["next_cursor"] == pages[0][-1]
+
+
+def test_total_counts_the_filtered_rows_ignoring_paging_and_is_off_unless_asked():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(12, title="Dune")); b.upsert_rows(bid, rows(5, start=12, title="Emma"))
+    ids = [r["id"] for r in b.list_rows(bid, limit=200)["rows"]]
+    set_state(bid, **{str(i): dict(state="matched", staged=i in ids[:2]) for i in ids[:7]})
+    assert b.list_rows(bid)["total"] is None                                    # cursor passes pay for no count
+    assert b.list_rows(bid, with_total=True, limit=3)["total"] == 17
+    assert b.list_rows(bid, offset=0, state="matched")["total"] == 7
+    assert b.list_rows(bid, offset=0, q="emma", limit=2)["total"] == 5
+    assert b.list_rows(bid, offset=0, q="DUNE", state="matched", limit=2)["total"] == 7
+    assert b.list_rows(bid, offset=0, staged=True)["total"] == 2
+    assert b.list_rows(bid, offset=0, q="nothing")["total"] == 0
+
+
+def test_offset_and_cursor_do_not_mix_and_bad_offsets_are_refused():
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(3))
+    with pytest.raises(ValueError):
+        b.list_rows(bid, offset=1, cursor=1)
+    for bad in (-1, True, "2", 1.5):
+        with pytest.raises(ValueError):
+            b.list_rows(bid, offset=bad)
+
+
+def test_offset_and_total_over_http(client):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path=f"b{i}.epub", size=i + 1, mtime=1, title="Dune" if i < 6 else "Emma") for i in range(9)]})
+    page = client.get(f"{API}/{bid}/rows", params={"offset": 4, "limit": 4}).json()
+    assert len(page["rows"]) == 4 and page["total"] == 9 and page["next_cursor"] is not None
+    assert client.get(f"{API}/{bid}/rows", params={"offset": 0, "q": "emma"}).json()["total"] == 3
+    assert client.get(f"{API}/{bid}/rows", params={"total": "true", "limit": 2}).json()["total"] == 9
+    assert client.get(f"{API}/{bid}/rows").json()["total"] is None
+    assert client.get(f"{API}/{bid}/rows", params={"offset": -1}).status_code == 400
+    assert client.get(f"{API}/{bid}/rows", params={"offset": 1, "cursor": 2}).status_code == 400
