@@ -108,6 +108,9 @@ class ImportRow(Base):
     match_year = Column(SmallInteger, nullable=True)
 
     isbn = Column(String(13), nullable=True)
+    # Further ISBNs the file mentions (an e-book ISBN and the print edition it was made from,
+    # dc:source), space separated, at most MAX_ALT_ISBNS: any of them can identify the edition.
+    isbn_alt = Column(String(64), nullable=True)
     title = Column(String(_MAX["title"]), nullable=True)
     author = Column(String(_MAX["author"]), nullable=True)
     language = Column(String(_MAX["language"]), nullable=True)
@@ -125,10 +128,11 @@ class ImportRow(Base):
 
 _ROW_FIELDS = (
     "id", "path", "size", "mtime", "state", "decision", "skipped", "encrypted", "olid",
-    "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "match_year", "isbn", "title", "author",
+    "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "match_year", "isbn", "isbn_alt", "title", "author",
     "language", "publisher", "year", "error", "staged", "imported_at",
 )
-_METADATA = ("isbn", "title", "author", "language", "publisher", "year")
+_METADATA = ("isbn", "isbn_alt", "title", "author", "language", "publisher", "year")
+MAX_ALT_ISBNS = 4
 
 
 def _now() -> datetime:
@@ -147,6 +151,20 @@ def row_key(path: str, size: int, mtime: int) -> str:
 def _clean_isbn(value) -> str | None:
     digits = "".join(c for c in str(value or "") if c.isdigit() or c in "xX").upper()
     return digits if len(digits) in (10, 13) else None
+
+
+def _clean_isbns(raw: dict) -> tuple:
+    """(primary isbn, space-separated others) from `isbn` and/or an `isbns` list, cleaned and de-duplicated."""
+    values = [raw.get("isbn")]
+    extra = raw.get("isbns")
+    if isinstance(extra, list):
+        values += extra[:2 * (MAX_ALT_ISBNS + 1)]
+    seen = []
+    for v in values:
+        clean = _clean_isbn(v)
+        if clean and clean not in seen:
+            seen.append(clean)
+    return (seen[0] if seen else None), (" ".join(seen[1:1 + MAX_ALT_ISBNS]) or None)
 
 
 def _clean_row(raw: dict, index: int) -> dict:
@@ -169,9 +187,10 @@ def _clean_row(raw: dict, index: int) -> dict:
     year = raw.get("year")
     if year is not None and (isinstance(year, bool) or not isinstance(year, int) or not 0 < year < 10000):
         year = None
+    isbn, isbn_alt = _clean_isbns(raw)
     clean = {
         "row_key": row_key(path, size, mtime), "path": path, "size": size, "mtime": mtime,
-        "state": state or QUEUED, "isbn": _clean_isbn(raw.get("isbn")), "year": year,
+        "state": state or QUEUED, "isbn": isbn, "isbn_alt": isbn_alt, "year": year,
     }
     for name in ("title", "author", "language", "publisher"):
         value = raw.get(name)
