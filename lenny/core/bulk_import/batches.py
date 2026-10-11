@@ -105,6 +105,7 @@ class ImportRow(Base):
     # name the book once the EPUB's own metadata is dropped.
     match_title = Column(String(_MAX["title"]), nullable=True)
     match_author = Column(String(_MAX["author"]), nullable=True)
+    match_year = Column(SmallInteger, nullable=True)
 
     isbn = Column(String(13), nullable=True)
     title = Column(String(_MAX["title"]), nullable=True)
@@ -124,7 +125,7 @@ class ImportRow(Base):
 
 _ROW_FIELDS = (
     "id", "path", "size", "mtime", "state", "decision", "skipped", "encrypted", "olid",
-    "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "isbn", "title", "author",
+    "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "match_year", "isbn", "title", "author",
     "language", "publisher", "year", "error", "staged", "imported_at",
 )
 _METADATA = ("isbn", "title", "author", "language", "publisher", "year")
@@ -439,7 +440,7 @@ def existing_olids(olids: list) -> list:
 
 
 def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
-               olid: int | None = None, encrypted: bool | None = None) -> dict:
+               olid: int | None = None, encrypted: bool | None = None, match: dict | None = None) -> dict:
     """Apply one admin decision to one row.
 
     A new edition on a row that is already imported moves the stored book to
@@ -479,6 +480,13 @@ def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
             if row.state != IMPORTED:
                 row.state = MATCHED
             row.olid, row.decision, row.auto_picked, row.error = olid, USER, False, None
+            # The row must show the edition that was chosen, not the one it was matched to first.
+            row.confidence = 0
+            match = match or {}
+            row.match_title = (match.get("title") or "")[:_MAX["title"]] or None
+            row.match_author = (match.get("author") or "")[:_MAX["author"]] or None
+            year = match.get("year")
+            row.match_year = year if isinstance(year, int) and not isinstance(year, bool) and 0 < year < 10000 else None
         if skipped is not None:
             row.skipped = skipped
         if encrypted is not None:
