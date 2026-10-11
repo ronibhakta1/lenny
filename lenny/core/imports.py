@@ -86,10 +86,14 @@ class ImportJob:
         """Every unexpired import record, newest first."""
         try:
             now = datetime.now(timezone.utc)
-            rows = db.query(CacheEntry).filter(
+            # Read the values now: `record()` deletes and re-inserts a book's row on every
+            # status change, and `rollback()` expires the loaded objects, so touching them
+            # afterwards re-reads a row that may be gone (ObjectDeletedError, a 500 on
+            # /admin/imports while an import is running).
+            rows = [(r.value, r.created_at) for r in db.query(CacheEntry).filter(
                 CacheEntry.scope == SCOPE,
                 CacheEntry.expires_at > now,
-            ).order_by(CacheEntry.created_at.desc()).all()
+            ).order_by(CacheEntry.created_at.desc()).all()]
             db.rollback()
         except Exception as e:
             db.rollback()
@@ -97,11 +101,11 @@ class ImportJob:
             return []
 
         imports = []
-        for row in rows:
+        for value, created_at in rows:
             try:
-                record = json.loads(row.value)
+                record = json.loads(value)
             except (TypeError, ValueError):
                 continue
-            record["updated_at"] = row.created_at.isoformat() if row.created_at else None
+            record["updated_at"] = created_at.isoformat() if created_at else None
             imports.append(record)
         return imports

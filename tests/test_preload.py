@@ -857,3 +857,26 @@ def test_item_metadata_over_http_only_for_books_in_the_library(client, db, clear
 def test_the_item_metadata_route_requires_admin(app_module):
     from fastapi.testclient import TestClient
     assert TestClient(app_module).get("/v1/api/admin/items/777/metadata").status_code == 403
+
+
+# ─── the progress list must survive books being re-recorded while it is read ──
+
+def test_listing_imports_survives_rows_replaced_during_the_read(db):
+    """`ImportJob.record` deletes and re-inserts a book's row on each status change. Reading the list
+    while an import runs used to 500 (ObjectDeletedError) when a row vanished between the query and
+    its use; the values are now copied out before anything can change."""
+    from lenny.core.cache import CacheEntry
+    from lenny.core.db import engine
+    from lenny.core.imports import DONE, DOWNLOADING, ImportJob
+    ImportJob.record("standardebooks", 1, DOWNLOADING, title="One")
+    ImportJob.record("standardebooks", 2, DONE, title="Two")
+    import lenny.core.imports as imports
+    real_rollback = imports.db.rollback
+    def rollback_while_rows_are_replaced():
+        with engine.begin() as conn:
+            conn.exec_driver_sql("delete from cache")               # a concurrent record() replaced every row
+        return real_rollback()
+    with patch.object(imports.db, "rollback", rollback_while_rows_are_replaced):
+        got = ImportJob.list()
+    assert sorted((r["olid"], r["status"], r["title"]) for r in got) == [(1, "downloading", "One"), (2, "done", "Two")]
+    assert all(r["updated_at"] for r in got)
