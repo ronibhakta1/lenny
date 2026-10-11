@@ -50,10 +50,18 @@ class FakeOL:
         if "q" in params and params["q"].startswith("isbn:"):
             wanted = set(params["q"].replace("isbn:", "").strip("()").replace(" OR ", " ").split())
             return [w for w in self.works if any(set(e["isbn"]) & wanted for e in w["editions"]["docs"])]
-        t, a = params.get("title", "").lower(), params.get("author", "").lower()
-        found = [w for w in self.works if t and t.split(":")[0] in w["title"].lower()]
-        # Like Open Library: an author term that matches no author empties the result.
-        return [w for w in found if not a or any(a in n.lower() for n in w["author_name"])]
+        if "q" in params:   # a batched query: (title:"X" AND author:"Y") OR (...)
+            import re
+            asks = [(t, a) for t, a in re.findall(r'title:"([^"]*)"(?: AND author:"([^"]*)")?', params["q"])]
+        else:
+            asks = [(params.get("title", ""), params.get("author", ""))]
+        out = []
+        for t, a in asks:
+            t, a = t.lower(), a.lower()
+            found = [w for w in self.works if t and t.split(":")[0] in w["title"].lower()]
+            # Like Open Library: an author term that matches no author empties the result.
+            out += [w for w in found if (not a or any(a in n.lower() for n in w["author_name"])) and w not in out]
+        return out
 
 
 @pytest.fixture
@@ -62,7 +70,8 @@ def ol():
         work("Dune", ["Frank Herbert"], (101, ["9780441013593", "0441013597"], "eng"), (102, ["9780593099322"], "fre")),
         work("The Left Hand of Darkness", ["Ursula K. Le Guin"], (201, ["9780441478125"], "eng")),
     )
-    with patch("lenny.core.bulk_import.matcher.search", fake):
+    with patch("lenny.core.bulk_import.matcher.search", fake), \
+         patch("lenny.core.bulk_import.matcher.work_editions", return_value=[]):
         yield fake
 
 
@@ -134,7 +143,8 @@ def defector():
         work("The Suitors", ["Ben Ehrenreich"], (3413631, [], "eng")),
         work("Database Internals", ["Alex Petrov"], (28933309, [], "eng")),
     )
-    with patch("lenny.core.bulk_import.matcher.search", fake):
+    with patch("lenny.core.bulk_import.matcher.search", fake), \
+         patch("lenny.core.bulk_import.matcher.work_editions", return_value=[]):
         yield fake
 
 
@@ -195,6 +205,9 @@ def test_candidates_for_tries_every_query_for_the_widest_list(defector):
 @pytest.mark.parametrize("author, names", [
     ("Frank Herbert; Brian Herbert", ["Frank Herbert", "Brian Herbert"]),
     ("Herbert, Frank", ["Frank Herbert"]),
+    ("Le Guin, Ursula K.", ["Ursula K. Le Guin"]),
+    ("van Gogh, Vincent", ["Vincent van Gogh"]),
+    ("Andrew Hunt, David Thomas", ["Andrew Hunt", "David Thomas"]),
     ("A One & B Two and C Three", ["A One", "B Two", "C Three"]),
     (MASTHEAD, ["Defector", "Diana Moskovitz", "Luis Paez-Pumar", "Lauren Theisen", "Patrick Redford",
                 "Matt Ribel", "David Roth", "Dave McKenna", "Abigail Segel"]),
@@ -222,6 +235,154 @@ def test_names_compare_ignoring_word_order():
 def test_from_path(path, expected):
     from lenny.core.bulk_import import matcher as m
     assert m.from_path(path) == expected
+
+
+# ─── speed: several rows per request, a few requests at once ─────────────────
+
+def titled(i, title, author=None, **extra):
+    return dict(id=i, isbn=None, title=title, author=author, language=None, path=None, **extra)
+
+
+def test_title_rows_go_ten_to_a_request_and_only_misses_are_searched_again():
+    from lenny.core.bulk_import import matcher as m
+    books = [work(f"Book Number {i}", [f"Writer {i}"], (1000 + i, [], "eng")) for i in range(25)]
+    fake = FakeOL(*books)
+    rows = [titled(i, f"Book Number {i}", f"Writer {i}") for i in range(25)] + [titled(99, "Not In Open Library", "Nobody")]
+    with patch("lenny.core.bulk_import.matcher.search", fake):
+        out = dict(m.match_rows(rows))
+    assert all(out[i]["state"] == "matched" and out[i]["olid"] == 1000 + i for i in range(25))
+    assert out[99]["state"] == "no_match"
+    batched = [c for c in fake.calls if "q" in c]
+    assert len(batched) == 3 and all(" OR " in c["q"] for c in batched[:2])
+    assert len(fake.calls) - len(batched) >= 1                       # the miss still got its own ladder
+    assert len(fake.calls) < 15                                      # vs ~27 one by one
+
+
+def test_a_row_the_batch_misses_is_still_found_by_the_ladder():
+    from lenny.core.bulk_import import matcher as m
+    fake = FakeOL(*[work(f"Title {i}", [f"A {i}"], (500 + i, [], "eng")) for i in range(4)])
+    real = fake.__call__
+    def forgetful(params, retries=3):
+        out = real(params, retries)
+        return [w for w in out if w["title"] != "Title 2"] if "q" in params else out   # batch drops one
+    with patch("lenny.core.bulk_import.matcher.search", forgetful):
+        out = dict(m.match_rows([titled(i, f"Title {i}", f"A {i}") for i in range(4)]))
+    assert out[2]["state"] == "matched" and out[2]["olid"] == 502
+
+
+def test_batched_clauses_escape_quotes_and_skip_a_masthead():
+    from lenny.core.bulk_import import matcher as m
+    assert m._clause(titled(1, 'The "Quoted" Book', "Ann Writer")) == '(title:"The  Quoted  Book" AND author:"Ann Writer")'
+    assert "author" not in m._clause(titled(1, "Digest", MASTHEAD))
+    assert m._clause(dict(id=1, title=None, author=None, path="")) is None
+
+
+def test_the_ladder_runs_several_searches_at_once():
+    from lenny.core.bulk_import import matcher as m
+    live, peak, lock = [0], [0], threading.Lock()
+    def slow(params, retries=3):
+        with lock:
+            live[0] += 1; peak[0] = max(peak[0], live[0])
+        time.sleep(0.05)
+        with lock:
+            live[0] -= 1
+        return []
+    with patch("lenny.core.bulk_import.matcher.search", slow):
+        out = dict(m.match_rows([titled(i, f"Nothing {i}") for i in range(2)] * 1 + [titled(9, "x")]))   # < BATCH_MIN each → ladder
+    assert len(out) == 3 and peak[0] >= 2 and peak[0] <= m._workers()
+
+
+def test_workers_follow_the_allowed_rate():
+    from lenny import configs
+    from lenny.core.bulk_import import matcher as m
+    assert m._workers() == 2
+    with patch.object(configs, "CONTACT_EMAIL", "me@example.org"):
+        assert m._workers() == 4
+
+
+def test_an_upstream_failure_in_a_worker_stops_the_job_cleanly():
+    from lenny.core.bulk_import import matcher as m
+    with patch("lenny.core.bulk_import.matcher.search", side_effect=m.UpstreamError("down")):
+        with pytest.raises(m.UpstreamError):
+            list(m.match_rows([titled(1, "a"), titled(2, "b")]))
+
+
+# ─── accuracy: language, publisher and year, and the edition lists ───────────
+
+def cand(**kw):
+    return dict(dict(olid=1, title="Dune", authors=["Frank Herbert"], isbns=[], language="eng", publisher=None,
+                     year=None, work="/works/OL1W"), **kw)
+
+
+def test_language_and_publisher_and_year_adjust_a_good_match():
+    from lenny.core.bulk_import import matcher as m
+    base = dict(title="Dune", author="Frank Herbert")
+    plain = m.score(base, cand())
+    assert plain == 100
+    assert m.score(dict(base, language="fr"), cand()) < m.AUTO_MIN               # wrong-language edition
+    assert m.score(dict(base, language="en-US"), cand()) == 100                  # en-US is eng
+    near = dict(title="Dune: Messiah", author="Frank Herbert")                   # 86: review
+    assert m.score(dict(near, language="en"), cand()) == 89 and m.score(dict(near, language="en"), cand()) < m.AUTO_MIN
+    better = m.score(dict(near, publisher="Ace Books", year=1990), cand(publisher="Ace", year=1991))
+    assert better > m.score(near, cand())
+
+
+def test_extra_metadata_never_lifts_a_poor_match_or_makes_one_automatic():
+    from lenny.core.bulk_import import matcher as m
+    junk = dict(title="Cooking for Cats", author="Nobody", language="en", publisher="Ace", year=1990)
+    assert m.score(junk, cand(publisher="Ace", year=1990)) < m.REVIEW_MIN
+    review = dict(title="Dune: Messiah", author="Frank Herbert", language="en", publisher="Ace", year=1990)
+    assert m.REVIEW_MIN <= m.score(review, cand(publisher="Ace", year=1990)) < m.AUTO_MIN
+
+
+def test_publisher_may_be_part_of_the_other_name():
+    from lenny.core.bulk_import import matcher as m
+    assert m._same_publisher("Ace", "Ace Trade") and m._same_publisher("O'Reilly Media", "O'Reilly")
+    assert not m._same_publisher("Ace", "Pace Books") and not m._same_publisher("", "Ace")
+
+
+def test_edition_language_picks_between_editions_of_one_work():
+    from lenny.core.bulk_import import matcher as m
+    cands = [cand(olid=1, language="fre"), cand(olid=2, language="eng", publisher="Ace", year=1990), cand(olid=3, language="eng")]
+    ranked = m.rank(dict(title="Dune", author="Frank Herbert", language="en", publisher="Ace", year=1990), cands)
+    assert [c["olid"] for c in ranked] == [2, 3, 1]
+
+
+def test_work_editions_parsing():
+    from lenny.core.bulk_import import matcher as m
+    body = {"entries": [
+        {"key": "/books/OL7M", "title": "Dune", "publishers": ["Ace"], "publish_date": "Oct 1, 1990",
+         "languages": [{"key": "/languages/eng"}], "isbn_13": ["9780441013593"], "isbn_10": ["0441013597"]},
+        {"key": "/books/OL8M", "publish_date": "n.d.", "languages": None, "publishers": None},
+        {"key": "/not/an/edition"}]}
+    with patch("lenny.core.bulk_import.matcher._call", return_value=body):
+        got = m.work_editions("/works/OL1W")
+    assert [e["olid"] for e in got] == [7, 8]
+    assert got[0] == {"olid": 7, "title": "Dune", "authors": [], "year": 1990, "publisher": "Ace", "language": "eng",
+                      "isbn": "9780441013593", "isbns": ["9780441013593", "0441013597"], "work": "/works/OL1W"}
+    assert got[1]["year"] is None and got[1]["language"] is None
+    assert m.work_editions("../etc/passwd") == []                       # only real work keys are fetched
+
+
+def test_the_change_edition_list_includes_editions_of_the_best_works(defector):
+    from lenny.core.bulk_import import matcher as m
+    fake = FakeOL(work("Dune", ["Frank Herbert"], (101, [], "fre")))
+    editions = [dict(olid=102, title="Dune", authors=[], year=1990, publisher="Ace", language="eng", isbn="1", isbns=["1"], work="/works/OL1W"),
+                dict(olid=101, title="Dune", authors=[], year=2001, publisher="Other", language="fre", isbn=None, isbns=[], work="/works/OL1W")]
+    row = dict(isbn=None, title="Dune", author="Frank Herbert", language="en", publisher="Ace", year=1990, path=None)
+    with patch("lenny.core.bulk_import.matcher.search", fake), \
+         patch("lenny.core.bulk_import.matcher.work_editions", return_value=editions) as we:
+        got = m.candidates_for(row)
+    assert [c["olid"] for c in got] == [102, 101]                       # the English Ace 1990 edition first
+    assert got[0]["authors"] == ["Frank Herbert"] and "work" not in got[0] and "isbns" not in got[0]
+    assert we.call_count == 1
+
+
+def test_a_failed_edition_lookup_keeps_the_rest_of_the_list(defector):
+    from lenny.core.bulk_import import matcher as m
+    row = dict(isbn=None, title="The Suitors", author="Ben Ehrenreich", language=None, path=None)
+    with patch("lenny.core.bulk_import.matcher.work_editions", side_effect=m.UpstreamError("down")):
+        assert [c["olid"] for c in m.candidates_for(row)] == [3413631]
 
 
 # ─── asking Open Library ─────────────────────────────────────────────────────
@@ -261,10 +422,8 @@ def test_one_query_per_title_row_and_results_arrive_as_they_come(ol):
     from lenny.core.bulk_import import matcher as m
     rl = [dict(id=1, isbn=None, title="Dune", author=None, language=None),
           dict(id=2, isbn=None, title="The Left Hand of Darkness", author="Le Guin, Ursula K.", language=None)]
-    gen = m.match_rows(rl)
-    first = next(gen)
-    assert first[0] == 1 and len(ol.calls) == 1          # lazily: second not asked yet
-    assert dict(gen)[2]["olid"] == 201
+    got = dict(m.match_rows(rl))
+    assert got[1]["olid"] == 101 and got[2]["olid"] == 201
 
 
 @pytest.fixture
@@ -483,15 +642,18 @@ def test_an_unexpected_error_does_not_leak_details():
 
 def test_partial_results_are_saved_as_the_job_goes(ol):
     from lenny.core.bulk_import import batches as b, jobs
-    bid = batch_with(*[dict(title="Dune", author="Frank Herbert") for _ in range(jobs.FLUSH_EVERY + 5)])
-    seen = []
-    real = ol.__call__
-    def spying(params, retries=3):
-        seen.append(b.get_summary(bid)["counts"].get("matched", 0))
-        return real(params, retries)
-    with patch("lenny.core.bulk_import.matcher.search", spying):
+    n = 35
+    bid = batch_with(*[dict(title="Dune", author="Frank Herbert") for _ in range(n)])
+    saves = []
+    real_save = jobs._save
+    def spying(batch_id, results, state):
+        saves.append((len(results), b.get_summary(bid)["counts"].get("matched", 0)))
+        return real_save(batch_id, results, state)
+    with patch.object(jobs, "_save", spying), patch.object(jobs, "FLUSH_EVERY", 10):
         run_job(bid)
-    assert max(seen) >= jobs.FLUSH_EVERY and b.get_summary(bid)["counts"]["matched"] == jobs.FLUSH_EVERY + 5
+    assert len(saves) >= 3 and sum(k for k, _ in saves) == n         # saved in steps, not once at the end
+    assert saves[1][1] > 0                                           # earlier steps were already visible
+    assert b.get_summary(bid)["counts"]["matched"] == n
 
 
 def test_more_rows_than_one_chunk(ol):

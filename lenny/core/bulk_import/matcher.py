@@ -24,11 +24,12 @@ returns; asking for more editions per work is the upgrade if choices are thin.
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 
 import requests
 
-from lenny.core.bulk_import.limits import ISBN_BATCH, Pacer
+from lenny.core.bulk_import.limits import ISBN_BATCH, Pacer, ol_rps
 from lenny.core.upstream import OL_TIMEOUT, open_library
 
 AUTO_MIN = 90
@@ -36,6 +37,9 @@ REVIEW_MIN = 60
 MAX_CANDIDATES = 10
 MAX_RETRY_WAIT = 60
 RETRIES = 3
+TITLE_BATCH = 10       # rows per batched title query
+BATCH_MIN = 3          # fewer than this are cheaper searched one by one
+EDITION_WORKS = 2      # works whose editions the "Change edition" list expands
 
 SEARCH_URL = "https://openlibrary.org/search.json"
 _FIELDS = ("key,title,author_name,first_publish_year,editions,editions.key,editions.title,"
@@ -133,7 +137,7 @@ def candidates_from(docs: list) -> list:
                 "authors": work.get("author_name") or [],
                 "year": _first(ed.get("publish_year")) or work.get("first_publish_year"),
                 "publisher": _first(ed.get("publisher")), "language": _first(ed.get("language")),
-                "isbn": _first(isbns), "isbns": isbns,
+                "isbn": _first(isbns), "isbns": isbns, "work": work.get("key"),
             })
     return out
 
@@ -180,8 +184,14 @@ def _split_names(author) -> list:
         if part.count(",") >= 2:
             names += [p.strip() for p in part.split(",") if p.strip()]
         elif "," in part:
-            last, _, first = part.partition(",")
-            names.append(f"{first.strip()} {last.strip()}".strip())
+            left, _, right = (x.strip() for x in part.partition(","))
+            # "Andrew Hunt, David Thomas" is two people; "Herbert, Frank" and
+            # "Le Guin, Ursula K." are one written surname-first (a single-word
+            # side or an initial gives it away).
+            if len(left.split()) >= 2 and len(right.split()) >= 2 and not re.search(r"(^|\s)\w\.?(\s|$)", right):
+                names += [left, right]
+            else:
+                names.append(f"{right} {left}".strip())
         elif part:
             names.append(part)
     return [n for n in names if _norm(n)]
@@ -195,6 +205,47 @@ def _name_ratio(a: str, b: str) -> float:
 
 def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio() if a and b else 0.0
+
+
+# EPUB metadata says "en"/"en-US"; Open Library says "eng". The common ones; others compare as written.
+_LANG = {"en": "eng", "fr": "fre", "de": "ger", "es": "spa", "it": "ita", "pt": "por", "nl": "dut", "ru": "rus",
+         "zh": "chi", "ja": "jpn", "ko": "kor", "ar": "ara", "hi": "hin", "pl": "pol", "sv": "swe", "da": "dan",
+         "fi": "fin", "no": "nor", "cs": "cze", "el": "gre", "he": "heb", "tr": "tur", "la": "lat", "hu": "hun"}
+
+
+def _lang(code) -> str | None:
+    code = str(code or "").lower().replace("_", "-").split("-")[0].strip()
+    return _LANG.get(code, code) or None
+
+
+def _same_publisher(a: str, b: str) -> bool:
+    """Close spelling, or one name inside the other ("Ace" / "Ace Trade")."""
+    a, b = _norm(a), _norm(b)
+    return bool(a and b) and (_ratio(a, b) >= 0.8 or f" {a} " in f" {b} " or f" {b} " in f" {a} ")
+
+
+def _delta(row: dict, cand: dict) -> int:
+    """What else the file says about the edition: the same language and publisher
+    raise the score, a different language lowers it (a French edition of an
+    English file is the wrong record), a close year breaks ties."""
+    delta = 0
+    want_lang, have_lang = _lang(row.get("language")), _lang(cand.get("language"))
+    if want_lang and have_lang:
+        delta += 3 if want_lang == have_lang else -12
+    if row.get("publisher") and cand.get("publisher") and _same_publisher(row["publisher"], cand["publisher"]):
+        delta += 3
+    year, have_year = row.get("year"), cand.get("year")
+    if isinstance(year, int) and isinstance(have_year, int):
+        delta += 2 if year == have_year else 1 if abs(year - have_year) <= 2 else 0
+    return delta
+
+
+def _adjust(row: dict, cand: dict, base: int) -> int:
+    """`base` nudged by _delta. Never lifts a poor match (junk stays junk) and
+    never carries a review-level match over into automatic."""
+    if base < REVIEW_MIN:
+        return base
+    return max(0, min(base + _delta(row, cand), AUTO_MIN - 1 if base < AUTO_MIN else 100))
 
 
 def _facts(row: dict) -> tuple:
@@ -215,11 +266,12 @@ def score(row: dict, cand: dict) -> int:
     from_name_only = not row.get("title")  # a guess from the file name never auto-picks
     wanted = _split_names(author_text)
     if not wanted:
-        return min(round(title * 100 * 0.9), AUTO_MIN - 1 if from_name_only else 100)  # title alone: review, rarely sure
+        return _adjust(row, cand, min(round(title * 100 * 0.9), AUTO_MIN - 1 if from_name_only else 100))  # title alone: review, rarely sure
     # One shared author is strong evidence, so take the best pairing; a long
     # list (a magazine's whole masthead) only needs one of its names to appear.
     author = max((_name_ratio(w, h) for w in wanted for h in cand.get("authors", [])), default=0.0)
-    return min(round((0.7 * title + 0.3 * author) * 100), AUTO_MIN - 1 if from_name_only and author < 0.9 else 100)
+    base = min(round((0.7 * title + 0.3 * author) * 100), AUTO_MIN - 1 if from_name_only and author < 0.9 else 100)
+    return _adjust(row, cand, base)
 
 
 def rank(row: dict, cands: list) -> list:
@@ -227,12 +279,15 @@ def rank(row: dict, cands: list) -> list:
     lang = row.get("language")
     for c in cands:
         c["score"] = score(row, c)
-    cands.sort(key=lambda c: (-c["score"], c.get("language") != lang, not c.get("isbn"), c["olid"]))
+    # Several editions of one book all score 100; the extra metadata then decides
+    # which one comes first (a capped score cannot).
+    cands.sort(key=lambda c: (-c["score"], -(_delta(row, c) if c["score"] >= REVIEW_MIN else 0),
+                              c.get("language") != lang, not c.get("isbn"), c["olid"]))
     return cands[:MAX_CANDIDATES]
 
 
 def public(cand: dict) -> dict:
-    return {k: v for k, v in cand.items() if k != "isbns"}
+    return {k: v for k, v in cand.items() if k not in ("isbns", "work")}
 
 
 def decide(ranked: list) -> dict:
@@ -317,16 +372,103 @@ def _by_title(row: dict, retries: int = RETRIES, exhaustive: bool = False) -> li
     return rank(row, [dict(c) for c in pool.values()])
 
 
+def _lucene(text: str) -> str:
+    return re.sub(r'["\\]', " ", text).strip()
+
+
+def _clause(row: dict) -> str | None:
+    """One row's part of a batched query: title as a phrase, plus the first
+    author when there are few enough to be a real author list."""
+    title, author = _facts(row)
+    title = _lucene(" ".join(_clean_title(title).split()))[:150]
+    if not title:
+        return None
+    names = _split_names(author)
+    clause = f'title:"{title}"'
+    if names and len(names) <= LONG_AUTHOR_LIST:
+        clause += f' AND author:"{_lucene(names[0])[:80]}"'
+    return f"({clause})"
+
+
+def _batched(rows: list) -> tuple:
+    """Look up several rows in one query. Returns (decided {row_id: update}, rest).
+
+    Open Library ORs the clauses and returns the best hundred works, so a row
+    whose clause is loose (initials, a publisher as author) may be missing; any
+    row that does not come back as a confident match goes to the single-row
+    ladder instead. Several books for one request is what keeps a big library
+    from taking an hour.
+    """
+    clauses = {r["id"]: _clause(r) for r in rows}
+    asked = [r for r in rows if clauses[r["id"]]]
+    if len(asked) < BATCH_MIN:
+        return {}, rows
+    pool = candidates_from(search({"q": " OR ".join(clauses[r["id"]] for r in asked), "limit": 100}))
+    decided = {}
+    for r in asked:
+        ranked = rank(r, [dict(c) for c in pool])
+        if ranked and ranked[0]["score"] >= AUTO_MIN:
+            decided[r["id"]] = decide(ranked)
+    return decided, [r for r in rows if r["id"] not in decided]
+
+
+def _workers() -> int:
+    """Enough requests in flight to use the allowed rate (one call takes ~1 s)."""
+    return max(2, min(4, round(ol_rps()) + 1))
+
+
+def work_editions(work_key: str, limit: int = 50) -> list:
+    """Candidates for the editions of one work, so a book with 150 editions can be
+    matched on language, publisher and year, not just whichever edition search
+    happened to show. Interactive only (one request per work)."""
+    if not re.fullmatch(r"/works/OL\d+W", work_key or ""):
+        return []
+    data = _call(("editions", work_key), f"https://openlibrary.org{work_key}/editions.json",
+                 {"limit": limit}, retries=0)
+    out = []
+    for e in data.get("entries", []):
+        m = _OLID.search(e.get("key") or "")
+        if not m:
+            continue
+        year = re.search(r"\b(1\d{3}|20\d{2})\b", str(e.get("publish_date") or ""))
+        isbns = (e.get("isbn_13") or []) + (e.get("isbn_10") or [])
+        langs = [l.get("key", "").rsplit("/", 1)[-1] for l in e.get("languages") or []]
+        out.append({"olid": int(m.group(1)), "title": e.get("title"), "authors": [], "year": int(year.group(1)) if year else None,
+                    "publisher": _first(e.get("publishers") or []), "language": _first(langs),
+                    "isbn": _first(isbns), "isbns": isbns, "work": work_key})
+    return out
+
+
 def candidates_for(row: dict) -> list:
     """Live, scored candidates for one row (what the "Change edition" list shows):
-    every query is tried, so the admin sees the widest sensible list."""
+    every query is tried for the widest list, then the editions of the best
+    works are added so the right edition (language, publisher, year, ISBN) can
+    be picked, not just the one search happened to show."""
     cands = []
     if row.get("isbn"):
         cands += candidates_from(search({"q": f"isbn:{row['isbn']}", "limit": MAX_CANDIDATES}, retries=0))
     if row.get("title") or row.get("path"):
         cands += _by_title(row, retries=0, exhaustive=True)
     merged = {c["olid"]: c for c in cands}
+    ranked = rank(row, list(merged.values()))
+    seen = set()
+    for c in ranked:
+        if c["score"] < REVIEW_MIN or c["work"] in seen or len(seen) >= EDITION_WORKS:
+            continue
+        seen.add(c["work"])
+        try:
+            editions = work_editions(c["work"])
+        except UpstreamError:
+            continue  # the list is still useful without this work's other editions
+        for e in editions:
+            e["authors"] = c["authors"]
+            e["title"] = e["title"] or c["title"]
+            merged.setdefault(e["olid"], e)
     return [public(c) for c in rank(row, list(merged.values()))]
+
+
+def _ladder(row: dict):
+    return row["id"], decide(_by_title(row))
 
 
 def match_rows(rows: list):
@@ -352,5 +494,24 @@ def match_rows(rows: list):
             else:
                 yield r["id"], decide([])
 
-    for r in todo:
-        yield r["id"], decide(_by_title(r))
+    # Several rows per request first; whatever it did not settle goes through the
+    # per-row ladder. Both run a few requests at once so the allowed rate is
+    # actually used (one call takes about a second).
+    groups = [todo[i:i + TITLE_BATCH] for i in range(0, len(todo), TITLE_BATCH)]
+    if not groups:
+        return
+    with ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="import-ol") as pool:
+        futures = []
+        try:
+            futures = [pool.submit(_batched, g) for g in groups]
+            rest = []
+            for f in as_completed(futures):
+                decided, left = f.result()
+                yield from decided.items()
+                rest += left
+            futures = [pool.submit(_ladder, r) for r in rest]
+            for f in as_completed(futures):
+                yield f.result()
+        finally:
+            for f in futures:
+                f.cancel()
