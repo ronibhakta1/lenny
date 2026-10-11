@@ -109,6 +109,9 @@ class ImportRow(Base):
     publisher = Column(String(_MAX["publisher"]), nullable=True)
     year = Column(SmallInteger, nullable=True)
     error = Column(String(_MAX["error"]), nullable=True)
+    # When an import of this row started; an `importing` row older than the
+    # claim timeout is taken to be abandoned (crash, closed tab) and may be retried.
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 _ROW_FIELDS = (
