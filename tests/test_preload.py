@@ -492,3 +492,21 @@ def test_the_catalog_skips_junk_ids_and_counts_only_real_ones(fakes):
         cat = catalog.get()
     assert [b["source_id"] for b in cat["books"]] == ["bram-stoker/dracula", "edgar-allan-poe/the-raven"]
     assert cat["known"] == 2                                                                           # the UUID entry is not counted
+
+
+def test_a_page_that_fails_once_is_retried():
+    import httpx
+    from lenny.core.preload import catalog
+    answers = [httpx.HTTPError("500"), {"numFound": 1, "docs": [DOCS[0]]}]
+    def flaky(*a, **k):
+        r = answers.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    with patch("lenny.core.preload.catalog.OpenLibrary.search_json", flaky), patch("lenny.core.preload.catalog.time.sleep") as sleep:
+        assert len(catalog._fetch_records()) == 1
+    assert sleep.call_count == 1
+    with patch("lenny.core.preload.catalog.OpenLibrary.search_json", side_effect=httpx.HTTPError("down")), \
+         patch("lenny.core.preload.catalog.time.sleep"):
+        with pytest.raises(httpx.HTTPError):
+            catalog._fetch_records()                                         # three tries, then the error stands

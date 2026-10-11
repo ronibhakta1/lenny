@@ -128,16 +128,27 @@ def _records(pages: list) -> list:
     return [OpenLibraryRecord(doc) for page in pages for doc in (page.get("docs", []) if isinstance(page, dict) else [])]
 
 
+def _page(n: int) -> dict:
+    """One page of records, retried: Open Library answers 500 now and then and a catalog
+    of 9 pages should not fail for one of them."""
+    for attempt in range(3):
+        try:
+            return OpenLibrary.search_json(_QUERY, fields=_FIELDS, page=n, limit=PAGE)
+        except (httpx.HTTPError, ValueError):
+            if attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+
 def _fetch_records() -> list:
     """Every Standard Ebooks record. The first page says how many there are, then the
     rest are fetched a few at a time (each page takes seconds), roughly 3x quicker than in turn."""
-    first = OpenLibrary.search_json(_QUERY, fields=_FIELDS, page=1, limit=PAGE)
+    first = _page(1)
     total = int(first.get("numFound") or 0) if isinstance(first, dict) else 0
     pages = [first]
     if total > PAGE:
         with ThreadPoolExecutor(max_workers=FETCH_WORKERS, thread_name_prefix="preload-catalog") as pool:
-            pages += list(pool.map(lambda n: OpenLibrary.search_json(_QUERY, fields=_FIELDS, page=n, limit=PAGE),
-                                   range(2, (total + PAGE - 1) // PAGE + 1)))
+            pages += list(pool.map(_page, range(2, (total + PAGE - 1) // PAGE + 1)))
     return _records(pages)
 
 
