@@ -912,3 +912,100 @@ def test_dropping_the_same_folder_again_says_what_was_already_there():
     assert again == {"created": 2, "existing": 6,
                      "existing_states": {"imported": 3, "matched": 2, "queued": 1}}
     assert all(r["state"] == "imported" for r in b.list_rows(bid, state="imported")["rows"])   # nothing was reset
+
+
+# ─── loaded vs imported (history) ────────────────────────────────────────────
+
+def history_batch(n_loaded=3, n_imported=4):
+    """A batch with some imported rows (importing at different times) and some still loaded."""
+    from datetime import datetime, timedelta, timezone
+    from lenny.core.bulk_import import batches as b
+    bid = new_batch(); b.upsert_rows(bid, rows(n_loaded + n_imported))
+    ids = [r["id"] for r in b.list_rows(bid, limit=200)["rows"]]
+    base = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+    for k, i in enumerate(ids[:n_imported]):
+        # ids[0] oldest; the last two share a timestamp, so the id must break the tie
+        when = base + timedelta(hours=min(k, n_imported - 2))
+        set_state(bid, **{str(i): dict(state="imported", olid=100 + i, imported_at=when)})
+    return bid, ids[:n_imported], ids[n_imported:]
+
+
+def test_exclude_state_lists_everything_but_that_state_and_totals_agree():
+    from lenny.core.bulk_import import batches as b
+    bid, imported, loaded = history_batch()
+    page = b.list_rows(bid, exclude_state="imported", offset=0, limit=50)
+    assert [r["id"] for r in page["rows"]] == loaded and page["total"] == 3
+    assert b.list_rows(bid, exclude_state="imported", q="book", offset=0)["total"] == 3
+    assert b.list_rows(bid, exclude_state="imported", state="queued", offset=0)["total"] == 3
+    assert b.list_rows(bid, exclude_state="queued", state="queued", offset=0)["total"] == 0
+    assert b.list_rows(bid, exclude_state="imported", staged=False, offset=1, limit=1)["rows"][0]["id"] == loaded[1]
+    with pytest.raises(ValueError):
+        b.list_rows(bid, exclude_state="bogus")
+
+
+def test_history_is_newest_first_with_stable_pages_and_a_timestamp():
+    from lenny.core.bulk_import import batches as b
+    bid, imported, loaded = history_batch(n_imported=5)
+    rows_ = b.list_rows(bid, state="imported", order="imported_at_desc", limit=200)["rows"]
+    assert [r["id"] for r in rows_] == [imported[4], imported[3], imported[2], imported[1], imported[0]]   # tie broken by id, desc
+    assert all(r["imported_at"] is not None for r in rows_)
+    paged = []
+    for offset in (0, 2, 4):
+        paged += [r["id"] for r in b.list_rows(bid, state="imported", order="imported_at_desc", offset=offset, limit=2)["rows"]]
+    assert paged == [r["id"] for r in rows_]
+    assert all(r["imported_at"] is None for r in b.list_rows(bid, exclude_state="imported")["rows"])
+    with pytest.raises(ValueError):
+        b.list_rows(bid, order="by_vibes")
+    with pytest.raises(ValueError):
+        b.list_rows(bid, order="imported_at_desc", cursor=3)
+
+
+def test_start_over_clears_the_loaded_rows_and_keeps_the_history():
+    from lenny.core.bulk_import import batches as b
+    bid, imported, loaded = history_batch()
+    assert b.bulk_update(bid, "remove", exclude_state="imported") == 3
+    assert [r["id"] for r in b.list_rows(bid)["rows"]] == imported
+    assert b.get_summary(bid)["counts"] == {"imported": 4}
+    assert b.bulk_update(bid, "remove", exclude_state="imported") == 0                  # nothing left to clear
+    with pytest.raises(ValueError):
+        b.bulk_update(bid, "remove", exclude_state="bogus")
+
+
+def test_exclude_state_works_for_every_action():
+    from lenny.core.bulk_import import batches as b
+    bid, imported, loaded = history_batch()
+    assert b.bulk_update(bid, "set_encrypted", value=True, exclude_state="imported") == 3
+    got = {r["id"]: r for r in b.list_rows(bid)["rows"]}
+    assert all(got[i]["encrypted"] for i in loaded) and not any(got[i]["encrypted"] for i in imported)
+
+
+def test_loading_and_clearing_never_touch_imported_rows_and_history_keeps_the_batch_alive():
+    from datetime import datetime, timedelta, timezone
+    from lenny.core.bulk_import import batches as b
+    from lenny.core.db import session as db
+    bid, imported, loaded = history_batch()
+    b.upsert_rows(bid, rows(2, start=100))                                       # new files arrive
+    b.delete_row(bid, loaded[0])
+    b.bulk_update(bid, "remove", state="queued")
+    assert [r["id"] for r in b.list_rows(bid, state="imported")["rows"]] == imported
+    soon = datetime.now(timezone.utc) + timedelta(days=2)
+    db.query(b.ImportBatch).filter(b.ImportBatch.id == bid).update({"expires_at": soon}); db.commit()
+    b.upsert_rows(bid, rows(1, start=200))                                       # any change slides retention for all rows
+    assert datetime.fromisoformat(b.get_summary(bid)["expires_at"]) > soon + timedelta(days=27)
+
+
+def test_history_and_exclude_over_http(client):
+    bid = client.post(API).json()["id"]
+    client.put(f"{API}/{bid}/rows", json={"rows": [dict(path=f"h{i}.epub", size=i + 1, mtime=1) for i in range(4)]})
+    ids = [r["id"] for r in client.get(f"{API}/{bid}/rows").json()["rows"]]
+    set_state(bid, **{str(ids[0]): dict(state="imported", imported_at=datetime(2026, 10, 2, tzinfo=timezone.utc)),
+                      str(ids[1]): dict(state="imported", imported_at=datetime(2026, 10, 3, tzinfo=timezone.utc))})
+    hist = client.get(f"{API}/{bid}/rows", params={"state": "imported", "order": "imported_at_desc", "offset": 0}).json()
+    assert [r["id"] for r in hist["rows"]] == [ids[1], ids[0]] and hist["total"] == 2
+    assert hist["rows"][0]["imported_at"].startswith("2026-10-03")
+    loaded = client.get(f"{API}/{bid}/rows", params={"exclude_state": "imported", "offset": 0}).json()
+    assert loaded["total"] == 2 and all(r["state"] != "imported" for r in loaded["rows"])
+    assert client.get(f"{API}/{bid}/rows", params={"exclude_state": "bogus"}).status_code == 400
+    assert client.get(f"{API}/{bid}/rows", params={"order": "x"}).status_code == 400
+    assert client.post(f"{API}/{bid}/actions", json={"action": "remove", "exclude_state": "imported"}).json() == {"updated": 2}
+    assert client.get(f"{API}/{bid}").json()["counts"] == {"imported": 2}

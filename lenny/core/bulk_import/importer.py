@@ -58,8 +58,14 @@ def _claim(batch_id: int, row_id: int, staged: bool = False):
 
 def _finish(row_id: int, **fields) -> dict:
     """Record the outcome, but only on a row still being imported by us: a late
-    finish must not overwrite what a newer attempt already settled."""
+    finish must not overwrite what a newer attempt already settled.
+
+    An imported row is stamped (`imported_at`) and its key is released ("#<id>" is added),
+    so the same file dropped again becomes a new row and the imported one stays in the history."""
     try:
+        if fields.get("state") == IMPORTED:
+            key = db.query(ImportRow.row_key).filter(ImportRow.id == row_id).scalar() or ""
+            fields = dict(fields, imported_at=_now(), row_key=key if "#" in key else f"{key}#{row_id}")
         db.query(ImportRow).filter(ImportRow.id == row_id, ImportRow.state == IMPORTING).update(
             dict(fields, claimed_at=None), synchronize_session=False)
         db.commit()

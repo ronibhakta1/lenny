@@ -51,6 +51,7 @@ _REFRESHABLE = (QUEUED, NO_MATCH, NEEDS_REVIEW, FAILED)
 _SETTLED = (IMPORTING, IMPORTED, NOT_EPUB)
 
 AUTO, USER = "auto", "user"
+ORDERS = ("id", "imported_at_desc")
 
 # Column limits, enforced here so a hostile or buggy client cannot fill the table.
 _MAX = {"path": 1024, "title": 300, "author": 200, "publisher": 200, "language": 16, "error": 200}
@@ -84,7 +85,9 @@ class ImportRow(Base):
         BigInteger().with_variant(Integer, "sqlite"),
         ForeignKey("import_batches.id", ondelete="CASCADE"), nullable=False)
     # sha1(path | size | mtime): what lets a re-dropped folder re-attach to its rows.
-    row_key = Column(String(40), nullable=False)
+    # sha1(path|size|mtime); an imported row's key gets "#<id>" appended, so the same file can
+    # be dropped again and become a fresh row while the imported one stays in the history.
+    row_key = Column(String(64), nullable=False)
     path = Column(String(_MAX["path"]), nullable=False)
     size = Column(BigInteger, nullable=False)
     mtime = Column(BigInteger, nullable=False)
@@ -116,12 +119,13 @@ class ImportRow(Base):
     # The book's file is already on the server (staging.py), so importing it needs
     # no browser: nothing has to stay connected, survive a reload or a backgrounded app.
     staged = Column(Boolean, nullable=False, default=False, server_default=false())
+    imported_at = Column(DateTime(timezone=True), nullable=True)  # set when the row becomes imported
 
 
 _ROW_FIELDS = (
     "id", "path", "size", "mtime", "state", "decision", "skipped", "encrypted", "olid",
     "auto_picked", "candidates_count", "confidence", "match_title", "match_author", "isbn", "title", "author",
-    "language", "publisher", "year", "error", "staged",
+    "language", "publisher", "year", "error", "staged", "imported_at",
 )
 _METADATA = ("isbn", "title", "author", "language", "publisher", "year")
 
@@ -322,10 +326,13 @@ def upsert_rows(batch_id: int, raw_rows: list) -> dict:
 
 
 def _filtered(batch_id: int, state: str | None, q: str | None,
-              skipped: bool | None = None, auto_picked: bool | None = None, staged: bool | None = None):
+              skipped: bool | None = None, auto_picked: bool | None = None, staged: bool | None = None,
+              exclude_state: str | None = None):
     query = db.query(ImportRow).filter(ImportRow.batch_id == batch_id)
     if state:
         query = query.filter(ImportRow.state == state)
+    if exclude_state:
+        query = query.filter(ImportRow.state != exclude_state)
     if skipped is not None:
         query = query.filter(ImportRow.skipped.is_(skipped))
     if auto_picked is not None:
@@ -348,7 +355,7 @@ def list_rows(batch_id: int, state: str | None = None, q: str | None = None,
               cursor: int | None = None, limit: int = 100,
               skipped: bool | None = None, auto_picked: bool | None = None,
               staged: bool | None = None, offset: int | None = None,
-              with_total: bool = False) -> dict:
+              with_total: bool = False, exclude_state: str | None = None, order: str = "id") -> dict:
     """A page of rows in id order. Two ways to page: `cursor` (rows after this id; what the
     import and upload passes use) or `offset` (skip this many; for numbered pages).
     `total` (rows matching the filters, ignoring paging) is computed only when asked for
@@ -357,14 +364,22 @@ def list_rows(batch_id: int, state: str | None = None, q: str | None = None,
         raise ValueError("'offset' must be a non-negative integer")
     if offset is not None and cursor:
         raise ValueError("Use either 'cursor' or 'offset', not both")
+    if order not in ORDERS:
+        raise ValueError(f"'order' must be one of {', '.join(ORDERS)}")
+    if order != "id" and cursor:
+        raise ValueError("'cursor' only works with the default order; use 'offset'")
+    if exclude_state is not None and exclude_state not in STATES:
+        raise ValueError(f"'exclude_state' must be one of {', '.join(STATES)}")
     limit = max(1, min(limit, MAX_PAGE))
     try:
         _get(batch_id)
-        query = _filtered(batch_id, state, q, skipped, auto_picked, staged)
+        query = _filtered(batch_id, state, q, skipped, auto_picked, staged, exclude_state)
         total = query.count() if (with_total or offset is not None) else None
         if cursor:
             query = query.filter(ImportRow.id > cursor)
-        query = query.order_by(ImportRow.id)
+        # imported_at_desc is the history order: newest first, id breaks ties so offset pages are stable.
+        query = query.order_by(ImportRow.imported_at.desc(), ImportRow.id.desc()) if order == "imported_at_desc" \
+            else query.order_by(ImportRow.id)
         if offset:
             query = query.offset(offset)
         rows = query.limit(limit + 1).all()
@@ -478,7 +493,7 @@ def update_row(batch_id: int, row_id: int, skipped: bool | None = None,
 def bulk_update(batch_id: int, action: str, state: str | None = None,
                 q: str | None = None, value: bool | None = None,
                 skipped: bool | None = None, auto_picked: bool | None = None,
-                row_ids: list | None = None) -> int:
+                row_ids: list | None = None, exclude_state: str | None = None) -> int:
     """Apply an action to every row matching a filter. Only `remove` also takes a short
     list of row ids (the rows a person ticked), at most MAX_ROWS_PER_CALL, combined with
     any filter; every other action works on filters alone."""
@@ -501,7 +516,9 @@ def bulk_update(batch_id: int, action: str, state: str | None = None,
     try:
         _xact_lock(f"import_batch:{batch_id}")
         batch = _get(batch_id)
-        query = _filtered(batch_id, state, q, skipped, auto_picked)
+        if exclude_state is not None and exclude_state not in STATES:
+            raise ValueError(f"'exclude_state' must be one of {', '.join(STATES)}")
+        query = _filtered(batch_id, state, q, skipped, auto_picked, exclude_state=exclude_state)
         if row_ids is not None:
             query = query.filter(ImportRow.id.in_(row_ids))
         if action == "remove":

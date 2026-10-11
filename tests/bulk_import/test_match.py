@@ -1307,3 +1307,35 @@ def test_candidates_also_carry_the_library_flag(client, ol, db_items):
 def test_the_search_route_requires_admin(app_module):
     from fastapi.testclient import TestClient
     assert TestClient(app_module).get(f"{API}/1/rows/1/search", params={"q": "dune"}).status_code == 403
+
+
+# ─── imported rows: a timestamp, and the file can come back as a new row ──────
+
+def test_an_imported_row_is_stamped_and_its_file_can_be_dropped_again(db_items):
+    from datetime import datetime, timezone
+    from lenny.core.bulk_import import batches as b
+    bid, rid = matched_row()
+    before = datetime.now(timezone.utc)
+    row, _ = do_import(bid, rid)
+    assert row["state"] == "imported" and datetime.fromisoformat(str(row["imported_at"])).replace(tzinfo=timezone.utc) >= before.replace(microsecond=0)
+    again = b.upsert_rows(bid, [dict(path="lib/book0.epub", size=1000, mtime=1_700_000_000_000)])     # same file as matched_row's
+    assert again == {"created": 1, "existing": 0, "existing_states": {}}
+    got = b.list_rows(bid, offset=0)
+    assert got["total"] == 2
+    states = sorted(r["state"] for r in got["rows"])
+    assert states == ["imported", "queued"]
+    fresh = [r for r in got["rows"] if r["state"] == "queued"][0]
+    assert fresh["olid"] is None and fresh["imported_at"] is None and fresh["decision"] == "auto"      # nothing carried over
+    # and dropping it a third time attaches to the queued one, not a third row
+    assert b.upsert_rows(bid, [dict(path="lib/book0.epub", size=1000, mtime=1_700_000_000_000)])["existing"] == 1
+
+
+def test_a_failed_or_duplicate_row_is_not_stamped(db_items):
+    from lenny.core.bulk_import import batches as b
+    bid, rid = matched_row()
+    row, _ = do_import(bid, rid, MagicMock(side_effect=RuntimeError("x")))
+    assert row["state"] == "failed" and row["imported_at"] is None
+    bid2, rid2 = matched_row()
+    from lenny.core.exceptions import ItemExistsError
+    row2, _ = do_import(bid2, rid2, MagicMock(side_effect=ItemExistsError("x")))
+    assert row2["state"] == "duplicate" and row2["imported_at"] is None
