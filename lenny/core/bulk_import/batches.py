@@ -281,6 +281,45 @@ def delete_batch(batch_id: int) -> None:
 
 # ─── rows ───────────────────────────────────────────────────────────────────
 
+def _reconcile(batch_id: int) -> dict:
+    """Bring the saved list in line with the live library (call under the batch lock, then commit).
+
+    The list is kept for 30 days, but books come and go in the library meanwhile. So:
+    * a `duplicate` row whose book has since been deleted from the library is `matched` again,
+      so the same file can be imported again;
+    * an `imported` row from before keys were released gets its key freed ("#<id>" added), so
+      dropping the same file again makes a new row instead of being swallowed by the old one.
+    Returns how many of each, and how many imported rows no longer have their book."""
+    from sqlalchemy import cast, select, String
+    from lenny.core.models import Item
+    in_library = select(Item.openlibrary_edition)
+    reverted = db.query(ImportRow).filter(
+        ImportRow.batch_id == batch_id, ImportRow.state == DUPLICATE, ImportRow.olid.is_not(None),
+        ImportRow.olid.not_in(in_library)).update({"state": MATCHED, "error": None}, synchronize_session=False)
+    released = db.query(ImportRow).filter(
+        ImportRow.batch_id == batch_id, ImportRow.state == IMPORTED, ~ImportRow.row_key.contains("#")).update(
+        {"row_key": ImportRow.row_key + "#" + cast(ImportRow.id, String)}, synchronize_session=False)
+    gone = db.query(ImportRow).filter(
+        ImportRow.batch_id == batch_id, ImportRow.state == IMPORTED, ImportRow.olid.is_not(None),
+        ImportRow.olid.not_in(in_library)).count()
+    return {"reverted": reverted, "released": released, "removed_from_library": gone}
+
+
+def reconcile(batch_id: int) -> dict:
+    """Public form of _reconcile: what changed since the library was last looked at.
+    Safe to call as often as the page likes (a few indexed queries)."""
+    try:
+        _xact_lock(f"import_batch:{batch_id}")
+        batch = _get(batch_id)
+        result = _reconcile(batch_id)
+        if result["reverted"] or result["released"]:
+            _touch(batch)
+        db.commit()
+        return result
+    finally:
+        db.rollback()
+
+
 def upsert_rows(batch_id: int, raw_rows: list) -> dict:
     """Add rows the batch does not have yet; refresh the metadata of ones it does.
 
@@ -297,6 +336,7 @@ def upsert_rows(batch_id: int, raw_rows: list) -> dict:
     try:
         _xact_lock(f"import_batch:{batch_id}")
         batch = _get(batch_id)
+        _reconcile(batch_id)        # a file dropped again must not meet stale rows about books since deleted
         existing = {
             key: (row_id, state) for key, row_id, state in
             db.query(ImportRow.row_key, ImportRow.id, ImportRow.state)
@@ -385,8 +425,13 @@ def list_rows(batch_id: int, state: str | None = None, q: str | None = None,
             query = query.offset(offset)
         rows = query.limit(limit + 1).all()
         page = rows[:limit]
+        olids = {r.olid for r in page if r.olid}
+        have = set()
+        if olids:   # which of these books are in the library right now (one query per page)
+            from lenny.core.models import Item
+            have = {o for (o,) in db.query(Item.openlibrary_edition).filter(Item.openlibrary_edition.in_(olids)).all()}
         return {
-            "rows": [_row_dict(r) for r in page],
+            "rows": [dict(_row_dict(r), in_library=r.olid in have) for r in page],
             "next_cursor": page[-1].id if len(rows) > limit else None,
             "total": total,
         }
