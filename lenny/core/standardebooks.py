@@ -57,6 +57,35 @@ class StandardEbooks:
         )
 
 
+UPLOADED, NOT_IN_SET, FAILED_ = "uploaded", "not_in_set", "failed"
+
+
+def import_one(olid: int, standardebooks_id: str, title: Optional[str] = None) -> str:
+    """Download, verify and upload one book; records its progress. Never raises.
+
+    Returns UPLOADED, NOT_IN_SET (the preload set has no file for it) or FAILED_.
+    """
+    try:
+        ImportJob.record(SOURCE, olid, DOWNLOADING, title=title)
+        epub = StandardEbooks.download(standardebooks_id)
+        if epub is None:
+            ImportJob.record(SOURCE, olid, FAILED, "Not in the preload set", title=title)
+            return NOT_IN_SET
+        if not StandardEbooks.verify_download(epub):
+            logger.warning(f"Skipping OLID {olid}: EPUB verification failed")
+            ImportJob.record(SOURCE, olid, FAILED, "EPUB verification failed", title=title)
+            return FAILED_
+        if LennyClient.upload(olid, epub, encrypted=False):
+            ImportJob.record(SOURCE, olid, DONE, title=title)
+            return UPLOADED
+        ImportJob.record(SOURCE, olid, FAILED, "Upload to Lenny failed", title=title)
+        return FAILED_
+    except Exception as e:
+        logger.error(f"Unexpected error processing OLID {olid}: {e}")
+        ImportJob.record(SOURCE, olid, FAILED, str(e), title=title)
+        return FAILED_
+
+
 def import_standardebooks(limit=None, offset=0):
     logger.info("[Preloading] Fetching StandardEbooks from Open Library...")
 
@@ -88,35 +117,16 @@ def import_standardebooks(limit=None, offset=0):
                 stats["skipped"] += 1
                 continue
 
-            try:
-                ImportJob.record(SOURCE, olid, DOWNLOADING)
-                epub = StandardEbooks.download(standardebooks_id)
-                if epub is None:
-                    stats["not_in_set"] += 1
-                    ImportJob.record(SOURCE, olid, FAILED, "Not in the preload set")
-                    continue
-
-                if not StandardEbooks.verify_download(epub):
-                    logger.warning(f"Skipping OLID {olid}: EPUB verification failed")
-                    stats["failed"] += 1
-                    ImportJob.record(SOURCE, olid, FAILED, "EPUB verification failed")
-                    continue
-
-                uploaded = LennyClient.upload(olid, epub, encrypted=False)
-                if uploaded:
-                    stats["uploaded"] += 1
-                    existing.add(olid)
-                    ImportJob.record(SOURCE, olid, DONE)
-                    if limit is not None and stats["uploaded"] >= limit:
-                        break
-                else:
-                    stats["failed"] += 1
-                    ImportJob.record(SOURCE, olid, FAILED, "Upload to Lenny failed")
-
-            except Exception as e:
-                logger.error(f"Unexpected error processing OLID {olid}: {e}")
+            outcome = import_one(olid, standardebooks_id)
+            if outcome == UPLOADED:
+                stats["uploaded"] += 1
+                existing.add(olid)
+                if limit is not None and stats["uploaded"] >= limit:
+                    break
+            elif outcome == NOT_IN_SET:
+                stats["not_in_set"] += 1
+            else:
                 stats["failed"] += 1
-                ImportJob.record(SOURCE, olid, FAILED, str(e))
 
     except (httpx.HTTPError, ValueError) as e:
         logger.error(f"Open Library search failed: {e}")

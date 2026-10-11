@@ -9,10 +9,10 @@ if wait_for_docker_container "lenny_api" 15 2; then
         EST_MIN=$(echo "scale=2; $PRELOAD * 10 / 60" | bc)
         LIMIT="-n $PRELOAD"
     else
-        EST_MIN=$(echo "scale=2; 800 * 10 / 60" | bc)
+        EST_MIN=$(echo "scale=2; 190 * 10 / 60" | bc)
         LIMIT=""
     fi
-    echo "[+] Preloading ${PRELOAD:-ALL}/~800 book(s) from StandardEbooks (~$EST_MIN minutes)..."
+    echo "[+] Preloading ${PRELOAD:-ALL}/190 available book(s) from StandardEbooks (~$EST_MIN minutes)..."
     if docker exec -i lenny_api python scripts/preload.py $LIMIT; then
         echo "[✓] Completed preload"
     else
