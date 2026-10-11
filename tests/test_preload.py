@@ -771,3 +771,89 @@ def test_descriptions_lose_their_html_and_keep_their_text():
         "Pride and Prejudice may be one of Austen\u2019s novels & more."
     assert catalog._text({"value": "<br>Plain"}) == "Plain" and catalog._text(None) is None and catalog._text("  ") is None
     assert len(catalog._text("x" * 5000)) == 2000
+
+
+# ─── details for any book in the library ─────────────────────────────────────
+
+@pytest.fixture
+def clear_item_meta():
+    from lenny.core.preload import catalog
+    catalog._item_meta.clear(); catalog._details.clear()
+    yield
+    catalog._item_meta.clear(); catalog._details.clear()
+
+
+OTHER_FACTS = {"olid": 777, "title": "Database Internals", "authors": ["Alex Petrov"], "year": 2019, "publisher": "O'Reilly",
+               "language": "eng", "isbn": None}
+OTHER_EDITION = {"publishers": None, "publish_date": "2019", "number_of_pages": 350, "isbn_13": ["9781492040347"],
+                 "languages": [{"key": "/languages/eng"}], "covers": [-1, 4242], "works": [{"key": "/works/OL9W"}]}
+OTHER_WORK = {"description": "Deep dive.", "subjects": ["Databases", "Distributed systems"]}
+
+
+def other_book(extra_json=None):
+    get = fake_json({"https://openlibrary.org/books/OL777M.json": OTHER_EDITION, "https://openlibrary.org/works/OL9W.json": OTHER_WORK, **(extra_json or {})})
+    return patch("lenny.core.preload.catalog._get_json", get), patch("lenny.core.bulk_import.matcher.edition_facts", return_value=OTHER_FACTS), get
+
+
+def test_a_book_that_is_not_a_standard_ebook_gets_open_librarys_details(clear_item_meta):
+    from lenny.core.preload import catalog
+    a, b, get = other_book()
+    with a, b:
+        d = catalog.book_metadata(777)
+    assert (d["title"], d["authors"], d["year"], d["publisher"], d["pages"], d["isbn"], d["languages"]) == (
+        "Database Internals", ["Alex Petrov"], 2019, "O'Reilly", 350, "9781492040347", ["eng"])
+    assert d["description"] == "Deep dive." and d["all_subjects"] == ["Databases", "Distributed systems"] and d["details_loaded"] is True
+    assert d["cover_url"].endswith("/b/id/4242-M.jpg") and d["cover_url_large"].endswith("/4242-L.jpg")      # the -1 placeholder is skipped
+    assert (d["source_id"], d["size"], d["added_at"]) == (None, None, None)
+    assert d["links"] == {"open_library": "https://openlibrary.org/books/OL777M", "standard_ebooks": None, "archive_org": None}
+
+
+def test_a_free_book_in_the_catalog_keeps_its_catalog_fields(fakes, clear_item_meta):
+    from lenny.core.preload import catalog
+    catalog.get()
+    get = fake_json({"https://openlibrary.org/books/OL3M.json": EDITION, "https://openlibrary.org/works/OL3W.json": WORK})
+    with patch("lenny.core.preload.catalog._get_json", get):
+        d = catalog.book_metadata(3)
+    assert d["source_id"] == "jane-austen/pride-and-prejudice" and d["size"] == 3000 and d["links"]["standard_ebooks"]
+
+
+def test_item_metadata_is_cached_and_failures_are_not(clear_item_meta):
+    import httpx
+    from lenny.core.preload import catalog
+    from lenny.core.bulk_import import matcher
+    a, b, get = other_book()
+    with a, b as facts:
+        catalog.book_metadata(777); catalog.book_metadata(777)
+        assert len(get.calls) == 2 and facts.call_count == 1                   # edition + work, and the facts, once
+    catalog._item_meta.clear()
+    down = fake_json({"https://openlibrary.org/books/OL777M.json": httpx.ConnectError("x")})
+    with patch("lenny.core.preload.catalog._get_json", down), patch("lenny.core.bulk_import.matcher.edition_facts", side_effect=matcher.UpstreamError("down")):
+        d = catalog.book_metadata(777)
+    assert d["details_loaded"] is False and d["title"] is None and d["links"]["open_library"].endswith("OL777M") and d["source_id"] is None
+    assert 777 not in catalog._item_meta                                        # not remembered: the next call tries again
+    a, b, get = other_book()
+    with a, b:
+        assert catalog.book_metadata(777)["details_loaded"] is True
+
+
+def test_with_facts_down_but_the_edition_up_the_answer_is_still_useful(clear_item_meta):
+    from lenny.core.preload import catalog
+    from lenny.core.bulk_import import matcher
+    get = fake_json({"https://openlibrary.org/books/OL777M.json": OTHER_EDITION, "https://openlibrary.org/works/OL9W.json": OTHER_WORK})
+    with patch("lenny.core.preload.catalog._get_json", get), patch("lenny.core.bulk_import.matcher.edition_facts", side_effect=matcher.UpstreamError("down")):
+        d = catalog.book_metadata(777)
+    assert d["details_loaded"] is True and d["publisher"] is None and d["pages"] == 350 and d["title"] is None
+
+
+def test_item_metadata_over_http_only_for_books_in_the_library(client, db, clear_item_meta):
+    own(db, 777)
+    a, b, get = other_book()
+    with a, b:
+        body = client.get("/v1/api/admin/items/777/metadata").json()
+        assert client.get("/v1/api/admin/items/778/metadata").status_code == 404           # not in the library
+    assert body["title"] == "Database Internals" and body["source_id"] is None and body["links"]["standard_ebooks"] is None
+
+
+def test_the_item_metadata_route_requires_admin(app_module):
+    from fastapi.testclient import TestClient
+    assert TestClient(app_module).get("/v1/api/admin/items/777/metadata").status_code == 403

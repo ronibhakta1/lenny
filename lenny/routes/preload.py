@@ -71,6 +71,19 @@ def get_book(request: Request, olid: int):
     return book
 
 
+@router.get("/admin/items/{olid}/metadata")
+def get_item_metadata(request: Request, olid: int):
+    """Details for a book that is in the library (any book, not only the free ones): publisher, publish
+    date, pages, ISBN, languages, description, all subjects and links, in the same shape as
+    GET /admin/preload/books/{olid}. For a book that is not a Standard Ebooks title `source_id`, `size`,
+    `added_at` and the Standard Ebooks / archive.org links are null. `details_loaded: false` means Open
+    Library did not answer (the sheet can offer a retry). `404` if the book is not in the library."""
+    _require_admin(request)
+    if not service.existing_among([olid]):
+        raise HTTPException(status_code=404, detail="That book is not in your library.")
+    return catalog.book_metadata(olid)
+
+
 @router.get("/admin/preload/collections")
 def get_collections(request: Request):
     _require_admin(request)

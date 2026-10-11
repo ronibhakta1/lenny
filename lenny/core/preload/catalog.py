@@ -427,6 +427,7 @@ def _fetch_details(olid: int) -> dict:
         "publish_date": edition.get("publish_date"), "pages": edition.get("number_of_pages"),
         "isbn": (edition.get("isbn_13") or edition.get("isbn_10") or [None])[0], "languages": [l for l in langs if l],
         "description": _text(edition.get("description")), "all_subjects": [],
+        "cover_id": next((c for c in edition.get("covers") or [] if isinstance(c, int) and c > 0), None),
     }
     work_key = ((edition.get("works") or [{}])[0] or {}).get("key", "")
     if work_key.startswith("/works/OL") and work_key.endswith("W"):
@@ -437,3 +438,53 @@ def _fetch_details(olid: int) -> dict:
         except (httpx.HTTPError, ValueError):
             pass                                  # the edition's own facts are still worth showing
     return out
+
+
+# ─── any book in the library ─────────────────────────────────────────────────
+
+_item_meta: "dict[int, tuple]" = {}
+
+
+def book_metadata(olid: int) -> dict:
+    """Details for any Open Library edition (a book of the library, not only a free one), in the
+    same shape as `details`. A Standard Ebooks title in the catalog gets the catalog's own fields;
+    anything else gets what Open Library says, with `source_id`, `size`, `added_at` and the
+    Standard Ebooks / archive.org links left null. Cached for DETAILS_TTL, but only complete answers.
+    If Open Library cannot answer, `details_loaded` is false and only the edition number is known."""
+    cached = _cached["books"] and next((b for b in _cached["books"] if b["olid"] == olid), None)
+    if cached:
+        return details(olid)
+    now = time.monotonic()
+    with _details_lock:
+        hit = _item_meta.get(olid)
+    if hit and now - hit[0] < DETAILS_TTL:
+        return dict(hit[1])
+    from lenny.core.bulk_import import matcher
+    try:
+        facts = matcher.edition_facts(olid)
+    except matcher.UpstreamError:
+        facts = None
+    extra = _fetch_details(olid)
+    if facts is None and not extra.get("details_loaded"):
+        return {"olid": olid, "title": None, "authors": [], "year": None, "cover_url": None, "cover_url_large": None,
+                "source_id": None, "size": None, "added_at": None, "subjects": [], "details_loaded": False,
+                "links": {"open_library": f"https://openlibrary.org/books/OL{olid}M", "standard_ebooks": None, "archive_org": None}}
+    facts = facts or {}
+    cover_id = extra.get("cover_id")
+    out = {
+        "olid": olid, "title": facts.get("title"), "authors": list(facts.get("authors") or []), "year": facts.get("year"),
+        "cover_url": f"{OpenLibrary.COVER_SERVER}/b/id/{cover_id}-M.jpg" if cover_id else None,
+        "cover_url_large": f"{OpenLibrary.COVER_SERVER}/b/id/{cover_id}-L.jpg" if cover_id else None,
+        "source": None, "source_id": None, "size": None, "added_at": None, "subjects": (extra.get("all_subjects") or [])[:MAX_SUBJECTS],
+        **{k: v for k, v in extra.items() if k != "cover_id"},
+        "publisher": extra.get("publisher") or facts.get("publisher"),
+        "isbn": extra.get("isbn") or facts.get("isbn"),
+        "links": {"open_library": f"https://openlibrary.org/books/OL{olid}M", "standard_ebooks": None, "archive_org": None},
+    }
+    if out.get("details_loaded") and facts:
+        with _details_lock:
+            _item_meta[olid] = (now, out)
+            while len(_item_meta) > DETAILS_MAX:
+                _item_meta.pop(next(iter(_item_meta)))
+    out.setdefault("details_loaded", False)
+    return dict(out)
