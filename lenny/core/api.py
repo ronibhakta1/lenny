@@ -189,9 +189,11 @@ def _lenny_build_catalog(cls, search_response, auth_mode_direct: bool = False, t
                          modified_map: Optional[dict] = None, page: Optional[dict] = None) -> dict:
     publications = []
     stamps = []
+    auth_doc_id = auth_document()["id"]
     for record in search_response.records:
         if isinstance(record, LennyDataRecord):
             record.auth_mode_direct = auth_mode_direct
+            record.auth_doc_id = auth_doc_id
         pub = record.to_publication()
         pub_dict = pub.model_dump(exclude_none=True)
         pub_dict["links"] = [lnk.model_dump(exclude_none=True) for lnk in record.links()]
@@ -226,6 +228,7 @@ def _lenny_build_publication(cls, record, auth_mode_direct: bool = False,
                              modified_map: Optional[dict] = None) -> dict:
     if isinstance(record, LennyDataRecord):
         record.auth_mode_direct = auth_mode_direct
+        record.auth_doc_id = auth_document()["id"]
     pub = record.to_publication()
     # Safe to stamp directly: this dict is returned as-is, never fed back through
     # a pydantic model, so the ISO string survives to json.dumps intact.
