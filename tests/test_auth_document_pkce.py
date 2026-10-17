@@ -125,3 +125,19 @@ def test_the_id_is_an_address_that_serves_the_document(mode, path):
     assert served.json() == core_api.auth_document()
     assert served.json()["id"].endswith("/v1/api/oauth/authentication")
     assert c.get(served.json()["id"].replace(LennyDataProvider.BASE_URL, "/v1/api/")).status_code == 200
+
+
+@pytest.mark.parametrize("m", ["ol", "external"])
+def test_feed_borrow_link_names_the_active_auth_document(mode, m):
+    mode(m)
+    record = core_api.LennyDataRecord(title="t", lenny_id=1, is_encrypted=True)
+    feed = LennyDataProvider.build_catalog(
+        type("R", (), {"records": [record], "query": "", "limit": 1, "offset": 0, "sort": None})()
+    )
+    pub = LennyDataProvider.build_publication(
+        core_api.LennyDataRecord(title="t", lenny_id=1, is_encrypted=True)
+    )
+    expected = core_api.auth_document()["id"]
+    for links in (feed["publications"][0]["links"], pub["links"]):
+        borrow = next(l for l in links if l["rel"].endswith("/borrow"))
+        assert borrow["properties"]["authenticate"]["href"] == expected
