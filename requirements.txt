@@ -57,4 +57,6 @@ git+https://github.com/ArchiveLabs/pyopds2_openlibrary.git@e18e79f9a06afeaabe59d
 # ArchiveLabs/pyopds2_lenny#32 and #33 (merged 2026-10-09): LennyDataProvider.OAUTH_ISSUER
 # adds the Authorization Code + PKCE entry to the OPDS Authentication Document, and
 # get_authentication_document(flows=...) selects the entries and names the document.
-git+https://github.com/ArchiveLabs/pyopds2_lenny.git@6d7c14ad6e9511d32f3da5b846b319acfd60639e
+# ArchiveLabs/pyopds2_lenny#34 (merged 2026-10-17): the borrow link's authenticate href
+# names the active authentication document (host app sets `auth_doc_id`).
+git+https://github.com/ArchiveLabs/pyopds2_lenny.git@ca1e4e7d97e31a34ec198d73304787f6096a3763
