@@ -1038,7 +1038,7 @@ async def admin_auth(request: Request, body: dict = Body(...)):
     except librarians.TooManyAttempts as exc:
         raise HTTPException(status_code=429, detail=str(exc))
     if not row:
-        raise HTTPException(status_code=401, detail="Invalid admin key")
+        raise HTTPException(status_code=401, detail="Invalid email, username or password.")
 
     return JSONResponse({"token": auth.issue_admin_token(row.id), "username": row.username,
                          "name": row.name, "display_name": row.name or row.username,

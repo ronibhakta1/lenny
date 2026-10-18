@@ -273,3 +273,17 @@ def test_failed_guesses_by_email_and_username_share_one_counter():
         assert librarians.authenticate(who, "wrong password!!") is None
     with pytest.raises(librarians.TooManyAttempts):
         librarians.authenticate("root@example.org", PASSWORD)
+
+
+def test_a_failed_login_says_the_same_for_unknown_wrong_and_disabled(api):
+    from fastapi.testclient import TestClient
+    from lenny.app import app
+    from lenny.core import librarians
+    make()
+    gone = make("Gone", "gone@example.org", is_super=False)
+    librarians.set_disabled(gone.id, True)
+    c, h = TestClient(app), {"X-Admin-Internal-Secret": "s3cret"}
+    seen = {(r.status_code, r.json()["detail"]) for r in (
+        c.post("/v1/api/admin/auth", headers=h, json={"username": u, "password": p})
+        for u, p in [("nobody", PASSWORD), ("root", "wrong password!!"), ("gone@example.org", PASSWORD)])}
+    assert seen == {(401, "Invalid email, username or password.")}
