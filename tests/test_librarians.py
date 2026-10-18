@@ -162,8 +162,9 @@ def test_super_status_can_move_but_never_vanish(api):
     root = make()
     ann = make("ann", "ann@example.org", is_super=False)
     ok = {"is_super": True, "current_password": PASSWORD}
-    assert api("PUT", f"/admin/librarians/{root.id}", root,
-               json={"is_super": False, "current_password": PASSWORD}).status_code == 400
+    # nobody changes their own super status, up or down
+    r = api("PUT", f"/admin/librarians/{root.id}", root, json={"is_super": False, "current_password": PASSWORD})
+    assert r.status_code == 400 and r.json()["detail"] == "You cannot change your own super status."
     assert api("PUT", f"/admin/librarians/{ann.id}", root, json=ok).status_code == 200
     assert api("PUT", f"/admin/librarians/{root.id}", ann,
                json={"is_super": False, "current_password": PASSWORD}).status_code == 200

@@ -1114,7 +1114,7 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
 
     Anyone may change their own email, and their own password by also sending
     `current_password`. The super user may change anyone's, a password reset
-    needing no current one, and may make another librarian super (or step down)
+    needing no current one, and may make another librarian super
     by sending `is_super` with their OWN `current_password`. This is where the migrated super user gets its first email.
     """
     me = _current_librarian(request)
@@ -1123,6 +1123,8 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
         raise HTTPException(status_code=403, detail="Only the super user can edit another account.")
     if "is_super" in body and not me.is_super:
         raise HTTPException(status_code=403, detail="Only the super user can change who is super.")
+    if "is_super" in body and own:
+        raise HTTPException(status_code=400, detail="You cannot change your own super status.")
     if (own and body.get("password") is not None) or "is_super" in body:
         _confirm_password(me, body)
     row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
