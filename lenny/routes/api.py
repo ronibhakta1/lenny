@@ -1133,8 +1133,11 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
 @router.post("/admin/librarians/{librarian_id}/disable")
 async def set_librarian_disabled(request: Request, librarian_id: int, body: dict = Body(...)):
     """Body: ``{"disabled": true|false}``. Super user only; takes effect on the next request."""
-    _super_librarian(request)
-    row = _librarian_call(librarians.set_disabled, librarian_id, bool(body.get("disabled", True)))
+    me = _super_librarian(request)
+    disabled = bool(body.get("disabled", True))
+    if disabled and me.id == librarian_id:
+        raise HTTPException(status_code=400, detail="You cannot disable your own account.")
+    row = _librarian_call(librarians.set_disabled, librarian_id, disabled)
     return JSONResponse(row.to_dict())
 
 
