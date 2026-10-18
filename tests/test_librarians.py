@@ -161,9 +161,25 @@ def test_super_user_resets_another_password_without_the_old_one(api):
 def test_super_status_can_move_but_never_vanish(api):
     root = make()
     ann = make("ann", "ann@example.org", is_super=False)
-    assert api("PUT", f"/admin/librarians/{root.id}", root, json={"is_super": False}).status_code == 400
-    assert api("PUT", f"/admin/librarians/{ann.id}", root, json={"is_super": True}).status_code == 200
-    assert api("PUT", f"/admin/librarians/{root.id}", ann, json={"is_super": False}).status_code == 200
+    ok = {"is_super": True, "current_password": PASSWORD}
+    assert api("PUT", f"/admin/librarians/{root.id}", root,
+               json={"is_super": False, "current_password": PASSWORD}).status_code == 400
+    assert api("PUT", f"/admin/librarians/{ann.id}", root, json=ok).status_code == 200
+    assert api("PUT", f"/admin/librarians/{root.id}", ann,
+               json={"is_super": False, "current_password": PASSWORD}).status_code == 200
+
+
+def test_making_someone_super_needs_your_own_password(api):
+    from lenny.core import librarians
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    for body in ({"is_super": True}, {"is_super": True, "current_password": "wrong password!!"}):
+        assert api("PUT", f"/admin/librarians/{ann.id}", root, json=body).status_code == 400
+    assert not librarians.get(ann.id).is_super
+    # nor can a new super user be created with a live session alone
+    new = {"username": "bob", "email": "bob@example.org", "password": PASSWORD, "is_super": True}
+    assert api("POST", "/admin/librarians", root, json=new).status_code == 400
+    assert api("POST", "/admin/librarians", root, json={**new, "current_password": PASSWORD}).status_code == 201
 
 
 def test_disabling_a_librarian_ends_their_session_at_once(api):

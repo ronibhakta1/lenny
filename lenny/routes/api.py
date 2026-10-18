@@ -1072,6 +1072,13 @@ def _current_librarian(request: Request) -> "librarians.Librarian":
     return row
 
 
+def _confirm_password(me: "librarians.Librarian", body: dict) -> None:
+    """Step-up check for changes that hand out or take away power: the signed-in
+    librarian proves they hold the password, not just a live session."""
+    if not librarians.authenticate(me.username, body.get("current_password") or ""):
+        raise HTTPException(status_code=400, detail="The current password is wrong.")
+
+
 def _super_librarian(request: Request) -> "librarians.Librarian":
     row = _current_librarian(request)
     if not row.is_super:
@@ -1092,9 +1099,12 @@ async def list_librarians(request: Request):
 
 @router.post("/admin/librarians", status_code=status.HTTP_201_CREATED)
 async def create_librarian(request: Request, body: dict = Body(...)):
-    _super_librarian(request)
+    me = _super_librarian(request)
+    make_super = bool(body.get("is_super", False))
+    if make_super:
+        _confirm_password(me, body)
     row = _librarian_call(librarians.create, body.get("username"), body.get("email"),
-                          body.get("password"), is_super=bool(body.get("is_super", False)))
+                          body.get("password"), is_super=make_super)
     return JSONResponse(row.to_dict(), status_code=status.HTTP_201_CREATED)
 
 
@@ -1104,7 +1114,8 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
 
     Anyone may change their own email, and their own password by also sending
     `current_password`. The super user may change anyone's, a password reset
-    needing no current one. This is where the migrated super user gets its first email.
+    needing no current one, and may make another librarian super (or step down)
+    by sending `is_super` with their OWN `current_password`. This is where the migrated super user gets its first email.
     """
     me = _current_librarian(request)
     own = me.id == librarian_id
@@ -1112,9 +1123,8 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
         raise HTTPException(status_code=403, detail="Only the super user can edit another account.")
     if "is_super" in body and not me.is_super:
         raise HTTPException(status_code=403, detail="Only the super user can change who is super.")
-    if own and body.get("password") is not None:
-        if not librarians.authenticate(me.username, body.get("current_password") or ""):
-            raise HTTPException(status_code=400, detail="The current password is wrong.")
+    if (own and body.get("password") is not None) or "is_super" in body:
+        _confirm_password(me, body)
     row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
                           body.get("is_super"))
     return JSONResponse(row.to_dict())
