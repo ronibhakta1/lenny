@@ -1111,6 +1111,13 @@ def _super_librarian(request: Request) -> "librarians.Librarian":
     return row
 
 
+@router.post("/admin/logout")
+async def admin_logout(request: Request):
+    """Ends the caller's sessions on every device: their tokens stop working at once."""
+    librarians.end_sessions(_current_librarian(request).id)
+    return JSONResponse({"ok": True})
+
+
 @router.get("/admin/me")
 async def admin_me(request: Request):
     return JSONResponse(_current_librarian(request).to_dict())

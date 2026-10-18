@@ -58,10 +58,12 @@ class Librarian(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     disabled_at = Column(DateTime(timezone=True))
+    # Bumped by a logout; signed into tokens so it ends this person's sessions.
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
 
     def session_fingerprint(self) -> str:
-        """Changes whenever the password does; signed into tokens so a new password ends old sessions."""
-        return hashlib.sha256(self.password_hash.encode()).hexdigest()[:16]
+        """Changes whenever the password does or the person logs out; signed into tokens so either ends old sessions."""
+        return hashlib.sha256(f"{self.password_hash}:{self.token_version or 0}".encode()).hexdigest()[:16]
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +159,17 @@ def get(librarian_id: int) -> Librarian:
     if not row:
         raise LibrarianError("No such librarian.")
     return row
+
+
+def end_sessions(librarian_id: int) -> None:
+    """Invalidate every token this librarian holds (logout: on every device)."""
+    try:
+        row = get(librarian_id)
+        row.token_version = (row.token_version or 0) + 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def get_active(librarian_id: int) -> Optional[Librarian]:

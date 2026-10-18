@@ -287,3 +287,16 @@ def test_a_failed_login_says_the_same_for_unknown_wrong_and_disabled(api):
         c.post("/v1/api/admin/auth", headers=h, json={"username": u, "password": p})
         for u, p in [("nobody", PASSWORD), ("root", "wrong password!!"), ("gone@example.org", PASSWORD)])}
     assert seen == {(401, "Invalid email, username or password.")}
+
+
+def test_logout_ends_every_session_of_that_librarian_only(api):
+    from lenny.core import auth
+    root = make()
+    ann = make("Ann", "ann@example.org", is_super=False)
+    t1, t2, other = auth.issue_admin_token(ann.id), auth.issue_admin_token(ann.id), auth.issue_admin_token(root.id)
+    assert auth.verify_admin_token(t1) and auth.verify_admin_token(t2)
+    assert api("POST", "/admin/logout", ann).status_code == 200
+    assert not auth.verify_admin_token(t1) and not auth.verify_admin_token(t2)
+    assert auth.verify_admin_token(other)
+    assert auth.verify_admin_token(auth.issue_admin_token(ann.id))  # signing in again works
+    assert api("POST", "/admin/logout").status_code == 403  # the process's own token names no one
