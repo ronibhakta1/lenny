@@ -88,7 +88,7 @@ def create(username: str, email: str, password: str, is_super: bool = False) -> 
 
 def authenticate(username: str, password: str) -> Optional[Librarian]:
     """The enabled librarian with this password, or None."""
-    row = db.query(Librarian).filter(
+    row = db.query(Librarian).populate_existing().filter(
         Librarian.username == (username or ""), Librarian.disabled_at.is_(None)).first()
     try:
         _hasher.verify(row.password_hash if row else _DUMMY_HASH, password or "")
@@ -104,11 +104,23 @@ def get(librarian_id: int) -> Librarian:
     return row
 
 
+def get_active(librarian_id: int) -> Optional[Librarian]:
+    """The librarian if enabled, read fresh so a disable takes effect on the next request."""
+    return db.query(Librarian).populate_existing().filter(
+        Librarian.id == librarian_id, Librarian.disabled_at.is_(None)).first()
+
+
 def list_all() -> list:
     return db.query(Librarian).order_by(Librarian.id).all()
 
 
-def update(librarian_id: int, email: Optional[str] = None, password: Optional[str] = None) -> Librarian:
+def _other_enabled_supers(row: Librarian) -> int:
+    return db.query(Librarian).filter(
+        Librarian.is_super.is_(True), Librarian.disabled_at.is_(None), Librarian.id != row.id).count()
+
+
+def update(librarian_id: int, email: Optional[str] = None, password: Optional[str] = None,
+           is_super: Optional[bool] = None) -> Librarian:
     try:
         _xact_lock("librarians")
         row = get(librarian_id)
@@ -121,6 +133,10 @@ def update(librarian_id: int, email: Optional[str] = None, password: Optional[st
         if password is not None:
             _check_password(password)
             row.password_hash = _hasher.hash(password)
+        if is_super is not None:
+            if not is_super and row.is_super and row.disabled_at is None and not _other_enabled_supers(row):
+                raise LibrarianError("The last enabled super user cannot be demoted.")
+            row.is_super = is_super
         row.updated_at = func.now()
         db.commit()
         return row
@@ -134,10 +150,7 @@ def set_disabled(librarian_id: int, disabled: bool) -> Librarian:
         _xact_lock("librarians")
         row = get(librarian_id)
         if disabled and row.is_super and row.disabled_at is None:
-            others = db.query(Librarian).filter(
-                Librarian.is_super.is_(True), Librarian.disabled_at.is_(None),
-                Librarian.id != row.id).count()
-            if not others:
+            if not _other_enabled_supers(row):
                 raise LibrarianError("The last enabled super user cannot be disabled.")
         row.disabled_at = func.now() if disabled else None
         row.updated_at = func.now()

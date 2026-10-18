@@ -1024,11 +1024,12 @@ async def admin_auth(request: Request, body: dict = Body(...)):
 
     username = body.get("username", "")
     password = body.get("password", "")
-    token = auth.authenticate_admin(username, password)
-    if not token:
+    row = librarians.authenticate(username, password)
+    if not row:
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
-    return JSONResponse({"token": token})
+    return JSONResponse({"token": auth.issue_admin_token(row.id), "username": row.username,
+                         "is_super": bool(row.is_super)})
 
 
 @router.get("/admin/verify", status_code=status.HTTP_200_OK)
@@ -1050,9 +1051,9 @@ async def admin_verify(request: Request):
 
 
 # ─── Librarians (admin accounts) ──────────────────────────────────────────
-# Same gate as every /admin/ route. The admin token carries no identity, so any
-# signed-in admin may manage accounts; the last enabled super user is protected
-# in `librarians.set_disabled`.
+# Same gate as every /admin/ route, plus who is asking: the token names the
+# librarian. Everyone signed in sees and edits their own account; managing
+# anyone else's is for the super user.
 
 def _librarian_call(fn, *args, **kwargs):
     try:
@@ -1061,31 +1062,68 @@ def _librarian_call(fn, *args, **kwargs):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _current_librarian(request: Request) -> "librarians.Librarian":
+    """The signed-in librarian. The process's own token names no one, so it is refused here."""
+    _require_admin(request)
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    row = auth.admin_librarian(token)
+    if not row:
+        raise HTTPException(status_code=403, detail="This needs a librarian account.")
+    return row
+
+
+def _super_librarian(request: Request) -> "librarians.Librarian":
+    row = _current_librarian(request)
+    if not row.is_super:
+        raise HTTPException(status_code=403, detail="Only the super user can do this.")
+    return row
+
+
+@router.get("/admin/me")
+async def admin_me(request: Request):
+    return JSONResponse(_current_librarian(request).to_dict())
+
+
 @router.get("/admin/librarians")
 async def list_librarians(request: Request):
-    _require_admin(request)
+    _super_librarian(request)
     return JSONResponse({"librarians": [l.to_dict() for l in librarians.list_all()]})
 
 
 @router.post("/admin/librarians", status_code=status.HTTP_201_CREATED)
 async def create_librarian(request: Request, body: dict = Body(...)):
-    _require_admin(request)
-    row = _librarian_call(librarians.create, body.get("username"), body.get("email"), body.get("password"))
+    _super_librarian(request)
+    row = _librarian_call(librarians.create, body.get("username"), body.get("email"),
+                          body.get("password"), is_super=bool(body.get("is_super", False)))
     return JSONResponse(row.to_dict(), status_code=status.HTTP_201_CREATED)
 
 
 @router.put("/admin/librarians/{librarian_id}")
 async def update_librarian(request: Request, librarian_id: int, body: dict = Body(...)):
-    """Change a librarian's email and/or password (the super user gets its first email here)."""
-    _require_admin(request)
-    row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"))
+    """Change a librarian's email, password and (super user only) `is_super`.
+
+    Anyone may change their own email, and their own password by also sending
+    `current_password`. The super user may change anyone's, a password reset
+    needing no current one. This is where the migrated super user gets its first email.
+    """
+    me = _current_librarian(request)
+    own = me.id == librarian_id
+    if not own and not me.is_super:
+        raise HTTPException(status_code=403, detail="Only the super user can edit another account.")
+    if "is_super" in body and not me.is_super:
+        raise HTTPException(status_code=403, detail="Only the super user can change who is super.")
+    if own and body.get("password") is not None:
+        if not librarians.authenticate(me.username, body.get("current_password") or ""):
+            raise HTTPException(status_code=400, detail="The current password is wrong.")
+    row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
+                          body.get("is_super"))
     return JSONResponse(row.to_dict())
 
 
 @router.post("/admin/librarians/{librarian_id}/disable")
 async def set_librarian_disabled(request: Request, librarian_id: int, body: dict = Body(...)):
-    """Body: ``{"disabled": true|false}``."""
-    _require_admin(request)
+    """Body: ``{"disabled": true|false}``. Super user only; takes effect on the next request."""
+    _super_librarian(request)
     row = _librarian_call(librarians.set_disabled, librarian_id, bool(body.get("disabled", True)))
     return JSONResponse(row.to_dict())
 

@@ -45,15 +45,20 @@ def verify_admin_internal_secret(secret: str) -> bool:
         return False
     return hmac.compare_digest(ADMIN_INTERNAL_SECRET, secret)
 
-def issue_admin_token() -> str:
+def issue_admin_token(librarian_id: Optional[int] = None) -> str:
     """Mint a signed admin token valid for ADMIN_TOKEN_TTL.
 
-    Minting is NOT authorization: every caller must have established admin
-    identity first — by password (`authenticate_admin`) or by already holding
-    the process's own secrets (`LennyClient`, which runs inside the api
-    container and is calling this service's own /upload).
+    With a `librarian_id` the token names a person: it stops working the moment
+    that librarian is disabled, and the account routes can tell who is asking.
+    Without one it is the process's own token (`internal_admin_headers`), which
+    only code holding this container's secrets can mint.
+
+    Minting is NOT authorization: every caller must have established identity
+    first, by password (`authenticate_admin`) or by already holding the
+    process's own secrets.
     """
-    return _get_admin_serializer().dumps({"admin": True})
+    claim = {"lid": librarian_id} if librarian_id else {"internal": True}
+    return _get_admin_serializer().dumps({"admin": True, **claim})
 
 def internal_admin_headers() -> dict:
     """Admin credentials for a server-side call this process makes to its own
@@ -81,20 +86,33 @@ def internal_admin_headers() -> dict:
 def authenticate_admin(username: str, password: str) -> Optional[str]:
     """Validates a librarian's username + password and returns a signed token on success."""
     from lenny.core import librarians
-    if not librarians.authenticate(username, password):
-        return None
-    return issue_admin_token()
+    row = librarians.authenticate(username, password)
+    return issue_admin_token(row.id) if row else None
 
-def verify_admin_token(token: str) -> bool:
-    """Validates a signed admin token. Returns True if valid and not expired."""
+def _admin_claims(token: str) -> Optional[dict]:
     try:
         if not token:
-            return False
-        serializer = _get_admin_serializer()
-        data = serializer.loads(token, max_age=ADMIN_TOKEN_TTL)
-        return isinstance(data, dict) and data.get("admin") is True
+            return None
+        data = _get_admin_serializer().loads(token, max_age=ADMIN_TOKEN_TTL)
     except BadSignature:
+        return None
+    return data if isinstance(data, dict) and data.get("admin") is True else None
+
+def admin_librarian(token: str):
+    """The enabled librarian a token names, or None (invalid, internal, or disabled since)."""
+    from lenny.core import librarians
+    claims = _admin_claims(token)
+    lid = claims.get("lid") if claims else None
+    return librarians.get_active(lid) if lid else None
+
+def verify_admin_token(token: str) -> bool:
+    """True for a valid, unexpired admin token. A librarian's token also needs the account to
+    still be enabled; a token with neither a librarian nor the internal claim (issued before
+    accounts were named) is refused, so everyone signs in again once."""
+    claims = _admin_claims(token)
+    if not claims:
         return False
+    return bool(claims.get("internal")) or admin_librarian(token) is not None
 
 # Open Library's OTP endpoints answer HTTP 200 with a JSON `{"error": ...}` body
 # on every failure, so the error string is the only signal there is. Map the ones

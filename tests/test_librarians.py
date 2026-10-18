@@ -93,24 +93,102 @@ def test_authenticate_admin_issues_a_token_only_for_a_librarian():
     assert auth.authenticate_admin("root", "nope nope nope") is None
 
 
-def test_routes_require_the_admin_pair_and_manage_accounts(monkeypatch):
+@pytest.fixture
+def api(monkeypatch):
     from lenny.app import app
     from lenny.core import auth
     monkeypatch.setattr(auth, "ADMIN_INTERNAL_SECRET", "s3cret")
-    make()
     client = TestClient(app)
-    headers = {"X-Admin-Internal-Secret": "s3cret",
-               "Authorization": f"Bearer {auth.issue_admin_token()}"}
-    assert client.get("/v1/api/admin/librarians").status_code == 403
 
-    created = client.post("/v1/api/admin/librarians", headers=headers, json={
+    def call(method, path, row=None, **kw):
+        headers = {"X-Admin-Internal-Secret": "s3cret"}
+        headers["Authorization"] = "Bearer " + (auth.issue_admin_token(row.id) if row else auth.issue_admin_token())
+        return client.request(method, "/v1/api" + path, headers=headers, **kw)
+    return call
+
+
+def test_routes_need_the_admin_pair_and_manage_accounts(api):
+    from fastapi.testclient import TestClient
+    from lenny.app import app
+    root = make()
+    assert TestClient(app).get("/v1/api/admin/librarians").status_code == 403
+
+    created = api("POST", "/admin/librarians", root, json={
         "username": "ann", "email": "ann@example.org", "password": PASSWORD})
     assert created.status_code == 201 and "password" not in created.text
-    assert client.post("/v1/api/admin/librarians", headers=headers, json={
+    assert api("POST", "/admin/librarians", root, json={
         "username": "ann", "email": "x@example.org", "password": PASSWORD}).status_code == 400
-
-    names = [l["username"] for l in client.get("/v1/api/admin/librarians", headers=headers).json()["librarians"]]
+    names = [l["username"] for l in api("GET", "/admin/librarians", root).json()["librarians"]]
     assert names == ["root", "ann"]
-    ann = created.json()["id"]
-    assert client.post(f"/v1/api/admin/librarians/{ann}/disable", headers=headers,
-                       json={"disabled": True}).json()["disabled"] is True
+    assert api("POST", f"/admin/librarians/{created.json()['id']}/disable", root,
+               json={"disabled": True}).json()["disabled"] is True
+
+
+def test_a_non_super_librarian_sees_and_edits_only_themselves(api):
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    assert api("GET", "/admin/me", ann).json()["username"] == "ann"
+    assert api("GET", "/admin/librarians", ann).status_code == 403
+    assert api("POST", "/admin/librarians", ann, json={
+        "username": "b", "email": "b@example.org", "password": PASSWORD}).status_code == 403
+    assert api("POST", f"/admin/librarians/{root.id}/disable", ann, json={}).status_code == 403
+    assert api("PUT", f"/admin/librarians/{root.id}", ann, json={"email": "x@example.org"}).status_code == 403
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann, json={"email": "new@example.org"}).status_code == 200
+    # nobody promotes themselves
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann, json={"is_super": True}).status_code == 403
+
+
+def test_changing_your_own_password_needs_the_current_one(api):
+    from lenny.core import librarians
+    ann = make("ann", "ann@example.org", is_super=False)
+    new = "a brand new passphrase"
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann, json={"password": new}).status_code == 400
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann,
+               json={"password": new, "current_password": "wrong password!!"}).status_code == 400
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann,
+               json={"password": new, "current_password": PASSWORD}).status_code == 200
+    assert librarians.authenticate("ann", new)
+
+
+def test_super_user_resets_another_password_without_the_old_one(api):
+    from lenny.core import librarians
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    assert api("PUT", f"/admin/librarians/{ann.id}", root, json={"password": "reset by the super user"}).status_code == 200
+    assert librarians.authenticate("ann", "reset by the super user")
+
+
+def test_super_status_can_move_but_never_vanish(api):
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    assert api("PUT", f"/admin/librarians/{root.id}", root, json={"is_super": False}).status_code == 400
+    assert api("PUT", f"/admin/librarians/{ann.id}", root, json={"is_super": True}).status_code == 200
+    assert api("PUT", f"/admin/librarians/{root.id}", ann, json={"is_super": False}).status_code == 200
+
+
+def test_disabling_a_librarian_ends_their_session_at_once(api):
+    from lenny.core import auth, librarians
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    token = auth.issue_admin_token(ann.id)
+    assert auth.verify_admin_token(token)
+    librarians.set_disabled(ann.id, True)
+    assert not auth.verify_admin_token(token)
+    assert api("GET", "/admin/me", ann).status_code == 401
+
+
+def test_tokens_without_a_named_librarian_are_refused_except_the_internal_one(api):
+    from lenny.core import auth
+    legacy = auth._get_admin_serializer().dumps({"admin": True})
+    assert not auth.verify_admin_token(legacy)
+    assert auth.verify_admin_token(auth.issue_admin_token())
+    # the process's own token reaches admin routes but is no one's account
+    assert api("GET", "/admin/me").status_code == 403
+
+
+def test_login_reports_who_signed_in(api):
+    from lenny.app import app
+    make()
+    r = TestClient(app).post("/v1/api/admin/auth", headers={"X-Admin-Internal-Secret": "s3cret"},
+                             json={"username": "root", "password": PASSWORD})
+    assert r.status_code == 200 and r.json()["username"] == "root" and r.json()["is_super"] is True
