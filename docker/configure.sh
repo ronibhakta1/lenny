@@ -225,7 +225,9 @@ else
   IA_AUTH_ENABLED="${IA_AUTH_ENABLED:-false}"
 
   cat <<EOF > "$AUTH_ENV_FILE"
-# Admin credentials
+# Initial super-user login. Used once, on first start, to create the account in
+# the database. After that the database is the only source: if the password is
+# changed in the admin UI, these values no longer work and can be deleted.
 ADMIN_USERNAME=$ADMIN_USERNAME
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 ADMIN_INTERNAL_SECRET=$ADMIN_INTERNAL_SECRET
