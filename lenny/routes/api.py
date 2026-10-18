@@ -214,6 +214,10 @@ def requires_item_auth(do_function=None):
                 email=None, item=None, *args, **kwargs):
             session = extract_session(request, session)
 
+            # `format` is spliced into the storage key readium is asked for, so it
+            # is a closed set: anything else (`23.epub`, `../x`) reads another book.
+            if format not in ("epub", ".epub"):
+                return JSONResponse(status_code=400, content={"detail": "Unsupported format"})
             if item := Item.exists(book_id):
                 result = LennyAPI.auth_check(item, session=session, request=request)
                 email = result.get('email', '')
@@ -345,6 +349,10 @@ async def get_manifest(request: Request, book_id: str, format: str=".epub", sess
 @router.get("/items/{book_id}/readium/{readium_path:path}")
 @requires_item_auth()
 async def proxy_readium(request: Request, book_id: str, readium_path: str, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
+    # The path is appended to a URL under this book's own storage key; dot
+    # segments (or ? # backslash) would let it leave that book for any other in the bucket.
+    if any(seg in (".", "..") for seg in readium_path.split("/")) or any(c in readium_path for c in "?#\\"):
+        raise HTTPException(status_code=400, detail="Bad path")
     readium_url = ReadiumAPI.make_url(book_id, format, readium_path)
     with httpx.Client() as client:
         r = client.get(readium_url, params=dict(request.query_params))
