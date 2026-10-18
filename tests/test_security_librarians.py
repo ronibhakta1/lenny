@@ -27,7 +27,6 @@ def api(monkeypatch):
 def test_a_librarian_cannot_disable_their_own_account(api):
     from lenny.core import librarians
     root = make()
-    make("backup", "backup@example.org")  # a second super, so the last-super guard is not what stops it
     r = api("POST", f"/admin/librarians/{root.id}/disable", root, json={"disabled": True})
     assert r.status_code == 400 and r.json()["detail"] == "You cannot disable your own account."
     assert librarians.get_active(root.id)

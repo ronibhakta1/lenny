@@ -1146,8 +1146,10 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
 
     Anyone may change their own email, and their own password by also sending
     `current_password`. The super user may change anyone's, a password reset
-    needing no current one, and may make another librarian super
-    by sending `is_super` with their OWN `current_password`. This is where the migrated super user gets its first email.
+    needing no current one. They may hand the super role to another librarian by
+    sending `is_super: true` with their OWN `current_password`; the response then
+    has `transferred: true` and the caller is a normal member from the next request.
+    There is always exactly one super user. This is where the migrated super user gets its first email.
     """
     me = _current_librarian(request)
     own = me.id == librarian_id
@@ -1162,6 +1164,8 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
     row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
                           _flag(body, "is_super"), body.get("name"))
     out = row.to_dict()
+    if _flag(body, "is_super") is True:
+        out["transferred"] = True
     if own and body.get("password") is not None:
         out["token"] = auth.issue_admin_token(row.id)  # the old one died with the old password
     return JSONResponse(out)

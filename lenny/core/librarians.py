@@ -4,9 +4,11 @@
     Librarians: named admin accounts, kept in the database.
 
     A password is stored only as an Argon2 hash (salt and cost are inside the
-    hash string, so there is no salt column). `is_super` marks the account that
-    existed before this table did; the last enabled super user can never be
-    disabled, so the instance cannot lock itself out.
+    hash string, so there is no salt column). `is_super` marks the one
+    super user (the account that existed before this table did). Making someone
+    else super user hands the role over: the previous one becomes a normal member.
+    The super user can be neither demoted nor disabled, so the instance cannot
+    lock itself out.
 
     :copyright: (c) 2015 by AUTHORS
     :license: see LICENSE for more details
@@ -123,8 +125,10 @@ def create(name: str, email: str, password: str, is_super: bool = False,
         if username and db.query(Librarian).filter(Librarian.username == username).first():
             raise LibrarianError("That username is already in use.")
         row = Librarian(name=name, username=username or _derive_username(email), email=email,
-                        is_super=is_super, password_hash=_hasher.hash(password))
+                        is_super=False, password_hash=_hasher.hash(password))
         db.add(row)
+        if is_super:
+            _make_only_super(row)
         db.commit()
         return row
     except Exception:
@@ -182,9 +186,13 @@ def list_all() -> list:
     return db.query(Librarian).order_by(Librarian.id).all()
 
 
-def _other_enabled_supers(row: Librarian) -> int:
-    return db.query(Librarian).filter(
-        Librarian.is_super.is_(True), Librarian.disabled_at.is_(None), Librarian.id != row.id).count()
+def _make_only_super(row: Librarian) -> None:
+    """There is one super user: promoting `row` demotes everyone else, in the caller's transaction."""
+    if row.disabled_at is not None:
+        raise LibrarianError("A disabled account cannot be made super user.")
+    db.query(Librarian).filter(Librarian.is_super.is_(True), Librarian.id != row.id).update(
+        {Librarian.is_super: False, Librarian.updated_at: func.now()}, synchronize_session="fetch")
+    row.is_super = True
 
 
 def update(librarian_id: int, email: Optional[str] = None, password: Optional[str] = None,
@@ -205,10 +213,10 @@ def update(librarian_id: int, email: Optional[str] = None, password: Optional[st
         if password is not None:
             _check_password(password)
             row.password_hash = _hasher.hash(password)
-        if is_super is not None:
-            if not is_super and row.is_super and row.disabled_at is None and not _other_enabled_supers(row):
-                raise LibrarianError("The last enabled super user cannot be demoted.")
-            row.is_super = is_super
+        if is_super is True and not row.is_super:
+            _make_only_super(row)
+        elif is_super is False and row.is_super:
+            raise LibrarianError("The super user cannot be demoted; make someone else super user instead.")
         row.updated_at = func.now()
         db.commit()
         return row
@@ -221,9 +229,8 @@ def set_disabled(librarian_id: int, disabled: bool) -> Librarian:
     try:
         _xact_lock("librarians")
         row = get(librarian_id)
-        if disabled and row.is_super and row.disabled_at is None:
-            if not _other_enabled_supers(row):
-                raise LibrarianError("The last enabled super user cannot be disabled.")
+        if disabled and row.is_super:
+            raise LibrarianError("The super user cannot be disabled; make someone else super user first.")
         row.disabled_at = func.now() if disabled else None
         row.updated_at = func.now()
         db.commit()

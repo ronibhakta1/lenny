@@ -47,17 +47,6 @@ def test_disabled_librarian_cannot_log_in():
     assert librarians.authenticate("second", PASSWORD)
 
 
-def test_last_enabled_super_user_cannot_be_disabled():
-    from lenny.core import librarians
-    root = make()
-    with pytest.raises(librarians.LibrarianError):
-        librarians.set_disabled(root.id, True)
-    second = make("backup", "backup@example.org")
-    librarians.set_disabled(root.id, True)
-    with pytest.raises(librarians.LibrarianError):
-        librarians.set_disabled(second.id, True)
-
-
 @pytest.mark.parametrize("username,email,password", [
     ("", "a@b.org", PASSWORD),
     ("x", "not-an-email", PASSWORD),
@@ -159,16 +148,40 @@ def test_super_user_resets_another_password_without_the_old_one(api):
     assert librarians.authenticate("ann", "reset by the super user")
 
 
-def test_super_status_can_move_but_never_vanish(api):
+def test_making_someone_super_hands_the_role_over(api):
+    from lenny.core import librarians
     root = make()
     ann = make("ann", "ann@example.org", is_super=False)
-    ok = {"is_super": True, "current_password": PASSWORD}
-    # nobody changes their own super status, up or down
+    # nobody changes their own super status
     r = api("PUT", f"/admin/librarians/{root.id}", root, json={"is_super": False, "current_password": PASSWORD})
     assert r.status_code == 400 and r.json()["detail"] == "You cannot change your own super status."
-    assert api("PUT", f"/admin/librarians/{ann.id}", root, json=ok).status_code == 200
-    assert api("PUT", f"/admin/librarians/{root.id}", ann,
-               json={"is_super": False, "current_password": PASSWORD}).status_code == 200
+    r = api("PUT", f"/admin/librarians/{ann.id}", root, json={"is_super": True, "current_password": PASSWORD})
+    assert r.status_code == 200 and r.json()["transferred"] is True
+    librarians.db.expire_all()  # the route ran in its own session
+    assert librarians.get(ann.id).is_super and not librarians.get(root.id).is_super
+    # the old super user is a normal member at once
+    assert api("GET", "/admin/librarians", root).status_code == 403
+    assert api("GET", "/admin/librarians", ann).status_code == 200
+
+
+def test_there_is_always_exactly_one_super_user(api):
+    from lenny.core import librarians
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    # the super user cannot be demoted or disabled, only replaced
+    with pytest.raises(librarians.LibrarianError):
+        librarians.update(root.id, is_super=False)
+    with pytest.raises(librarians.LibrarianError):
+        librarians.set_disabled(root.id, True)
+    assert api("POST", f"/admin/librarians/{root.id}/disable", ann, json={}).status_code == 403
+    # a disabled account cannot take the role
+    librarians.set_disabled(ann.id, True)
+    with pytest.raises(librarians.LibrarianError):
+        librarians.update(ann.id, is_super=True)
+    # creating a super user also replaces the current one, and old data with two collapses to one
+    librarians.set_disabled(ann.id, False)
+    bob = librarians.create("Bob", "bob@example.org", PASSWORD, is_super=True)
+    assert [r.username for r in librarians.list_all() if r.is_super] == [bob.username]
 
 
 def test_making_someone_super_needs_your_own_password(api):
