@@ -203,14 +203,12 @@ NODE_ENV=$NODE_ENV
 EOF
 fi
 
-# ── auth.env: admin credentials + external OAuth provider ────────────────────
+# ── auth.env: admin secrets + external OAuth provider ────────────────────
 if [ -f "$AUTH_ENV_FILE" ]; then
   echo "Skipping configure: $AUTH_ENV_FILE already configured."
 else
   echo "Creating $AUTH_ENV_FILE."
 
-  ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-  ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(genpass 32)}"
   ADMIN_INTERNAL_SECRET="${ADMIN_INTERNAL_SECRET:-$(genpass 32)}"
   ADMIN_SALT="${ADMIN_SALT:-$(genpass 32)}"
 
@@ -225,9 +223,7 @@ else
   IA_AUTH_ENABLED="${IA_AUTH_ENABLED:-false}"
 
   cat <<EOF > "$AUTH_ENV_FILE"
-# Admin credentials
-ADMIN_USERNAME=$ADMIN_USERNAME
-ADMIN_PASSWORD=$ADMIN_PASSWORD
+# Admin secrets (admin accounts live in the database: make admin-create)
 ADMIN_INTERNAL_SECRET=$ADMIN_INTERNAL_SECRET
 ADMIN_SALT=$ADMIN_SALT
 

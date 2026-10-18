@@ -5,7 +5,7 @@ import httpx
 from datetime import datetime, timedelta
 from typing import Optional
 from itsdangerous import URLSafeTimedSerializer, BadSignature
-from lenny.configs import SEED, OTP_SERVER, ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_INTERNAL_SECRET, ADMIN_SALT, LOG_LEVEL
+from lenny.configs import SEED, OTP_SERVER, ADMIN_INTERNAL_SECRET, ADMIN_SALT, LOG_LEVEL
 from lenny.core.openlibrary import ol_auth_headers, _REDACT_HOOKS
 from lenny.core.exceptions import LendingNotConfiguredError, OTPGenerationError
 from lenny.core.cache import Cache
@@ -79,12 +79,9 @@ def internal_admin_headers() -> dict:
     }
 
 def authenticate_admin(username: str, password: str) -> Optional[str]:
-    """Validates admin username + password and returns a signed token on success."""
-    if not ADMIN_USERNAME or not ADMIN_PASSWORD:
-        return None
-    username_ok = hmac.compare_digest(ADMIN_USERNAME, username)
-    password_ok = hmac.compare_digest(ADMIN_PASSWORD, password)
-    if not (username_ok and password_ok):
+    """Validates a librarian's username + password and returns a signed token on success."""
+    from lenny.core import librarians
+    if not librarians.authenticate(username, password):
         return None
     return issue_admin_token()
 

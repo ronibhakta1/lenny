@@ -223,12 +223,14 @@ Lenny includes a secure admin interface at `/admin` for managing the library.
 
 ### Setup
 
-Change these variables in your `.env` or it will use system generated credentials:
+Admin accounts live in the database, passwords stored as Argon2 hashes. Create the first one (it becomes the super user):
 
-```env
-ADMIN_USERNAME=your-username
-ADMIN_PASSWORD=your-secure-password
+```bash
+lenny admin-create USERNAME=your-username EMAIL=you@example.org   # asks for the password
+lenny admin-passwd USERNAME=your-username                          # set a new one later
 ```
+
+An instance upgraded from an earlier version keeps its existing admin as the super user: `make update` moves `ADMIN_USERNAME`/`ADMIN_PASSWORD` out of `auth.env` and into the database, and that account gets its email the first time it is edited in the admin.
 
 ---
 
@@ -269,9 +271,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8080
 # Must match ADMIN_INTERNAL_SECRET in lenny/auth.env exactly
 ADMIN_INTERNAL_SECRET=<value from auth.env>
 
-# Must match ADMIN_USERNAME / ADMIN_PASSWORD in lenny/auth.env exactly
-ADMIN_USERNAME=<value from auth.env>
-ADMIN_PASSWORD=<value from auth.env>
+# Admin sign-in uses a librarian account (see "Setup" above); no username or password is set here
 ```
 
 Then start the lenny-app dev server:

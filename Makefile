@@ -136,6 +136,17 @@ ol-disconnect:
 bookserver-connect:
 	@docker compose -p lenny exec api python3 scripts/oauth2_client.py bookserver-connect $(if $(ENABLE),--enable)
 
+# Admin accounts live in the database. The first one created is the super user.
+.PHONY: admin-create
+admin-create:
+	@test -n "$(USERNAME)" -a -n "$(EMAIL)" || { echo 'usage: make admin-create USERNAME=admin EMAIL=you@example.org'; exit 1; }
+	@docker compose -p lenny exec api python3 scripts/librarian.py create --username "$(USERNAME)" --email "$(EMAIL)"
+
+.PHONY: admin-passwd
+admin-passwd:
+	@test -n "$(USERNAME)" || { echo "usage: make admin-passwd USERNAME=admin"; exit 1; }
+	@docker compose -p lenny exec api python3 scripts/librarian.py passwd --username "$(USERNAME)"
+
 .PHONY: oauth2-clients
 oauth2-clients:
 	@docker compose -p lenny exec api python3 scripts/oauth2_client.py list

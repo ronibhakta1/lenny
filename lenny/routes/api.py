@@ -49,7 +49,7 @@ from fastapi.responses import (
     Response,
     JSONResponse,
 )
-from lenny.core import auth
+from lenny.core import auth, librarians
 from lenny.core.api import LennyAPI, auth_document
 from lenny.core import ol_bootstrap
 from lenny.core.cache import Cache
@@ -1047,6 +1047,47 @@ async def admin_verify(request: Request):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     return JSONResponse({"valid": True})
+
+
+# ─── Librarians (admin accounts) ──────────────────────────────────────────
+# Same gate as every /admin/ route. The admin token carries no identity, so any
+# signed-in admin may manage accounts; the last enabled super user is protected
+# in `librarians.set_disabled`.
+
+def _librarian_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except librarians.LibrarianError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/admin/librarians")
+async def list_librarians(request: Request):
+    _require_admin(request)
+    return JSONResponse({"librarians": [l.to_dict() for l in librarians.list_all()]})
+
+
+@router.post("/admin/librarians", status_code=status.HTTP_201_CREATED)
+async def create_librarian(request: Request, body: dict = Body(...)):
+    _require_admin(request)
+    row = _librarian_call(librarians.create, body.get("username"), body.get("email"), body.get("password"))
+    return JSONResponse(row.to_dict(), status_code=status.HTTP_201_CREATED)
+
+
+@router.put("/admin/librarians/{librarian_id}")
+async def update_librarian(request: Request, librarian_id: int, body: dict = Body(...)):
+    """Change a librarian's email and/or password (the super user gets its first email here)."""
+    _require_admin(request)
+    row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"))
+    return JSONResponse(row.to_dict())
+
+
+@router.post("/admin/librarians/{librarian_id}/disable")
+async def set_librarian_disabled(request: Request, librarian_id: int, body: dict = Body(...)):
+    """Body: ``{"disabled": true|false}``."""
+    _require_admin(request)
+    row = _librarian_call(librarians.set_disabled, librarian_id, bool(body.get("disabled", True)))
+    return JSONResponse(row.to_dict())
 
 
 # ─── Open Library / Internet Archive auth bootstrap ──────────────────────
