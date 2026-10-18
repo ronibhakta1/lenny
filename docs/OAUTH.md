@@ -38,7 +38,9 @@ The two paths are mutually exclusive at runtime. When external auth is enabled, 
 All OAuth configuration lives in `auth.env`. The defaults `make configure` writes are:
 
 ```bash
-# Admin secrets (admin accounts themselves live in the database: `lenny admin-create`)
+# Admin credentials (random by default)
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<random 32-char>
 ADMIN_INTERNAL_SECRET=<random 32-char>
 ADMIN_SALT=<random 32-char>
 

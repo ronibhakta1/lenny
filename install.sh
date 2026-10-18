@@ -170,5 +170,4 @@ else
     echo "[+] Skipping preload (not requested). Run 'make preload' later if you change your mind."
 fi
 
-echo "[i] Create your admin account: lenny admin-create USERNAME=admin EMAIL=you@example.org"
 echo "[✓] Lenny installation complete!"
