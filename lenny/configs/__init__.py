@@ -22,8 +22,6 @@ PORT = int(os.environ.get('LENNY_PORT', 8080))
 WORKERS = int(os.environ.get('LENNY_WORKERS', 1 if TESTING else 3))
 DEBUG = bool(int(os.environ.get('LENNY_DEBUG', 0)))
 SEED = os.environ.get('LENNY_SEED')
-ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
 ADMIN_INTERNAL_SECRET = os.environ.get('ADMIN_INTERNAL_SECRET')
 ADMIN_SALT = os.environ.get('ADMIN_SALT')
 LOG_LEVEL = os.environ.get('LENNY_LOG_LEVEL', 'info')
@@ -206,7 +204,7 @@ def get_loan_duration_days() -> int:
 
 
 __all__ = ['SCHEME', 'HOST', 'PORT', 'DEBUG', 'OPTIONS', 'DB_URI', 'DB_CONFIG', 'S3_CONFIG', 'TESTING',
-           'ADMIN_USERNAME', 'ADMIN_PASSWORD', 'ADMIN_INTERNAL_SECRET', 'ADMIN_SALT',
+           'ADMIN_INTERNAL_SECRET', 'ADMIN_SALT',
            'OL_S3_ACCESS_KEY', 'OL_S3_SECRET_KEY', 'OL_USERNAME', 'LENDING_MODE', 'LENDING_ENABLED', 'OL_INDEXED',
            'EXTERNAL_AUTH_ENABLED', 'IA_AUTH_ENABLED', 'OAUTH_CLIENT_ID', 'OAUTH_DISCOVERY_URL',
            'OAUTH_REDIRECT_URI', 'OAUTH_SCOPES', 'OAUTH_FLOW',

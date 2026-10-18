@@ -49,7 +49,7 @@ from fastapi.responses import (
     Response,
     JSONResponse,
 )
-from lenny.core import auth
+from lenny.core import auth, librarians
 from lenny.core.api import LennyAPI, auth_document
 from lenny.core import ol_bootstrap
 from lenny.core.cache import Cache
@@ -214,6 +214,10 @@ def requires_item_auth(do_function=None):
                 email=None, item=None, *args, **kwargs):
             session = extract_session(request, session)
 
+            # `format` is spliced into the storage key readium is asked for, so it
+            # is a closed set: anything else (`23.epub`, `../x`) reads another book.
+            if format not in ("epub", ".epub"):
+                return JSONResponse(status_code=400, content={"detail": "Unsupported format"})
             if item := Item.exists(book_id):
                 result = LennyAPI.auth_check(item, session=session, request=request)
                 email = result.get('email', '')
@@ -345,6 +349,10 @@ async def get_manifest(request: Request, book_id: str, format: str=".epub", sess
 @router.get("/items/{book_id}/readium/{readium_path:path}")
 @requires_item_auth()
 async def proxy_readium(request: Request, book_id: str, readium_path: str, format: str=".epub", session: Optional[str] = Cookie(None), item=None, email: str=''):
+    # The path is appended to a URL under this book's own storage key; dot
+    # segments (or ? # backslash) would let it leave that book for any other in the bucket.
+    if any(seg in (".", "..") for seg in readium_path.split("/")) or any(c in readium_path for c in "?#\\"):
+        raise HTTPException(status_code=400, detail="Bad path")
     readium_url = ReadiumAPI.make_url(book_id, format, readium_path)
     with httpx.Client() as client:
         r = client.get(readium_url, params=dict(request.query_params))
@@ -1022,13 +1030,19 @@ async def admin_auth(request: Request, body: dict = Body(...)):
     if not auth.verify_admin_internal_secret(internal_secret):
         raise HTTPException(status_code=403, detail="Forbidden")
 
+    # The "username" field takes the username or the email address.
     username = body.get("username", "")
     password = body.get("password", "")
-    token = auth.authenticate_admin(username, password)
-    if not token:
-        raise HTTPException(status_code=401, detail="Invalid admin key")
+    try:
+        row = librarians.authenticate(username, password)
+    except librarians.TooManyAttempts as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid email, username or password.")
 
-    return JSONResponse({"token": token})
+    return JSONResponse({"token": auth.issue_admin_token(row.id), "username": row.username,
+                         "name": row.name, "display_name": row.name or row.username,
+                         "is_super": bool(row.is_super)})
 
 
 @router.get("/admin/verify", status_code=status.HTTP_200_OK)
@@ -1047,6 +1061,136 @@ async def admin_verify(request: Request):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     return JSONResponse({"valid": True})
+
+
+# ─── Librarians (admin accounts) ──────────────────────────────────────────
+# Same gate as every /admin/ route, plus who is asking: the token names the
+# librarian. Everyone signed in sees and edits their own account; managing
+# anyone else's is for the super user.
+
+def _librarian_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except librarians.LibrarianError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _current_librarian(request: Request) -> "librarians.Librarian":
+    """The signed-in librarian. The process's own token names no one, so it is refused here."""
+    _require_admin(request)
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    row = auth.admin_librarian(token)
+    if not row:
+        raise HTTPException(status_code=403, detail="This needs a librarian account.")
+    return row
+
+
+def _confirm_password(me: "librarians.Librarian", body: dict) -> None:
+    """Step-up check for changes that hand out or take away power: the signed-in
+    librarian proves they hold the password, not just a live session."""
+    try:
+        ok = librarians.authenticate(me.username, body.get("current_password"))
+    except librarians.TooManyAttempts as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=400, detail="The current password is wrong.")
+
+
+def _flag(body: dict, key: str, default=None):
+    """A JSON boolean, or 400: bool("false") is True, so a string must never stand in for one."""
+    value = body.get(key, default)
+    if value is not None and not isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{key} must be true or false.")
+    return value
+
+
+def _super_librarian(request: Request) -> "librarians.Librarian":
+    row = _current_librarian(request)
+    if not row.is_super:
+        raise HTTPException(status_code=403, detail="Only the super user can do this.")
+    return row
+
+
+@router.post("/admin/logout")
+async def admin_logout(request: Request):
+    """Ends the caller's sessions on every device: their tokens stop working at once."""
+    librarians.end_sessions(_current_librarian(request).id)
+    return JSONResponse({"ok": True})
+
+
+@router.get("/admin/me")
+async def admin_me(request: Request):
+    return JSONResponse(_current_librarian(request).to_dict())
+
+
+@router.get("/admin/librarians")
+async def list_librarians(request: Request):
+    _super_librarian(request)
+    return JSONResponse({"librarians": [l.to_dict() for l in librarians.list_all()]})
+
+
+@router.post("/admin/librarians", status_code=status.HTTP_201_CREATED)
+async def create_librarian(request: Request, body: dict = Body(...)):
+    me = _super_librarian(request)
+    make_super = _flag(body, "is_super", False) is True
+    if make_super:
+        _confirm_password(me, body)
+    row = _librarian_call(librarians.create, body.get("name"), body.get("email"),
+                          body.get("password"), is_super=make_super, username=body.get("username"))
+    return JSONResponse(row.to_dict(), status_code=status.HTTP_201_CREATED)
+
+
+@router.put("/admin/librarians/{librarian_id}")
+async def update_librarian(request: Request, librarian_id: int, body: dict = Body(...)):
+    """Change a librarian's name, email, password and (super user only) `is_super`.
+
+    Anyone may change their own email, and their own password by also sending
+    `current_password`. The super user may change anyone's, a password reset
+    needing no current one. They may hand the super role to another librarian by
+    sending `is_super: true` with their OWN `current_password`; the response then
+    has `transferred: true` and the caller is a normal member from the next request.
+    There is always exactly one super user. This is where the migrated super user gets its first email.
+    """
+    me = _current_librarian(request)
+    own = me.id == librarian_id
+    if not own and not me.is_super:
+        raise HTTPException(status_code=403, detail="Only the super user can edit another account.")
+    if "is_super" in body and not me.is_super:
+        raise HTTPException(status_code=403, detail="Only the super user can change who is super.")
+    if "is_super" in body and own:
+        raise HTTPException(status_code=400, detail="You cannot change your own super status.")
+    if (own and body.get("password") is not None) or "is_super" in body:
+        _confirm_password(me, body)
+    row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
+                          _flag(body, "is_super"), body.get("name"))
+    out = row.to_dict()
+    if _flag(body, "is_super") is True:
+        out["transferred"] = True
+    if own and body.get("password") is not None:
+        out["token"] = auth.issue_admin_token(row.id)  # the old one died with the old password
+    return JSONResponse(out)
+
+
+@router.post("/admin/librarians/{librarian_id}/disable")
+async def set_librarian_disabled(request: Request, librarian_id: int, body: dict = Body(...)):
+    """Body: ``{"disabled": true|false}``. Super user only; takes effect on the next request."""
+    me = _super_librarian(request)
+    disabled = _flag(body, "disabled", True)
+    if disabled and me.id == librarian_id:
+        raise HTTPException(status_code=400, detail="You cannot disable your own account.")
+    row = _librarian_call(librarians.set_disabled, librarian_id, disabled)
+    return JSONResponse(row.to_dict())
+
+
+@router.post("/admin/librarians/{librarian_id}/delete")
+async def delete_librarian(request: Request, librarian_id: int, body: dict = Body(...)):
+    """Delete an account for good. Super user only, with their OWN `current_password`; never yourself."""
+    me = _super_librarian(request)
+    if me.id == librarian_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    _confirm_password(me, body)
+    _librarian_call(librarians.delete, librarian_id)
+    return JSONResponse({"deleted": True})
 
 
 # ─── Open Library / Internet Archive auth bootstrap ──────────────────────
