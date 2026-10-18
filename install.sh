@@ -171,3 +171,6 @@ else
 fi
 
 echo "[✓] Lenny installation complete!"
+echo "    Admin: open /admin and sign in as 'admin' with ADMIN_PASSWORD from auth.env."
+echo "    Then set your name, email and password under My account; add people under Team."
+echo "    No ADMIN_PASSWORD? Run: lenny admin-create NAME=\"Your Name\" EMAIL=you@example.org"
