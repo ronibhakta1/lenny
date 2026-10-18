@@ -54,8 +54,8 @@ def test_login_with_wrong_types_is_a_plain_401(api, bad):
 def test_account_routes_refuse_wrong_types(api, bad):
     root = make()
     ann = make("ann", "ann@example.org", is_super=False)
-    base = {"username": "bob", "email": "bob@example.org", "password": PASSWORD}
-    for field in ("username", "email", "password"):
+    base = {"name": "Bob", "email": "bob@example.org", "password": PASSWORD}
+    for field in ("name", "email", "password"):
         assert api("POST", "/admin/librarians", root, json={**base, field: bad}).status_code == 400
     for field in ("email", "password"):
         assert api("PUT", f"/admin/librarians/{ann.id}", root, json={field: bad}).status_code == 400
@@ -70,7 +70,7 @@ def test_flags_must_be_real_booleans(api):
     assert librarians.get_active(ann.id)
     r = api("PUT", f"/admin/librarians/{ann.id}", root, json={"is_super": "false", "current_password": PASSWORD})
     assert r.status_code == 400 and not librarians.get(ann.id).is_super
-    new = {"username": "bob", "email": "bob@example.org", "password": PASSWORD, "is_super": "no"}
+    new = {"name": "Bob", "email": "bob@example.org", "password": PASSWORD, "is_super": "no"}
     assert api("POST", "/admin/librarians", root, json=new).status_code == 400
 
 

@@ -1030,6 +1030,7 @@ async def admin_auth(request: Request, body: dict = Body(...)):
     if not auth.verify_admin_internal_secret(internal_secret):
         raise HTTPException(status_code=403, detail="Forbidden")
 
+    # The "username" field takes the username or the email address.
     username = body.get("username", "")
     password = body.get("password", "")
     try:
@@ -1040,6 +1041,7 @@ async def admin_auth(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
     return JSONResponse({"token": auth.issue_admin_token(row.id), "username": row.username,
+                         "name": row.name, "display_name": row.name or row.username,
                          "is_super": bool(row.is_super)})
 
 
@@ -1126,14 +1128,14 @@ async def create_librarian(request: Request, body: dict = Body(...)):
     make_super = _flag(body, "is_super", False) is True
     if make_super:
         _confirm_password(me, body)
-    row = _librarian_call(librarians.create, body.get("username"), body.get("email"),
-                          body.get("password"), is_super=make_super)
+    row = _librarian_call(librarians.create, body.get("name"), body.get("email"),
+                          body.get("password"), is_super=make_super, username=body.get("username"))
     return JSONResponse(row.to_dict(), status_code=status.HTTP_201_CREATED)
 
 
 @router.put("/admin/librarians/{librarian_id}")
 async def update_librarian(request: Request, librarian_id: int, body: dict = Body(...)):
-    """Change a librarian's email, password and (super user only) `is_super`.
+    """Change a librarian's name, email, password and (super user only) `is_super`.
 
     Anyone may change their own email, and their own password by also sending
     `current_password`. The super user may change anyone's, a password reset
@@ -1151,7 +1153,7 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
     if (own and body.get("password") is not None) or "is_super" in body:
         _confirm_password(me, body)
     row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
-                          _flag(body, "is_super"))
+                          _flag(body, "is_super"), body.get("name"))
     out = row.to_dict()
     if own and body.get("password") is not None:
         out["token"] = auth.issue_admin_token(row.id)  # the old one died with the old password

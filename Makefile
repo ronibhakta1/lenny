@@ -139,8 +139,8 @@ bookserver-connect:
 # Admin accounts live in the database. The first one created is the super user.
 .PHONY: admin-create
 admin-create:
-	@test -n "$(USERNAME)" -a -n "$(EMAIL)" || { echo 'usage: make admin-create USERNAME=admin EMAIL=you@example.org'; exit 1; }
-	@docker compose -p lenny exec api python3 scripts/librarian.py create --username "$(USERNAME)" --email "$(EMAIL)"
+	@test -n "$(NAME)" -a -n "$(EMAIL)" || { echo 'usage: make admin-create NAME="Ada Lovelace" EMAIL=you@example.org [USERNAME=ada]'; exit 1; }
+	@docker compose -p lenny exec api python3 scripts/librarian.py create --name "$(NAME)" --email "$(EMAIL)" $(if $(USERNAME),--username "$(USERNAME)")
 
 .PHONY: admin-passwd
 admin-passwd:

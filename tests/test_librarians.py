@@ -73,9 +73,9 @@ def test_duplicate_username_or_email_is_refused():
     from lenny.core import librarians
     make()
     with pytest.raises(librarians.LibrarianError):
-        librarians.create("root", "other@example.org", PASSWORD)
+        librarians.create("Other", "other@example.org", PASSWORD, username="root")
     with pytest.raises(librarians.LibrarianError):
-        librarians.create("other", "ROOT@example.org", PASSWORD)
+        librarians.create("Other", "ROOT@example.org", PASSWORD)
 
 
 def test_super_user_without_email_gets_one_through_update():
@@ -115,10 +115,10 @@ def test_routes_need_the_admin_pair_and_manage_accounts(api):
     assert TestClient(app).get("/v1/api/admin/librarians").status_code == 403
 
     created = api("POST", "/admin/librarians", root, json={
-        "username": "ann", "email": "ann@example.org", "password": PASSWORD})
+        "name": "Ann", "email": "ann@example.org", "password": PASSWORD})
     assert created.status_code == 201 and "password" not in created.text
     assert api("POST", "/admin/librarians", root, json={
-        "username": "ann", "email": "x@example.org", "password": PASSWORD}).status_code == 400
+        "name": "Ann", "email": "ann@example.org", "password": PASSWORD}).status_code == 400
     names = [l["username"] for l in api("GET", "/admin/librarians", root).json()["librarians"]]
     assert names == ["root", "ann"]
     assert api("POST", f"/admin/librarians/{created.json()['id']}/disable", root,
@@ -131,7 +131,7 @@ def test_a_non_super_librarian_sees_and_edits_only_themselves(api):
     assert api("GET", "/admin/me", ann).json()["username"] == "ann"
     assert api("GET", "/admin/librarians", ann).status_code == 403
     assert api("POST", "/admin/librarians", ann, json={
-        "username": "b", "email": "b@example.org", "password": PASSWORD}).status_code == 403
+        "name": "B", "email": "b@example.org", "password": PASSWORD}).status_code == 403
     assert api("POST", f"/admin/librarians/{root.id}/disable", ann, json={}).status_code == 403
     assert api("PUT", f"/admin/librarians/{root.id}", ann, json={"email": "x@example.org"}).status_code == 403
     assert api("PUT", f"/admin/librarians/{ann.id}", ann, json={"email": "new@example.org"}).status_code == 200
@@ -179,7 +179,7 @@ def test_making_someone_super_needs_your_own_password(api):
         assert api("PUT", f"/admin/librarians/{ann.id}", root, json=body).status_code == 400
     assert not librarians.get(ann.id).is_super
     # nor can a new super user be created with a live session alone
-    new = {"username": "bob", "email": "bob@example.org", "password": PASSWORD, "is_super": True}
+    new = {"name": "Bob", "email": "bob@example.org", "password": PASSWORD, "is_super": True}
     assert api("POST", "/admin/librarians", root, json=new).status_code == 400
     assert api("POST", "/admin/librarians", root, json={**new, "current_password": PASSWORD}).status_code == 201
 
@@ -210,3 +210,66 @@ def test_login_reports_who_signed_in(api):
     r = TestClient(app).post("/v1/api/admin/auth", headers={"X-Admin-Internal-Secret": "s3cret"},
                              json={"username": "root", "password": PASSWORD})
     assert r.status_code == 200 and r.json()["username"] == "root" and r.json()["is_super"] is True
+
+
+def test_username_is_derived_from_the_email_and_made_unique():
+    from lenny.core import librarians
+    a = librarians.create("Ada Lovelace", "Ada.L+x@Example.org", PASSWORD)
+    b = librarians.create("Ada Two", "ada.l@other.org", PASSWORD)
+    assert a.username == "ada.l+x".replace("+x", "x") and b.username == "ada.l"
+    c = librarians.create("Ada Three", "ada.l@third.org", PASSWORD)
+    assert c.username == "ada.l2"
+
+
+def test_name_is_what_people_see_and_falls_back_to_the_username():
+    from lenny.core import librarians
+    from lenny.core.db import session
+    named = make("  Ada   Lovelace ")
+    assert named.to_dict()["name"] == "Ada Lovelace" and named.to_dict()["display_name"] == "Ada Lovelace"
+    legacy = librarians.Librarian(username="admin", password_hash="x", is_super=True)
+    session.add(legacy); session.commit()
+    assert legacy.to_dict()["name"] is None and legacy.to_dict()["display_name"] == "admin"
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 101, "bad\x00name", None, 7, ["a"]])
+def test_a_bad_name_is_refused(name):
+    from lenny.core import librarians
+    with pytest.raises(librarians.LibrarianError, match="name"):
+        librarians.create(name, "n@example.org", PASSWORD)
+
+
+def test_sign_in_works_with_the_email_or_the_username(api):
+    from fastapi.testclient import TestClient
+    from lenny.app import app
+    from lenny.core import librarians
+    make("Root Person", "Root@Example.org")
+    assert librarians.authenticate("root", PASSWORD) and librarians.authenticate("ROOT@example.org", PASSWORD)
+    r = TestClient(app).post("/v1/api/admin/auth", headers={"X-Admin-Internal-Secret": "s3cret"},
+                             json={"username": "root@example.org", "password": PASSWORD})
+    assert r.status_code == 200 and r.json()["display_name"] == "Root Person"
+
+
+def test_a_librarian_edits_their_own_name_and_the_super_user_anyones(api):
+    root = make()
+    ann = make("Ann", "ann@example.org", is_super=False)
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann, json={"name": "Ann B"}).json()["display_name"] == "Ann B"
+    assert api("PUT", f"/admin/librarians/{ann.id}", root, json={"name": "Annie"}).json()["name"] == "Annie"
+    assert api("PUT", f"/admin/librarians/{root.id}", ann, json={"name": "Boss"}).status_code == 403
+    assert api("PUT", f"/admin/librarians/{ann.id}", ann, json={"name": ""}).status_code == 400
+
+
+def test_create_returns_the_derived_username(api):
+    root = make()
+    r = api("POST", "/admin/librarians", root, json={"name": "Bea Smith", "email": "bea@example.org", "password": PASSWORD})
+    assert r.status_code == 201 and r.json()["username"] == "bea" and r.json()["display_name"] == "Bea Smith"
+    dup = api("POST", "/admin/librarians", root, json={"name": "Bea Two", "email": "bea@example.org", "password": PASSWORD})
+    assert dup.status_code == 400 and dup.json()["detail"] == "That email is already in use."
+
+
+def test_failed_guesses_by_email_and_username_share_one_counter():
+    from lenny.core import librarians
+    make()
+    for who in ["root", "root@example.org"] * 5:
+        assert librarians.authenticate(who, "wrong password!!") is None
+    with pytest.raises(librarians.TooManyAttempts):
+        librarians.authenticate("root@example.org", PASSWORD)

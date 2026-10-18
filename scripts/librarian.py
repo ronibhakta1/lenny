@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Manage librarian (admin) accounts from the shell.
 
-    make admin-create USERNAME=admin EMAIL=you@example.org
-    make admin-passwd USERNAME=admin
+    make admin-create NAME="Ada Lovelace" EMAIL=you@example.org
+    make admin-passwd USERNAME=ada
 
 The first account created on an instance becomes its super user. Passwords are
 asked for on the terminal, never taken from the command line.
@@ -28,8 +28,8 @@ def _ask_password() -> str:
 
 def cmd_create(args) -> int:
     first = db.query(Librarian).count() == 0
-    row = librarians.create(args.username, args.email, _ask_password(), is_super=first)
-    print(f"Created {'super user' if first else 'librarian'} '{row.username}'.")
+    row = librarians.create(args.name, args.email, _ask_password(), is_super=first, username=args.username)
+    print(f"Created {'super user' if first else 'librarian'} '{row.name}' (sign in with '{row.email}' or '{row.username}').")
     return 0
 
 
@@ -46,8 +46,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     create = sub.add_parser("create", help="add a librarian (the first one is the super user)")
-    create.add_argument("--username", required=True)
+    create.add_argument("--name", required=True)
     create.add_argument("--email", required=True)
+    create.add_argument("--username", help="login handle; derived from the email when left out")
     create.set_defaults(fn=cmd_create)
     passwd = sub.add_parser("passwd", help="set a new password for a librarian")
     passwd.add_argument("--username", required=True)

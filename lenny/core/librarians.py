@@ -30,6 +30,7 @@ MAX_PASSWORD = 1024  # argon2 hashes any length; this only bounds what a request
 MAX_FAILURES = 10    # wrong passwords per librarian ...
 FAILURE_WINDOW = 300  # ... per this many seconds, login and step-up checks alike
 INT4_MAX = 2**31 - 1
+_USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _hasher = PasswordHasher()
 # Verified against when the username is unknown, so a miss costs as much as a hit.
@@ -46,7 +47,10 @@ class Librarian(Base):
     __tablename__ = "librarians"
 
     id = Column(Integer, primary_key=True)
+    # The login handle; derived from the email when an account is added.
     username = Column(String(64), nullable=False, unique=True)
+    # What people see: team list, "signed in as". Null only for the migrated account.
+    name = Column(String(100))
     # Null only for the account migrated from auth.env, which never had one.
     email = Column(String(254), unique=True)
     password_hash = Column(String(255), nullable=False)
@@ -61,7 +65,8 @@ class Librarian(Base):
 
     def to_dict(self) -> dict:
         return {
-            "id": self.id, "username": self.username, "email": self.email,
+            "id": self.id, "username": self.username, "name": self.name,
+            "display_name": self.name or self.username, "email": self.email,
             "is_super": bool(self.is_super), "disabled": self.disabled_at is not None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -84,19 +89,39 @@ def _check_flag(value) -> None:
         raise LibrarianError("is_super must be true or false.")
 
 
-def create(username: str, email: str, password: str, is_super: bool = False) -> Librarian:
-    username = username.strip() if isinstance(username, str) else ""
-    if not username or len(username) > 64 or "\x00" in username:
-        raise LibrarianError("A username of 1-64 characters is required.")
+def _check_name(name) -> str:
+    name = " ".join(name.split()) if isinstance(name, str) else ""
+    if not name or len(name) > 100 or any(ord(c) < 32 for c in name):
+        raise LibrarianError("A name of 1-100 characters is required.")
+    return name
+
+
+def _derive_username(email: str) -> str:
+    """The email's local part reduced to a safe handle, made unique with a number."""
+    base = re.sub(r"[^a-z0-9._-]", "", email.split("@")[0])[:56].lstrip("._-") or "user"
+    candidate, n = base, 1
+    while db.query(Librarian).filter(Librarian.username == candidate).first():
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
+
+
+def create(name: str, email: str, password: str, is_super: bool = False,
+           username: Optional[str] = None) -> Librarian:
+    name = _check_name(name)
     _check_flag(is_super)
     email = _check_email(email)
     _check_password(password)
+    if username is not None and not (isinstance(username, str) and _USERNAME.match(username)):
+        raise LibrarianError("A username may use lowercase letters, digits, dots, dashes and underscores.")
     try:
         _xact_lock("librarians")
-        if db.query(Librarian).filter((Librarian.username == username) | (Librarian.email == email)).first():
-            raise LibrarianError("That username or email is already in use.")
-        row = Librarian(username=username, email=email, is_super=is_super,
-                        password_hash=_hasher.hash(password))
+        if db.query(Librarian).filter(Librarian.email == email).first():
+            raise LibrarianError("That email is already in use.")
+        if username and db.query(Librarian).filter(Librarian.username == username).first():
+            raise LibrarianError("That username is already in use.")
+        row = Librarian(name=name, username=username or _derive_username(email), email=email,
+                        is_super=is_super, password_hash=_hasher.hash(password))
         db.add(row)
         db.commit()
         return row
@@ -112,11 +137,13 @@ def authenticate(username: str, password: str) -> Optional[Librarian]:
     if not (isinstance(username, str) and isinstance(password, str)
             and len(username) <= 64 and len(password) <= MAX_PASSWORD and "\x00" not in username):
         return None
-    key = hashlib.sha256(username.encode()).hexdigest()
+    who = username.strip().lower() if "@" in username else username
+    row = db.query(Librarian).populate_existing().filter(
+        (Librarian.username == who) | (Librarian.email == who), Librarian.disabled_at.is_(None)).first()
+    # One counter per account, so alternating email and username cannot double the guesses.
+    key = hashlib.sha256((f"id:{row.id}" if row else username).encode()).hexdigest()
     if Cache._count("librarian:login", key) >= MAX_FAILURES:
         raise TooManyAttempts("Too many wrong passwords. Try again in a few minutes.")
-    row = db.query(Librarian).populate_existing().filter(
-        Librarian.username == username, Librarian.disabled_at.is_(None)).first()
     try:
         _hasher.verify(row.password_hash if row else _DUMMY_HASH, password)
     except (VerificationError, InvalidHashError):
@@ -148,12 +175,14 @@ def _other_enabled_supers(row: Librarian) -> int:
 
 
 def update(librarian_id: int, email: Optional[str] = None, password: Optional[str] = None,
-           is_super: Optional[bool] = None) -> Librarian:
+           is_super: Optional[bool] = None, name: Optional[str] = None) -> Librarian:
     try:
         _xact_lock("librarians")
         row = get(librarian_id)
         if is_super is not None:
             _check_flag(is_super)
+        if name is not None:
+            row.name = _check_name(name)
         if email is not None:
             email = _check_email(email)
             taken = db.query(Librarian).filter(Librarian.email == email, Librarian.id != row.id).first()
