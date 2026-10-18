@@ -227,7 +227,7 @@ Lenny includes a secure admin interface at `/admin` for managing the library.
 2. Under **My account**, set your name and email, and change the password. You can then sign in with your email or your username.
 3. Under **Team**, add people (name, email, password; **Generate** makes one). Each has a username derived from the email.
 
-There is exactly one super user. It manages the team and instance settings. **Make super user** hands the role to someone else (you confirm with your password) and you become a normal member. The super user cannot be demoted or disabled, only replaced.
+There is exactly one super user. It manages the team and instance settings. **Make super user** hands the role to someone else (you confirm with your password) and you become a normal member. The super user cannot be demoted, disabled or deleted, only replaced. It can delete other accounts (with its password); disable is the reversible option.
 
 From the shell (`lenny` or `make`):
 

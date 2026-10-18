@@ -1182,6 +1182,17 @@ async def set_librarian_disabled(request: Request, librarian_id: int, body: dict
     return JSONResponse(row.to_dict())
 
 
+@router.post("/admin/librarians/{librarian_id}/delete")
+async def delete_librarian(request: Request, librarian_id: int, body: dict = Body(...)):
+    """Delete an account for good. Super user only, with their OWN `current_password`; never yourself."""
+    me = _super_librarian(request)
+    if me.id == librarian_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    _confirm_password(me, body)
+    _librarian_call(librarians.delete, librarian_id)
+    return JSONResponse({"deleted": True})
+
+
 # ─── Open Library / Internet Archive auth bootstrap ──────────────────────
 # These routes let the admin UI log Lenny into archive.org and persist the
 # returned IA S3 keys to ol.env. They mirror `docker/utils/ol_configure.sh` so

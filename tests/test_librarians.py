@@ -325,3 +325,19 @@ def test_a_long_email_can_sign_in_and_old_hashes_are_upgraded():
     old = row.password_hash
     assert librarians.authenticate(email, PASSWORD)
     assert librarians.get(row.id).password_hash != old and librarians.authenticate(email, PASSWORD)
+
+
+def test_super_user_can_delete_an_account_with_their_password(api):
+    from lenny.core import auth, librarians
+    root = make()
+    ann = make("ann", "ann@example.org", is_super=False)
+    token = auth.issue_admin_token(ann.id)
+    url = f"/admin/librarians/{ann.id}/delete"
+    assert api("POST", url, ann, json={"current_password": PASSWORD}).status_code == 403
+    assert api("POST", url, root, json={}).status_code == 400
+    assert api("POST", url, root, json={"current_password": "wrong password!!"}).status_code == 400
+    assert api("POST", f"/admin/librarians/{root.id}/delete", root, json={"current_password": PASSWORD}).status_code == 400
+    assert api("POST", url, root, json={"current_password": PASSWORD}).status_code == 200
+    assert not auth.verify_admin_token(token)
+    assert api("POST", url, root, json={"current_password": PASSWORD}).status_code == 400  # already gone
+    assert librarians.authenticate("ann", PASSWORD) is None

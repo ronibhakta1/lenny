@@ -229,6 +229,20 @@ def update(librarian_id: int, email: Optional[str] = None, password: Optional[st
         raise
 
 
+def delete(librarian_id: int) -> None:
+    """Remove an account for good. The super user cannot be deleted, only replaced."""
+    try:
+        _xact_lock("librarians")
+        row = get(librarian_id)
+        if row.is_super:
+            raise LibrarianError("The super user cannot be deleted; make someone else super user first.")
+        db.delete(row)  # its tokens stop working with it: get_active no longer finds the row
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 def set_disabled(librarian_id: int, disabled: bool) -> Librarian:
     try:
         _xact_lock("librarians")
