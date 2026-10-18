@@ -141,7 +141,8 @@ def authenticate(username: str, password: str) -> Optional[Librarian]:
     MAX_FAILURES wrong passwords for one username inside FAILURE_WINDOW (even the right
     one is refused until it passes), so a stolen session cannot guess the password."""
     if not (isinstance(username, str) and isinstance(password, str)
-            and len(username) <= 64 and len(password) <= MAX_PASSWORD and "\x00" not in username):
+            and len(username) <= (254 if "@" in username else 64)
+            and len(password) <= MAX_PASSWORD and "\x00" not in username):
         return None
     who = username.strip().lower() if "@" in username else username
     row = db.query(Librarian).populate_existing().filter(
@@ -155,6 +156,9 @@ def authenticate(username: str, password: str) -> Optional[Librarian]:
     except (VerificationError, InvalidHashError):
         Cache._record("librarian:login", key, FAILURE_WINDOW)
         return None
+    if row and _hasher.check_needs_rehash(row.password_hash):
+        row.password_hash = _hasher.hash(password)  # parameters were raised since this hash was made
+        db.commit()
     return row
 
 

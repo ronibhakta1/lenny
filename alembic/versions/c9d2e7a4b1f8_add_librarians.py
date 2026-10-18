@@ -1,9 +1,13 @@
 """add librarians: admin accounts move from auth.env into the database
 
 If ADMIN_PASSWORD is set, the account it describes becomes the super user (its
-password stored as an Argon2 hash, no email yet). migrate.sh then removes the
-line from auth.env, once the upgrade has committed, so the secret no longer sits
-on disk. Both run in the api container, where auth.env is visible.
+password stored as an Argon2 hash, no email yet). auth.env is left as it is: the
+keys only seed the first login, and the file says so. The migration runs in the
+api container, where auth.env is visible. Without ADMIN_PASSWORD nothing is
+seeded; create the first super user with `make admin-create`.
+
+Downgrade drops the table; the old code still reads ADMIN_PASSWORD from auth.env,
+which this migration never removes, so the previous login keeps working.
 
 Revision ID: c9d2e7a4b1f8
 Revises: e5a1c0b7d2f4

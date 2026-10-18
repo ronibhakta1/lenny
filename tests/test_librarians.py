@@ -313,3 +313,15 @@ def test_logout_ends_every_session_of_that_librarian_only(api):
     assert auth.verify_admin_token(other)
     assert auth.verify_admin_token(auth.issue_admin_token(ann.id))  # signing in again works
     assert api("POST", "/admin/logout").status_code == 403  # the process's own token names no one
+
+
+def test_a_long_email_can_sign_in_and_old_hashes_are_upgraded():
+    from argon2 import PasswordHasher
+    from lenny.core import librarians
+    email = "a" * 70 + "@example.org"
+    row = librarians.create("Long Address", email, PASSWORD)
+    assert librarians.authenticate(email, PASSWORD)
+    row.password_hash = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(PASSWORD)
+    old = row.password_hash
+    assert librarians.authenticate(email, PASSWORD)
+    assert librarians.get(row.id).password_hash != old and librarians.authenticate(email, PASSWORD)
