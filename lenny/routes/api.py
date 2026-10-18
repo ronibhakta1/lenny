@@ -1024,7 +1024,10 @@ async def admin_auth(request: Request, body: dict = Body(...)):
 
     username = body.get("username", "")
     password = body.get("password", "")
-    row = librarians.authenticate(username, password)
+    try:
+        row = librarians.authenticate(username, password)
+    except librarians.TooManyAttempts as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
     if not row:
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
@@ -1075,8 +1078,20 @@ def _current_librarian(request: Request) -> "librarians.Librarian":
 def _confirm_password(me: "librarians.Librarian", body: dict) -> None:
     """Step-up check for changes that hand out or take away power: the signed-in
     librarian proves they hold the password, not just a live session."""
-    if not librarians.authenticate(me.username, body.get("current_password") or ""):
+    try:
+        ok = librarians.authenticate(me.username, body.get("current_password"))
+    except librarians.TooManyAttempts as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    if not ok:
         raise HTTPException(status_code=400, detail="The current password is wrong.")
+
+
+def _flag(body: dict, key: str, default=None):
+    """A JSON boolean, or 400: bool("false") is True, so a string must never stand in for one."""
+    value = body.get(key, default)
+    if value is not None and not isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{key} must be true or false.")
+    return value
 
 
 def _super_librarian(request: Request) -> "librarians.Librarian":
@@ -1100,7 +1115,7 @@ async def list_librarians(request: Request):
 @router.post("/admin/librarians", status_code=status.HTTP_201_CREATED)
 async def create_librarian(request: Request, body: dict = Body(...)):
     me = _super_librarian(request)
-    make_super = bool(body.get("is_super", False))
+    make_super = _flag(body, "is_super", False) is True
     if make_super:
         _confirm_password(me, body)
     row = _librarian_call(librarians.create, body.get("username"), body.get("email"),
@@ -1128,15 +1143,18 @@ async def update_librarian(request: Request, librarian_id: int, body: dict = Bod
     if (own and body.get("password") is not None) or "is_super" in body:
         _confirm_password(me, body)
     row = _librarian_call(librarians.update, librarian_id, body.get("email"), body.get("password"),
-                          body.get("is_super"))
-    return JSONResponse(row.to_dict())
+                          _flag(body, "is_super"))
+    out = row.to_dict()
+    if own and body.get("password") is not None:
+        out["token"] = auth.issue_admin_token(row.id)  # the old one died with the old password
+    return JSONResponse(out)
 
 
 @router.post("/admin/librarians/{librarian_id}/disable")
 async def set_librarian_disabled(request: Request, librarian_id: int, body: dict = Body(...)):
     """Body: ``{"disabled": true|false}``. Super user only; takes effect on the next request."""
     me = _super_librarian(request)
-    disabled = bool(body.get("disabled", True))
+    disabled = _flag(body, "disabled", True)
     if disabled and me.id == librarian_id:
         raise HTTPException(status_code=400, detail="You cannot disable your own account.")
     row = _librarian_call(librarians.set_disabled, librarian_id, disabled)

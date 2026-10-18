@@ -13,13 +13,14 @@ PASSWORD = "correct horse battery"
 @pytest.fixture(autouse=True)
 def clean_table():
     from lenny.core.db import Base, engine, session
-    from lenny.core import librarians  # noqa: F401
+    from lenny.core import librarians, cache  # noqa: F401
     Base.metadata.create_all(engine)
     session.remove()
     yield
     session.remove()
     with engine.begin() as c:
         c.exec_driver_sql("delete from librarians")
+        c.exec_driver_sql("delete from cache")
 
 
 def make(username="root", email="root@example.org", is_super=True):

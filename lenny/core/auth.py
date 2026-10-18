@@ -57,7 +57,11 @@ def issue_admin_token(librarian_id: Optional[int] = None) -> str:
     first, by password (`authenticate_admin`) or by already holding the
     process's own secrets.
     """
-    claim = {"lid": librarian_id} if librarian_id else {"internal": True}
+    claim = {"internal": True}
+    if librarian_id:
+        from lenny.core import librarians
+        # Bound to the current password, so changing it ends every older session.
+        claim = {"lid": librarian_id, "pw": librarians.get(librarian_id).session_fingerprint()}
     return _get_admin_serializer().dumps({"admin": True, **claim})
 
 def internal_admin_headers() -> dict:
@@ -103,7 +107,8 @@ def admin_librarian(token: str):
     from lenny.core import librarians
     claims = _admin_claims(token)
     lid = claims.get("lid") if claims else None
-    return librarians.get_active(lid) if lid else None
+    row = librarians.get_active(lid) if isinstance(lid, int) else None
+    return row if row and claims.get("pw") == row.session_fingerprint() else None
 
 def verify_admin_token(token: str) -> bool:
     """True for a valid, unexpired admin token. A librarian's token also needs the account to

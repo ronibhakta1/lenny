@@ -12,6 +12,7 @@
     :license: see LICENSE for more details
 """
 
+import hashlib
 import re
 from typing import Optional
 
@@ -20,10 +21,15 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, func
 
 from lenny.core.db import Base, session as db
+from lenny.core.cache import Cache
 from lenny.core.exceptions import LennyAPIError
 from lenny.core.models import _xact_lock
 
 MIN_PASSWORD = 12
+MAX_PASSWORD = 1024  # argon2 hashes any length; this only bounds what a request can make us chew on
+MAX_FAILURES = 10    # wrong passwords per librarian ...
+FAILURE_WINDOW = 300  # ... per this many seconds, login and step-up checks alike
+INT4_MAX = 2**31 - 1
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _hasher = PasswordHasher()
 # Verified against when the username is unknown, so a miss costs as much as a hit.
@@ -31,6 +37,9 @@ _DUMMY_HASH = _hasher.hash("not-a-real-password")
 
 
 class LibrarianError(LennyAPIError): pass
+
+
+class TooManyAttempts(LennyAPIError): pass
 
 
 class Librarian(Base):
@@ -46,6 +55,10 @@ class Librarian(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     disabled_at = Column(DateTime(timezone=True))
 
+    def session_fingerprint(self) -> str:
+        """Changes whenever the password does; signed into tokens so a new password ends old sessions."""
+        return hashlib.sha256(self.password_hash.encode()).hexdigest()[:16]
+
     def to_dict(self) -> dict:
         return {
             "id": self.id, "username": self.username, "email": self.email,
@@ -55,21 +68,27 @@ class Librarian(Base):
 
 
 def _check_password(password: str) -> None:
-    if not isinstance(password, str) or len(password) < MIN_PASSWORD:
-        raise LibrarianError(f"Password must be at least {MIN_PASSWORD} characters.")
+    if not isinstance(password, str) or not MIN_PASSWORD <= len(password) <= MAX_PASSWORD:
+        raise LibrarianError(f"Password must be {MIN_PASSWORD}-{MAX_PASSWORD} characters.")
 
 
 def _check_email(email: str) -> str:
-    email = (email or "").strip().lower()
+    email = email.strip().lower() if isinstance(email, str) else ""
     if not _EMAIL.match(email) or len(email) > 254:
         raise LibrarianError("A valid email is required.")
     return email
 
 
+def _check_flag(value) -> None:
+    if not isinstance(value, bool):
+        raise LibrarianError("is_super must be true or false.")
+
+
 def create(username: str, email: str, password: str, is_super: bool = False) -> Librarian:
-    username = (username or "").strip()
-    if not username or len(username) > 64:
+    username = username.strip() if isinstance(username, str) else ""
+    if not username or len(username) > 64 or "\x00" in username:
         raise LibrarianError("A username of 1-64 characters is required.")
+    _check_flag(is_super)
     email = _check_email(email)
     _check_password(password)
     try:
@@ -87,18 +106,27 @@ def create(username: str, email: str, password: str, is_super: bool = False) -> 
 
 
 def authenticate(username: str, password: str) -> Optional[Librarian]:
-    """The enabled librarian with this password, or None."""
+    """The enabled librarian with this password, or None. Raises TooManyAttempts after
+    MAX_FAILURES wrong passwords for one username inside FAILURE_WINDOW (even the right
+    one is refused until it passes), so a stolen session cannot guess the password."""
+    if not (isinstance(username, str) and isinstance(password, str)
+            and len(username) <= 64 and len(password) <= MAX_PASSWORD and "\x00" not in username):
+        return None
+    key = hashlib.sha256(username.encode()).hexdigest()
+    if Cache._count("librarian:login", key) >= MAX_FAILURES:
+        raise TooManyAttempts("Too many wrong passwords. Try again in a few minutes.")
     row = db.query(Librarian).populate_existing().filter(
-        Librarian.username == (username or ""), Librarian.disabled_at.is_(None)).first()
+        Librarian.username == username, Librarian.disabled_at.is_(None)).first()
     try:
-        _hasher.verify(row.password_hash if row else _DUMMY_HASH, password or "")
+        _hasher.verify(row.password_hash if row else _DUMMY_HASH, password)
     except (VerificationError, InvalidHashError):
+        Cache._record("librarian:login", key, FAILURE_WINDOW)
         return None
     return row
 
 
 def get(librarian_id: int) -> Librarian:
-    row = db.get(Librarian, librarian_id)
+    row = db.get(Librarian, librarian_id) if 0 < librarian_id <= INT4_MAX else None
     if not row:
         raise LibrarianError("No such librarian.")
     return row
@@ -124,6 +152,8 @@ def update(librarian_id: int, email: Optional[str] = None, password: Optional[st
     try:
         _xact_lock("librarians")
         row = get(librarian_id)
+        if is_super is not None:
+            _check_flag(is_super)
         if email is not None:
             email = _check_email(email)
             taken = db.query(Librarian).filter(Librarian.email == email, Librarian.id != row.id).first()
