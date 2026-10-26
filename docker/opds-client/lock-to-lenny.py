@@ -17,7 +17,8 @@ def swap(old, new):
 swap('export const feedUrl = "https://openlibrary.org/opds";',
      'export const feedUrl = (typeof window !== "undefined" ? window.location.origin : "http://localhost") + "/v1/api/opds";')
 swap("""      return new URL(target, feedUrl).href;""",
-     """      const resolved = new URL(target, feedUrl);
+     """      // A shared link pasted with the title appended ("…/32930303 A Connecticut…") must still resolve.
+      const resolved = new URL(target.trim().split(/\\s/)[0], feedUrl);
       return resolved.origin === new URL(feedUrl).origin ? resolved.href : feedUrl;""")
 swap("""        if (fetchedLinks.has(link.href)) continue;""",
      """        if (fetchedLinks.has(link.href)) continue;
@@ -44,3 +45,40 @@ src = open("src/lib/auth.ts").read()
 swap("  const clientId = PKCE_CLIENT_IDS[window.location.origin];",
      '  const clientId = PKCE_CLIENT_IDS[window.location.origin] ?? "lenny-opds-client";')
 open("src/lib/auth.ts", "w").write(src)
+
+# The share sheet appends `text` to `url` in many apps, which corrupts the link
+# (the title ends up inside the URL). Share the title and url only.
+path = "src/lib/components/views/Publication.svelte"
+src = open(path).read()
+swap("                        text: `${metadata.title}`,\n", "")
+open(path, "w").write(src)
+
+# Lenny returns the implicit-flow token in the URL fragment (`#access_token=...&state=...`, per the
+# OAuth spec); the client only reads the query string, so the token was dropped and the borrow that
+# triggered sign-in was never retried. Read the fragment as well.
+path = "src/lib/auth.ts"
+src = open(path).read()
+swap('''const initialSearch =
+  typeof window !== "undefined" ? window.location.search : "";''',
+     '''const initialSearch =
+  typeof window !== "undefined"
+    ? window.location.search || (window.location.hash.startsWith("#") && window.location.hash.includes("=") ? "?" + window.location.hash.slice(1) : "")
+    : "";''')
+open(path, "w").write(src)
+
+# Sign out only deleted the client's stored token. Lenny also signs the patron in with a `session`
+# cookie, which stayed, so the next request was still authenticated. Clear the cookie on the server too.
+path = "src/lib/stores/opdsStore.ts"
+src = open(path).read()
+swap("""    signOut() {
+      const origin = this.getOrigin();
+      deleteToken(origin);""",
+     """    async signOut() {
+      const origin = this.getOrigin();
+      deleteToken(origin);
+      try {
+        await fetch(new URL("/v1/api/logout", feedUrl).href, { method: "POST", credentials: "same-origin" });
+      } catch {
+        // offline: the stored token is already gone; the cookie expires on its own
+      }""")
+open(path, "w").write(src)

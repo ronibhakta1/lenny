@@ -200,12 +200,31 @@ def create_hashed_session_cookie(patron_email_hash: str, ip: str = None) -> str:
         data["ip"] = ip
     return serializer.dumps(data)
 
+REVOKED_SESSION_SCOPE = "revoked_session"
+
+def _session_key(session: str) -> str:
+    return hashlib.sha256(session.encode()).hexdigest()
+
+def revoke_session_cookie(session: Optional[str]) -> bool:
+    """End a session for good: a signed token is stateless, so logging out must remember it.
+
+    Only a validly signed, unexpired token is stored (anyone can call /logout, so junk must not
+    fill the table). The row lives as long as the token could, then the cache purge drops it.
+    """
+    if not session or verify_session_cookie(session) is None:
+        return False
+    Cache._record(REVOKED_SESSION_SCOPE, _session_key(session), COOKIE_TTL)
+    return True
+
+def is_session_revoked(session: str) -> bool:
+    return Cache._count(REVOKED_SESSION_SCOPE, _session_key(session)) > 0
+
 def get_authenticated_email(session) -> Optional[str]:
     """Retrieves and verifies email from signed cookie. Rejects old-format (non-dict) cookies."""
     try:
         serializer = _get_serializer()
         data = serializer.loads(session, max_age=COOKIE_TTL)
-        if isinstance(data, dict):
+        if isinstance(data, dict) and not is_session_revoked(session):
             return data.get("email")
         return None  # old-format plain-email cookies rejected
     except BadSignature:
@@ -219,6 +238,8 @@ def verify_session_cookie(session, client_ip: str = None):
         serializer = _get_serializer()
         data = serializer.loads(session, max_age=COOKIE_TTL)
         if isinstance(data, dict):
+            if is_session_revoked(session):
+                return None
             stored_ip = data.get("ip")
             if client_ip and stored_ip and client_ip != stored_ip:
                 return None  # IP mismatch
