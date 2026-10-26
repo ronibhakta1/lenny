@@ -33,7 +33,7 @@
 - [About the Project](#about-the-project)
 - [Features](#features)
 - [OPDS 2.0 Feed](#opds-20-feed)
-- [Internet Archive Bookserver app + Lenny OPDS sync](#bookserver-app-sync)
+- [Built-in OPDS client](#built-in-opds-client)
 - [Technologies](#technologies)
 - [Endpoints](#endpoints)
 - [Getting Started](#getting-started)
@@ -198,22 +198,9 @@ Now any code change is picked up immediately by uvicorn. To switch back to produ
 
 ---
 
-## Bookserver app sync
+## Built-in OPDS client
 
-Sync your Lenny OPDS feed with Archive.org's [Bookserver app](https://reader.archive.org). To have a personalized Lenny catalog with a great user interface.
-> [!IMPORTANT]
-> Bookserver app is Internet Archive's closed product, it doesn't come with lenny instance which you can own
-
-Lenny registers Book Server as a trusted app on every node by itself. Turn it off, or add other readers, under **Settings → App Access** (see [docs/OAUTH2.md](docs/OAUTH2.md)).
-
-```sh
-make url 
-```
-
-- Gernerates URl ODPS link & Lenny server + Archive's Book server app sync URL Link.
-
----
-
+Lenny ships its own browsing app (the [opds-client](https://github.com/ArchiveLabs/opds-client), pinned in `docker/opds-client/Dockerfile`) at the root of your instance, e.g. `http://localhost:8080/`. It only browses this node's own OPDS feed (`/v1/api/opds`) and signs in through Lenny's own OAuth; feeds from other origins are refused. Sign in works from the node's configured public URL (`LENNY_PROXY` or host/port); opening the node through any other address is refused by the OAuth redirect check.
 
 ---
 

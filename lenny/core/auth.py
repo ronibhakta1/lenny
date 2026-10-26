@@ -232,19 +232,6 @@ def verify_session_cookie(session, client_ip: str = None):
 class OTP:
 
     @classmethod
-    def generate(cls, email: str, issued_minute: int = None) -> str:
-        """
-        Generate a simple OTP for testing purposes.
-        This is a stub method - production OTP generation happens on the OTP server.
-        """
-        if issued_minute is None:
-            issued_minute = datetime.now().minute
-        
-        # Create a simple deterministic OTP for testing
-        otp_string = f"{email}{SEED}{issued_minute}"
-        return hashlib.sha256(otp_string.encode()).hexdigest()[:6]
-
-    @classmethod
     def verify(cls, email: str, ip_address: str, otp: str) -> bool:
         """Verifies OTP for email and IP address, with rate limiting."""
         if cls.is_rate_limited(email):
@@ -269,7 +256,8 @@ class OTP:
         strictly per-physical-mailbox.)
         """
         return Cache.is_throttled(
-            "otp:send", hash_email(email), EMAIL_REQUEST_LIMIT, EMAIL_WINDOW_SECONDS
+            "otp:send", hash_email(email), EMAIL_REQUEST_LIMIT, EMAIL_WINDOW_SECONDS,
+            fail_closed=True,
         )
 
     @classmethod
@@ -425,7 +413,8 @@ class OTP:
     def is_rate_limited(cls, email: str) -> bool:
         """Returns True if the user is making too many OTP verification attempts."""
         return Cache.is_throttled(
-            "otp:verify", email, ATTEMPT_LIMIT, ATTEMPT_WINDOW_SECONDS
+            "otp:verify", hash_email(email), ATTEMPT_LIMIT, ATTEMPT_WINDOW_SECONDS,
+            fail_closed=True,
         )
 
     @classmethod

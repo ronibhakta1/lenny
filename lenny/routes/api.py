@@ -50,6 +50,7 @@ from fastapi.responses import (
     JSONResponse,
 )
 from lenny.core import auth, librarians
+from lenny.core.db import run_blocking
 from lenny.core.api import LennyAPI, auth_document
 from lenny.core import ol_bootstrap
 from lenny.core.cache import Cache
@@ -575,7 +576,7 @@ async def borrow_item(request: Request, response: Response, book_id: int, format
     if request.method == "POST":
         if post_email and post_otp:
             try:
-                session_cookie = auth.OTP.authenticate(post_email, post_otp, client_ip)
+                session_cookie = await run_blocking(auth.OTP.authenticate, post_email, post_otp, client_ip)
             except LendingNotConfiguredError as e:
                 context["error"] = str(e)
                 return request.app.templates.TemplateResponse("otp_issue.html", context)
@@ -608,7 +609,7 @@ async def borrow_item(request: Request, response: Response, book_id: int, format
             # body on every failure path, so this used to promise the patron an
             # email that was never sent, with nothing logged on either side.
             try:
-                auth.OTP.issue(post_email, client_ip)
+                await run_blocking(auth.OTP.issue, post_email, client_ip)
             except LendingNotConfiguredError as e:
                 context["error"] = str(e)
                 return request.app.templates.TemplateResponse("otp_issue.html", context)
